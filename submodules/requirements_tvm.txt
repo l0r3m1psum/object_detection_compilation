@@ -1,0 +1,6 @@
+# needed for build
+cython
+# Otherwise the tvm package throws
+# AttributeError: `np.float_` was removed in the NumPy 2.0 release. Use `np.float64` instead.
+# when imported
+numpy < 2.0
