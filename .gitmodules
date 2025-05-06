@@ -4,3 +4,9 @@
 [submodule "submodules/cpython"]
 	path = submodules/cpython
 	url = https://github.com/python/cpython.git
+[submodule "submodules/pytorch"]
+	path = submodules/pytorch
+	url = https://github.com/pytorch/pytorch.git
+[submodule "submodules/llvm-project"]
+	path = submodules/llvm-project
+	url = https://github.com/llvm/llvm-project.git
