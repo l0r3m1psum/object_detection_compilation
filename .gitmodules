@@ -1,3 +1,6 @@
 [submodule "submodules/tvm"]
 	path = submodules/tvm
 	url = https://github.com/l0r3m1psum/tvm.git
+[submodule "submodules/cpython"]
+	path = submodules/cpython
+	url = https://github.com/python/cpython.git
