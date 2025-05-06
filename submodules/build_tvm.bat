@@ -7,7 +7,7 @@ REM vcvarsall.bat has been invoked to correctly setup the build environment.
 pip install -r requirements_tvm.txt || goto :exit
 cd tvm || goto :exit
 git submodule update --init --recursive || goto :exit
-if exists build (rmdir /S /Q build || goto :exit)
+if exist build (rmdir /S /Q build || goto :exit)
 mkdir build || goto :exit
 cd build || goto :exit
 copy ..\cmake\config.cmake . || goto :exit

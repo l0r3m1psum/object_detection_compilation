@@ -1,6 +1,6 @@
 @echo off
 cd llvm-project\llvm
-if exists build (rmdir /S /Q build)
+if exist build (rmdir /S /Q build)
 mkdir build
 cd build
 cmake -DCMAKE_INSTALL_PREFIX=%LOCALAPPDATA%\Programs\LLVM -DCMAKE_BUILD_TYPE=RelWithDebInfo ..

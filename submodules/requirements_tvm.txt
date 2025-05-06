@@ -1,6 +1,8 @@
 # needed for build
-cython
+cython == 3.0
 # Otherwise the tvm package throws
 # AttributeError: `np.float_` was removed in the NumPy 2.0 release. Use `np.float64` instead.
 # when imported
 numpy < 2.0
+# Needed by the cost model in static_shape_tuning pipeline
+xgboost == 3.0
