@@ -1,0 +1,13 @@
+# Needed by the cost model in tvm
+xgboost
+# For torchvision visualizations
+pillow
+# Needed py torch.fx.Graph.print_tabular()
+tabulate
+# For loading models downloaded from HuggingFace
+safetensors
+
+torcheval
+
+# To set memory limit
+pywin32
