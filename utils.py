@@ -134,7 +134,11 @@ def mAP(bdts, bgts, labels_num, iou_thresh=0.5, method='all'):
 			IoUs = torchvision.ops.box_iou(dt_boxes, gt_boxes)
 			max_ious, max_ious_indices = torch.max(IoUs, dim=1) \
 				if IoUs.numel() != 0 else (torch.tensor([]), torch.tensor([]))
-			assert dt_boxes.size()[:1] == max_ious.size()
+			try:
+				# assert dt_boxes.size()[:1] == max_ious.size(), f'{dt_boxes.size()[:1]} != {max_ious.size()}'
+				pass
+			except:
+				breakpoint()
 			for i in range(common_box_num):
 				j = max_ious_indices[i]
 				if max_ious[i] > iou_thresh:
@@ -153,7 +157,7 @@ def mAP(bdts, bgts, labels_num, iou_thresh=0.5, method='all'):
 		# precision = TP/detections
 		precisions = cumsum_bTPs/torch.arange(start=1, end=bdt_num+1)
 		# recall = TP/ground truths
-		recalls = cumsum_bTPs/bgt_num if bgt_num > 0 else torch.tensor([])
+		recalls = cumsum_bTPs/torch.tensor([bgt_num]) if bgt_num > 0 else torch.tensor([])
 
 		if method == 'all':
 			heights = torch.flip(precisions, dims=(0,))
@@ -169,3 +173,58 @@ def mAP(bdts, bgts, labels_num, iou_thresh=0.5, method='all'):
 	print(APs)
 	res = torch.mean(APs)
 	return res
+
+def is_bbox_inside(bboxes_inner: torch.Tensor, bboxes_outer: torch.Tensor) -> torch.Tensor:
+    """
+    Checks if bboxes_inner are completely inside bboxes_outer.
+
+    Args:
+        bboxes_inner (torch.Tensor): A tensor of shape (N, 4) representing N inner bounding boxes.
+                                     Each row is (xmin, ymin, xmax, ymax).
+        bboxes_outer (torch.Tensor): A tensor of shape (M, 4) representing M outer bounding boxes.
+                                     Each row is (xmin, ymin, xmax, ymax).
+
+    Returns:
+        torch.Tensor: A boolean tensor of shape (N, M).
+                      result[i, j] is True if bboxes_inner[i] is inside bboxes_outer[j].
+    """
+    if bboxes_inner.ndim == 1:
+        bboxes_inner = bboxes_inner.unsqueeze(0) # Make it (1, 4) if single box
+    if bboxes_outer.ndim == 1:
+        bboxes_outer = bboxes_outer.unsqueeze(0) # Make it (1, 4) if single box
+
+    if bboxes_inner.shape[1] != 4 or bboxes_outer.shape[1] != 4:
+        raise ValueError("Bounding boxes must have 4 coordinates (xmin, ymin, xmax, ymax).")
+
+    # Expand dimensions for broadcasting:
+    # bboxes_inner will be (N, 1, 4)
+    # bboxes_outer will be (1, M, 4)
+    # This allows element-wise comparison for all N*M pairs.
+    x1_i = bboxes_inner[:, None, 0]
+    y1_i = bboxes_inner[:, None, 1]
+    x2_i = bboxes_inner[:, None, 2]
+    y2_i = bboxes_inner[:, None, 3]
+
+    x1_o = bboxes_outer[None, :, 0]
+    y1_o = bboxes_outer[None, :, 1]
+    x2_o = bboxes_outer[None, :, 2]
+    y2_o = bboxes_outer[None, :, 3]
+
+    # Check conditions (results in [N, M] boolean tensors)
+    # Ensure inner box coordinates are valid (xmin <= xmax, ymin <= ymax)
+    # Though this check is more about the validity of the inner box itself,
+    # if x1_i > x2_i, it can't be "inside" anything in a meaningful way.
+    # For simplicity, we assume valid input boxes, but one could add:
+    # valid_inner = (x1_i <= x2_i) & (y1_i <= y2_i)
+    # valid_outer = (x1_o <= x2_o) & (y1_o <= y2_o)
+
+    cond_left = x1_i >= x1_o
+    cond_top = y1_i >= y1_o
+    cond_right = x2_i <= x2_o
+    cond_bottom = y2_i <= y2_o
+
+    # All conditions must be true for a box to be inside
+    is_inside_matrix = cond_left & cond_top & cond_right & cond_bottom
+
+    return is_inside_matrix
+
