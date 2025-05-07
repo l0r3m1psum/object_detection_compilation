@@ -5,6 +5,7 @@ import multiprocessing.pool
 import os
 import io
 import logging
+import enum
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
@@ -16,8 +17,22 @@ import numpy
 import torch
 import torchvision
 from torchvision.transforms import v2
-import torcheval.metrics
-import ignite.metrics
+
+NUM_CLASSES = 11
+
+class ObjCat(enum.Enum):
+	IGNORED_REGIONS = 0
+	PEDESTRIAN      = 1
+	PEOPLE          = 2
+	BICYCLE         = 3
+	CAR             = 4
+	VAN             = 5
+	TRUCK           = 6
+	TRICYCLE        = 7
+	AWNING_TRICYCLE = 8
+	BUS             = 9
+	MOTOR           = 10
+	OTHERS          = 11
 
 # https://pytorch.org/docs/stable/notes/randomness.html
 torch.manual_seed(42)
@@ -47,15 +62,19 @@ def loadtxt(path: str) -> dict:
 
 	res[:,:4] = torchvision.ops.box_convert(res[:,:4], "xywh", "xyxy")
 
-	# Putting it in COCO format.
-	id = path[path.rfind('\\')+1:-len('.txt')]
+	## Putting it in COCO format.
+	# id = path[path.rfind('\\')+1:-len('.txt')]
 	target = {
 		'boxes': res[:,:4],
-		'labels': res[:,4].to(torch.int64),
-		'image_id': id, # TODO: convert to int?
-		'area': torchvision.ops.box_area(res[:,:4]),
-		'iscrowd': False,
+		'labels': res[:,5].to(torch.int64),
+		# 'image_id': id, # TODO: convert to int?
+		# 'area': torchvision.ops.box_area(res[:,:4]),
+		# 'iscrowd': False, # iscorwd is the COCO equivalent of IGNORED_REGIONS
 	}
+
+	bad_labels = (target['labels'] < 0) | (target['labels'] > NUM_CLASSES)
+	if bad_labels.any():
+		logger.error(f'bad labels: {target["labels"][bad_labels]}')
 
 	degenerate_boxes = target['boxes'][:, 2:] <= target['boxes'][:, :2]
 	degenerate_boxes = degenerate_boxes[:,0] | degenerate_boxes[:,1]
@@ -75,17 +94,17 @@ def get_model() -> torch.nn.Module:
 	# We add this attribute for RetinaNet
 	backbone.out_channels = 1280
 
-	if False:
+	if True:
 		for param in backbone.parameters():
 			param.requires_grad = False
 
 	anchor_generator = torchvision.models.detection.anchor_utils.AnchorGenerator(
-		sizes=((32, 64, 128, 256, 512),),
-		aspect_ratios=((0.5, 1.0, 2.0),)
+		sizes=((8, 16, 32, 64, 128),),
+		aspect_ratios=((0.5, 1.0, 2.0),),
 	)
 	model = torchvision.models.detection.retinanet.RetinaNet(
 		backbone,
-		num_classes=12,
+		num_classes=NUM_CLASSES+1,
 		anchor_generator=anchor_generator,
 	)
 
@@ -126,7 +145,7 @@ data_loader_train = torch.utils.data.DataLoader(
 )
 data_loader_test = torch.utils.data.DataLoader(
 	dataset_test,
-	batch_size=8,
+	batch_size=2,
 	collate_fn=utils.collate_fn
 )
 
@@ -153,7 +172,7 @@ for epoch in range(num_epochs):
 			optimizer, start_factor=warmup_factor, total_iters=warmup_iters
 		)
 
-	if True:
+	if False:
 		logger.info('loading model')
 		model.load_state_dict(torch.load('model.pt', weights_only=True))
 	else:
@@ -166,6 +185,8 @@ for epoch in range(num_epochs):
 
 			try:
 				losses: dict = model(images, targets)
+				# TODO: look inside generalized rcnn remove boxes inside
+				# IGNORED_REGIONS before loss calculation.
 			except AssertionError:
 				# print()
 				# TODO: clean data from degenerate boxes
@@ -201,7 +222,7 @@ for epoch in range(num_epochs):
 			test_targets.extend(targets)
 			print(f'epoch: {epoch+1}/{num_epochs} test batch: {batch_i+1}/{test_batch_num}', end='\r')
 
-		mAP = utils.mAP(test_outputs, test_targets, 12)
+		mAP = utils.mAP(test_outputs, test_targets, NUM_CLASSES)
 		print(f'\nmAP: {mAP}')
 
 	print()
