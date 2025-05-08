@@ -18,7 +18,7 @@ import torch
 import torchvision
 from torchvision.transforms import v2
 
-NUM_CLASSES = 11
+NUM_CLASSES = 10
 
 class ObjCat(enum.Enum):
 	IGNORED_REGIONS = 0
@@ -32,7 +32,7 @@ class ObjCat(enum.Enum):
 	AWNING_TRICYCLE = 8
 	BUS             = 9
 	MOTOR           = 10
-	OTHERS          = 11
+	OTHERS          = 11 # Prensent in the documentation but not in the dataset for some reason...
 
 # https://pytorch.org/docs/stable/notes/randomness.html
 torch.manual_seed(42)
@@ -60,26 +60,30 @@ def loadtxt(path: str) -> dict:
 		res = numpy.expand_dims(res, 0)
 	res = torch.tensor(res)
 
-	res[:,:4] = torchvision.ops.box_convert(res[:,:4], "xywh", "xyxy")
+	box = slice(0,4)
+	score = 4
+	object_category = 5
+	truncation = 6
+	occlusion = 7
 
-	## Putting it in COCO format.
-	# id = path[path.rfind('\\')+1:-len('.txt')]
-	target = {
-		'boxes': res[:,:4],
-		'labels': res[:,5].to(torch.int64),
-		# 'image_id': id, # TODO: convert to int?
-		# 'area': torchvision.ops.box_area(res[:,:4]),
-		# 'iscrowd': False, # iscorwd is the COCO equivalent of IGNORED_REGIONS
-	}
+	res = res[res[:,score] == 1]
 
-	bad_labels = (target['labels'] < 0) | (target['labels'] > NUM_CLASSES)
+	res[:,box] = torchvision.ops.box_convert(res[:,:4], "xywh", "xyxy")
+
+	bad_labels = (res[:,object_category] < 0) | (res[:,object_category] > NUM_CLASSES)
 	if bad_labels.any():
-		logger.error(f'bad labels: {target["labels"][bad_labels]}')
+		logger.error(f'bad labels: {res[:,object_category][bad_labels]}')
 
-	degenerate_boxes = target['boxes'][:, 2:] <= target['boxes'][:, :2]
+	degenerate_boxes = res[:,box][:, 2:] <= res[:,box][:, :2]
 	degenerate_boxes = degenerate_boxes[:,0] | degenerate_boxes[:,1]
 	if degenerate_boxes.any():
-		logger.error(f'degenerate boxes: {target["boxes"][degenerate_boxes]}')
+		logger.error(f'degenerate boxes: {res[:,box][degenerate_boxes]}')
+
+	# id = path[path.rfind('\\')+1:-len('.txt')]
+	target = {
+		'boxes': res[:,box],
+		'labels': res[:,object_category].to(torch.int64),
+	}
 
 	return target
 
@@ -94,7 +98,7 @@ def get_model() -> torch.nn.Module:
 	# We add this attribute for RetinaNet
 	backbone.out_channels = 1280
 
-	if True:
+	if False:
 		for param in backbone.parameters():
 			param.requires_grad = False
 
@@ -107,6 +111,11 @@ def get_model() -> torch.nn.Module:
 		num_classes=NUM_CLASSES+1,
 		anchor_generator=anchor_generator,
 	)
+
+	model = torchvision.models.detection.retinanet_resnet50_fpn_v2(
+		weights_backbone=torchvision.models.ResNet50_Weights.IMAGENET1K_V1,
+		num_classes=NUM_CLASSES+1,
+    )
 
 	return model
 
