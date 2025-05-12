@@ -1,3 +1,36 @@
+# Notes on TVM
+
+Under the `include` directory of the TVM project we have:
+
+  * `tvm/runtime/c_runtime_api.h`
+  * `tvm/runtime/c_backend_api.h`
+
+implemetaions can be found in the `src` directory at:
+
+  * `runtime/c_runtime_api.h`
+  * `runtime/cpu_device_api.h`
+  * `runtime/cuda/cuda_device_api.h`
+
+Compilation can be triggered by calling `tvm.runtime.Module.export_lib` which
+internally visits and save all submodules and calls `tvm.runtime.Module.save`
+that internally just calls `tvm.runtime._ffi_api.ModuleSaveToFile`, this is
+just a wrapper for `tvm::runtime::ModuleNode::SaveToFile`. Assuming that we are
+compiling tp C the implementation is
+`tvm::codegen::CSourceModuleNode::SaveToFile` in
+`runtime/target/source/source_module.cc` which just writes the `this->code_`
+member initialized at module creation.
+
+`tvm.compile` vs `tvm.relax.build`
+
+L'ultima versione di TVM in cui è disponibile documentrasione per
+[VTA](https://tvm.apache.org/docs/v0.16.0/topic/vta/index.html)
+e
+[microTVM](https://tvm.apache.org/docs/v0.16.0/topic/microtvm/index.html)
+è la 0.16, ma nella repository il codice rimane fino alla versione
+[0.18](https://github.com/apache/tvm/tree/v0.18.0).
+
+`tvmc` si trova fino alla versione 0.19
+
 # Resources
 
 ## Visdrone
@@ -23,6 +56,11 @@ Algorithms](https://ieeexplore.ieee.org/document/9145130)
 [Comparative Analysis of Object Detection Metrics with a Companion Open-Source
 Toolkit](https://doi.org/10.3390/electronics10030279)
 
+## COCO
+
+https://cocodataset.org/#detection-eval
+https://cocodataset.org/#format-data
+
 # Outdoor configuration
 
 Install Visual Studio
@@ -30,6 +68,8 @@ Install Visual Studio
 [Install Cuda](https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_576.02_windows.exe)
 
 Download Visdrone
+
+Download and models from torch hub
 
 After doing the build with `build.bat` in `PCbuild`
 
