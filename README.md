@@ -23,7 +23,13 @@ Algorithms](https://ieeexplore.ieee.org/document/9145130)
 [Comparative Analysis of Object Detection Metrics with a Companion Open-Source
 Toolkit](https://doi.org/10.3390/electronics10030279)
 
-# Outdoor Python
+# Outdoor configuration
+
+Install Visual Studio
+
+[Install Cuda](https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_576.02_windows.exe)
+
+Download Visdrone
 
 After doing the build with `build.bat` in `PCbuild`
 
@@ -33,6 +39,7 @@ After doing the build with `build.bat` in `PCbuild`
 .\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d .\wheelhouse
 REM On the offline PC
 .\python.exe -m venv myvenv
+REM Activate virtual environment
 pip install --no-index --find-links .\wheelhouse -r requirements.txt
 pip install --no-index --find-links .\wheelhouse torch torchvision
 ```
