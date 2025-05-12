@@ -1,6 +1,7 @@
 # Retina net backbone's is resnet
 #
 
+import argparse
 import multiprocessing.pool
 import os
 import io
@@ -92,28 +93,32 @@ class LoadImage(torch.nn.Module):
 		return torchvision.io.read_image(pair[0]), pair[1]
 
 def get_model() -> torch.nn.Module:
-	backbone = torchvision.models.mobilenet_v2(
-		weights=torchvision.models.MobileNet_V2_Weights.DEFAULT
-	).features
-	# We add this attribute for RetinaNet
-	backbone.out_channels = 1280
+	if False:
+		backbone = torchvision.models.mobilenet_v2(
+			weights=torchvision.models.MobileNet_V2_Weights.DEFAULT
+		).features
+		# We add this attribute for RetinaNet
+		backbone.out_channels = 1280
+
+		if False:
+			for param in backbone.parameters():
+				param.requires_grad = False
+
+		anchor_generator = torchvision.models.detection.anchor_utils.AnchorGenerator(
+			sizes=((8, 16, 32, 64, 128),),
+			aspect_ratios=((0.5, 1.0, 2.0),),
+		)
+		model = torchvision.models.detection.retinanet.RetinaNet(
+			backbone,
+			num_classes=NUM_CLASSES+1,
+			anchor_generator=anchor_generator,
+		)
 
 	if False:
-		for param in backbone.parameters():
-			param.requires_grad = False
-
-	anchor_generator = torchvision.models.detection.anchor_utils.AnchorGenerator(
-		sizes=((8, 16, 32, 64, 128),),
-		aspect_ratios=((0.5, 1.0, 2.0),),
-	)
-	model = torchvision.models.detection.retinanet.RetinaNet(
-		backbone,
-		num_classes=NUM_CLASSES+1,
-		anchor_generator=anchor_generator,
-	)
-
-	model = torchvision.models.detection.retinanet_resnet50_fpn_v2(
-		weights_backbone=torchvision.models.ResNet50_Weights.IMAGENET1K_V1,
+		model = torchvision.models.detection.retinanet_resnet50_fpn_v2(
+	-               weights_backbone=torchvision.models.ResNet50_Weights.IMAGENET1K_V1,
+		)
+	model = torchvision.models.detection.ssd300_vgg16(
 		num_classes=NUM_CLASSES+1,
     )
 
@@ -125,11 +130,17 @@ def get_paths(dir_path: str) -> list[str]:
 	fnames = [os.path.join(dir_path, fname) for fname in fnames]
 	return fnames
 
-train_data_paths = get_paths(r"D:\Datasets\VisDrone2019-DET\train\images")
-train_labels_paths = get_paths(r"D:\Datasets\VisDrone2019-DET\train\annotations")
+parser = argparse.ArgumentParser()
+parser.add_argument('-train')
+parser.add_argument('-test-dev')
 
-test_data_paths = get_paths(r"D:\Datasets\VisDrone2019-DET\test-dev\images")
-test_labels_paths = get_paths(r"D:\Datasets\VisDrone2019-DET\test-dev\annotations")
+args = parser.parse_args()
+
+train_data_paths = get_paths(os.path.join(args.train, 'images'))
+train_labels_paths = get_paths(os.path.join(args.train, 'annotations'))
+
+test_data_paths = get_paths(os.path.join(args.test_dev, 'images'))
+test_labels_paths = get_paths(os.path.join(args.test_dev, 'annotations'))
 
 with multiprocessing.pool.ThreadPool() as pool:
 	# train_data = pool.map(torchvision.io.read_image, train_data_paths)
@@ -137,6 +148,11 @@ with multiprocessing.pool.ThreadPool() as pool:
 	# test_data = pool.map(torchvision.io.read_image, test_data_paths)
 	test_labels = pool.map(loadtxt, test_labels_paths)
 
+# TODO: apply this transformations for training
+# torchvision.transforms.v2.RandomPhotometricDistort
+# torchvision.transforms.v2.RandomZoomOut
+# torchvision.transforms.v2.RandomCrop
+# torchvision.transforms.v2.RandomHorizontalFlip
 train_visdrone = list(zip(train_data_paths, train_labels))
 dataset_train = utils.ListDataset(train_visdrone, v2.Compose([LoadImage(), v2.ToDtype(torch.float32, scale=True)]))
 test_visdrone = list(zip(test_data_paths, test_labels))
@@ -162,7 +178,7 @@ model = get_model()
 model.to(device)
 
 params = [p for p in model.parameters() if p.requires_grad]
-optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
+optimizer = torch.optim.SGD(params, lr=0.0005, momentum=0.9, weight_decay=0.0005)
 # optimizer = torch.optim.AdamW(params, lr=0.005, weight_decay=0.0005)
 # lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
@@ -208,6 +224,7 @@ for epoch in range(num_epochs):
 
 			optimizer.zero_grad()
 			loss.backward()
+			torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
 			optimizer.step()
 
 			if lr_scheduler: lr_scheduler.step()
