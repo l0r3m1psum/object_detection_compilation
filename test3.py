@@ -65,6 +65,10 @@ with target:
 mod.show()
 
 ex = tvm.compile(mod, target=target)
+# TODO: move this to anoter file...
+# ex.mod.export_library('f.dll', workspace_dir='d')
+# For some reason the above statement fails... This command below does what the previous statement tried to do
+# link /dll MSVCRT.LIB d\lib0.o d\devc.o /out:f.dll
 vm = relax.VirtualMachine(ex, device)
 data = tvm.nd.array(np.random.rand(*input_shape).astype("float32"), device)
 gpu_params = [tvm.nd.array(np.random.rand(*p.shape).astype(p.dtype), device) for _, p in params]
