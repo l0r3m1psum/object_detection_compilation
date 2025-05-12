@@ -22,11 +22,11 @@ member initialized at module creation.
 
 `tvm.compile` vs `tvm.relax.build`
 
-L'ultima versione di TVM in cui è disponibile documentrasione per
+L'ultima versione di TVM in cui Ã¨ disponibile documentrasione per
 [VTA](https://tvm.apache.org/docs/v0.16.0/topic/vta/index.html)
 e
 [microTVM](https://tvm.apache.org/docs/v0.16.0/topic/microtvm/index.html)
-è la 0.16, ma nella repository il codice rimane fino alla versione
+Ã¨ la 0.16, ma nella repository il codice rimane fino alla versione
 [0.18](https://github.com/apache/tvm/tree/v0.18.0).
 
 `tvmc` si trova fino alla versione 0.19
@@ -60,6 +60,10 @@ Toolkit](https://doi.org/10.3390/electronics10030279)
 
 https://cocodataset.org/#detection-eval
 https://cocodataset.org/#format-data
+
+## PASCAL VOC
+
+http://host.robots.ox.ac.uk/pascal/VOC/
 
 # Outdoor configuration
 
