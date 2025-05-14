@@ -10,7 +10,7 @@ call config.bat
 
 REM pip install -r requirements_tvm.txt || goto :exit
 pushd submodules\tvm || goto :exit
-    git submodule update --init --recursive || goto :exit
+    REM git submodule update --init --recursive || goto :exit
     if not exist build (mkdir build || goto :exit)
     pushd build || goto :exit
         copy /y ..\cmake\config.cmake . || goto :exit
@@ -31,6 +31,24 @@ pushd submodules\tvm || goto :exit
         "print(tvm.__file__); " ^
         "print(tvm._ffi.base._LIB); " ^
         "print('\n'.join(f'{k}: {v}' for k, v in tvm.support.libinfo().items()))" || goto :exit
+
+    if not exist 3rdparty\dlpack\build (mkdir 3rdparty\dlpack\build || goto :exit)
+    pushd 3rdparty\dlpack\build || goto :exit
+        cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
+            -DBUILD_MOCK=no ^
+            -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dlpack ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
+        cmake --build . --target install --parallel %ncores%
+    popd || goto :exit
+
+    if not exist 3rdparty\dmlc-core\build (mkdir 3rdparty\dmlc-core\build || goto :exit)
+    pushd 3rdparty\dmlc-core\build || goto :exit
+        cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
+            -DBUILD_MOCK=no ^
+            -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dmlc ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
+        cmake --build . --target install --parallel %ncores%
+    popd || goto :exit
 popd || goto :exit
 
 endlocal
