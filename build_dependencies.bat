@@ -3,9 +3,7 @@ REM Build all dependencies for the project
 
 setlocal
 
-REM TODO: take them as parameters from the command line
-set installdir=D:
-set ncores=24
+call config.bat
 
 pushd submodules
     pushd llvm-project

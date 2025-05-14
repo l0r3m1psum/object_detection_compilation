@@ -6,8 +6,7 @@ REM vcvarsall.bat has been invoked to correctly setup the build environment.
 
 setlocal
 
-set installdir=D:
-set ncores=24
+call config.bat
 
 REM pip install -r requirements_tvm.txt || goto :exit
 pushd submodules\tvm || goto :exit

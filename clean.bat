@@ -2,7 +2,7 @@
 
 setlocal
 
-set installdir=D:
+call config.bat
 
 rmdir /s /q submodules\cpython/PCbuild/amd64
 rmdir /s /q submodules\cpython/PCbuild/obj
