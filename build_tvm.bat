@@ -10,7 +10,7 @@ set installdir=D:
 set ncores=24
 
 REM pip install -r requirements_tvm.txt || goto :exit
-pushd tvm || goto :exit
+pushd submodules\tvm || goto :exit
     git submodule update --init --recursive || goto :exit
     if not exist build (mkdir build || goto :exit)
     pushd build || goto :exit
