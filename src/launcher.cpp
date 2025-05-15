@@ -6,6 +6,7 @@
 #include <tvm/runtime/packed_func.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/runtime/relax_vm/vm.h>
+#include <tvm/runtime/disco/builtin.h>
 
 std::ostream& operator<<(std::ostream& os, const tvm::Array<tvm::String>& strings) {
   os << '[';
@@ -85,5 +86,60 @@ int main() {
   c.CopyToBytes(my_c, sizeof my_c);
 
   std::cout << my_c[0] << '\n';
+
+  if (false) {
+    // FIXME: brokewn for some reason...
+    tvm::runtime::Module mod2 = tvm::runtime::LoadVMModule(file_so, DLDevice{kDLCPU, 0});
+    std::cout << mod2->type_key() << '\n';
+  }
+
+  {
+    tvm::runtime::Module vm = (mod.GetFunction("vm_load_executable")()).operator tvm::runtime::Module();
+    std::cout << vm->type_key() << '\n';
+
+    tvm::runtime::PackedFunc vm_initialization = vm.GetFunction("vm_initialization");
+    vm_initialization(tvm::runtime::Int{1}, tvm::runtime::Int{0}, tvm::runtime::Int{2});
+    tvm::runtime::PackedFunc forward = vm.GetFunction("forward", true);
+    if (!forward.defined()) {
+      std::cerr << "cannot get " << "forward" << '\n';
+      return 1;
+    }
+
+    std::cout << (forward == nullptr) << '\n';
+
+    tvm::runtime::NDArray x = tvm::runtime::NDArray::Empty(
+      {1, 784},
+      DLDataType{kDLFloat, 32, 1},
+      DLDevice{kDLCPU, 0}
+    );
+    tvm::runtime::NDArray w1 = tvm::runtime::NDArray::Empty(
+      {784, 256},
+      DLDataType{kDLFloat, 32, 1},
+      DLDevice{kDLCPU, 0}
+    );
+    tvm::runtime::NDArray b1 = tvm::runtime::NDArray::Empty(
+      {1, 256},
+      DLDataType{kDLFloat, 32, 1},
+      DLDevice{kDLCPU, 0}
+    );
+    tvm::runtime::NDArray w2 = tvm::runtime::NDArray::Empty(
+      {256, 10},
+      DLDataType{kDLFloat, 32, 1},
+      DLDevice{kDLCPU, 0}
+    );
+    tvm::runtime::NDArray y = tvm::runtime::NDArray::Empty(
+      {1, 10},
+      DLDataType{kDLFloat, 32, 1},
+      DLDevice{kDLCPU, 0}
+    );
+
+    tvm::runtime::TVMRetValue rv = forward(x, w1, b1, w2);
+    if (rv.type_code() != kTVMNDArrayHandle) {
+      std::cerr << "not an array\n";
+      return 1;
+    }
+    tvm::runtime::NDArray res = rv.operator tvm::runtime::NDArray();
+  }
+  // *(std::string *)((unsigned char *)&key - 8)
   return 0;
 }

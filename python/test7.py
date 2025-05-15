@@ -23,6 +23,25 @@ mod, params = RelaxModel().export_tvm({"forward": {"x": nn.spec.Tensor(input_sha
 # mod.show()
 
 target = tvm.target.Target('llvm')
-ex = tvm.compile(mod, target=target)
+# ex = tvm.compile(mod, target=target)
+ex = tvm.relax.build(
+	mod,
+	target=target,
+	params=None,
+	relax_pipeline="default",
+	tir_pipeline="default",
+	exec_mode="compiled"
+)
 if not os.path.exists('build'): os.mkdir('build')
-ex.export_library('build/mlp.dll')
+ex.export_library(
+	'build/mlp.dll',
+	workspace_dir='build',
+	options=['-L', 'D:\\Programs\\TVM\\lib', '-l', 'tvm']
+)
+ex.export_library(
+	'build/mlp.tar',
+	workspace_dir='build',
+)
+
+vm = relax.VirtualMachine(ex, tvm.device('cpu'))
+# vm['forward']

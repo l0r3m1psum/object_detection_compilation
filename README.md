@@ -20,7 +20,7 @@ compiling tp C the implementation is
 `runtime/target/source/source_module.cc` which just writes the `this->code_`
 member initialized at module creation.
 
-`tvm.compile` vs `tvm.relax.build`
+`tvm.compile` internally calls `tvm.relax.build` or `tvm.tir.build`.
 
 L'ultima versione di TVM in cui è disponibile documentrasione per
 [VTA](https://tvm.apache.org/docs/v0.16.0/topic/vta/index.html)

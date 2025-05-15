@@ -19,6 +19,14 @@ pushd submodules\tvm || goto :exit
         echo set(HIDE_PRIVATE_SYMBOLS ON) >> config.cmake || goto :exit
         echo set(USE_CUDA ON) >> config.cmake || goto :exit
         echo set(USE_CUBLAS ON) >> config.cmake || goto :exit
+
+        REM echo set(SUMMARIZE ON) >> config.cmake || goto :exit
+        REM %installdir%=%installdir:\=\\%
+        REM echo set(CMAKE_C_COMPILER %installdir%\\Programs\\LLVM\\bin\\clang.exe) >> config.cmake || goto :exit
+        REM echo set(CMAKE_CXX_COMPILER %installdir%\\Programs\\LLVM\\bin\\clang++.exe) >> config.cmake || goto :exit
+        REM %installdir%=%installdir:\\=/%
+        REM %installdir%=%installdir:/=\%
+
         cmake -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\TVM .. || goto :exit
         REM Needed because otherwise LINK.EXE cannot find tvm.lib
         set "LINK=/LIBPATH:%CD%\Debug" || goto :exit
@@ -37,8 +45,8 @@ pushd submodules\tvm || goto :exit
         cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
             -DBUILD_MOCK=no ^
             -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dlpack ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
-        cmake --build . --target install --parallel %ncores%
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
+        cmake --build . --target install --parallel %ncores% || goto :exit
     popd || goto :exit
 
     if not exist 3rdparty\dmlc-core\build (mkdir 3rdparty\dmlc-core\build || goto :exit)
@@ -46,8 +54,8 @@ pushd submodules\tvm || goto :exit
         cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
             -DBUILD_MOCK=no ^
             -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dmlc ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
-        cmake --build . --target install --parallel %ncores%
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
+        cmake --build . --target install --parallel %ncores% || goto :exit
     popd || goto :exit
 popd || goto :exit
 
