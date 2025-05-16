@@ -4,17 +4,19 @@ setlocal
 
 call config.bat
 
-rmdir /s /q submodules\cpython/PCbuild/amd64
-rmdir /s /q submodules\cpython/PCbuild/obj
-rmdir /s /q submodules\cpython/PCbuild/win32
+rmdir /s /q submodules\cpython\PCbuild\amd64
+rmdir /s /q submodules\cpython\PCbuild\obj
+rmdir /s /q submodules\cpython\PCbuild\win32
 
-rmdir /s /q submodules\llvm-project/llvm/build
-rmdir /s /q submodules\llvm-project/clang/build
+rmdir /s /q submodules\llvm-project\llvm\build
+rmdir /s /q submodules\llvm-project\clang\build
 
-rmdir /s /q submodules\tvm/build
+rmdir /s /q submodules\tvm\build
 
 rmdir /s /q %installdir%\Programs\LLVM
 rmdir /s /q %installdir%\Programs\Python
 rmdir /s /q %installdir%\Programs\TVM
+rmdir /s /q %installdir%\Programs\dlpack
+rmdir /s /q %installdir%\Programs\dmlc
 
 endlocal
