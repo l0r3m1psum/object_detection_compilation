@@ -36,7 +36,7 @@ if not os.path.exists('build'): os.mkdir('build')
 ex.export_library(
 	'build/mlp.dll',
 	workspace_dir='build',
-	options=['-L', 'D:\\Programs\\TVM\\lib', '-l', 'tvm']
+	options=['-L', os.path.expandvars('%installdir%\\Programs\\TVM\\lib'), '-l', 'tvm']
 )
 ex.export_library(
 	'build/mlp.tar',

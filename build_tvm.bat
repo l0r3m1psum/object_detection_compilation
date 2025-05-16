@@ -21,16 +21,13 @@ pushd submodules\tvm || goto :exit
         echo set(USE_CUBLAS ON) >> config.cmake || goto :exit
 
         REM echo set(SUMMARIZE ON) >> config.cmake || goto :exit
-        REM %installdir%=%installdir:\=\\%
-        REM echo set(CMAKE_C_COMPILER %installdir%\\Programs\\LLVM\\bin\\clang.exe) >> config.cmake || goto :exit
-        REM echo set(CMAKE_CXX_COMPILER %installdir%\\Programs\\LLVM\\bin\\clang++.exe) >> config.cmake || goto :exit
-        REM %installdir%=%installdir:\\=/%
-        REM %installdir%=%installdir:/=\%
+        REM echo set(CMAKE_C_COMPILER "%installdir:\=\\%\\Programs\\LLVM\\bin\\clang-cl.exe") >> config.cmake || goto :exit
+        REM echo set(CMAKE_CXX_COMPILER "%installdir:\=\\%\\Programs\\LLVM\\bin\\clang-cl.exe") >> config.cmake || goto :exit
 
         cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\TVM" .. || goto :exit
         REM Needed because otherwise LINK.EXE cannot find tvm.lib
-        set "LINK=/LIBPATH:%CD%\Debug" || goto :exit
-        cmake --build . --target install --parallel %ncores% || goto :exit
+        set "LINK=/LIBPATH:%CD%\Debug /LIBPATH:%installdir%\Programs\Python\libs" || goto :exit
+        cmake --build . --verbose --target install --parallel %ncores% || goto :exit
         set "TVM_LIBRARY_PATH=%CD%\Debug" || goto :exit
     popd || goto :exit
     set "LINK=/LIBPATH:%installdir%\Programs\Python\libs /LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit

@@ -17,7 +17,7 @@ cl /std:c++17 /ZI ^
     /Fe".\build\launcher.exe" ^
     /Fd".\build\launcher.pdb" ^
     /link ^
-    /LIBPATH:%installdir%\Programs\TVM\lib || goto :exit
+    "/LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit
 
 python python\test7.py || goto :exit
 

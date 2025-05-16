@@ -1,5 +1,6 @@
 
 REM TODO: take them as parameters from the command line
-set installdir=D:
-set ncores=24
+REM TODO: if not passed via command line prompt user https://stackoverflow.com/a/1223737
+set "installdir=%userprofile%"
+set ncores=10
 set venvdir=nnc
