@@ -13,10 +13,10 @@ rmdir /s /q submodules\llvm-project\clang\build
 
 rmdir /s /q submodules\tvm\build
 
-rmdir /s /q %installdir%\Programs\LLVM
-rmdir /s /q %installdir%\Programs\Python
-rmdir /s /q %installdir%\Programs\TVM
-rmdir /s /q %installdir%\Programs\dlpack
-rmdir /s /q %installdir%\Programs\dmlc
+rmdir /s /q "%installdir%\Programs\LLVM"
+rmdir /s /q "%installdir%\Programs\Python"
+rmdir /s /q "%installdir%\Programs\TVM"
+rmdir /s /q "%installdir%\Programs\dlpack"
+rmdir /s /q "%installdir%\Programs\dmlc"
 
 endlocal

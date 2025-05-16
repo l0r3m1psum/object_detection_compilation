@@ -27,12 +27,13 @@ pushd submodules\tvm || goto :exit
         REM %installdir%=%installdir:\\=/%
         REM %installdir%=%installdir:/=\%
 
-        cmake -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\TVM .. || goto :exit
+        cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\TVM" .. || goto :exit
         REM Needed because otherwise LINK.EXE cannot find tvm.lib
         set "LINK=/LIBPATH:%CD%\Debug" || goto :exit
         cmake --build . --target install --parallel %ncores% || goto :exit
         set "TVM_LIBRARY_PATH=%CD%\Debug" || goto :exit
     popd || goto :exit
+    set "LINK=/LIBPATH:%installdir%\Programs\Python\libs /LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit
     pip install .\python || goto :exit
     REM FIXME: it does not print!
     python -c "import tvm; " ^
@@ -44,7 +45,7 @@ pushd submodules\tvm || goto :exit
     pushd 3rdparty\dlpack\build || goto :exit
         cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
             -DBUILD_MOCK=no ^
-            -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dlpack ^
+            "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dlpack" ^
             -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
         cmake --build . --target install --parallel %ncores% || goto :exit
     popd || goto :exit
@@ -53,7 +54,7 @@ pushd submodules\tvm || goto :exit
     pushd 3rdparty\dmlc-core\build || goto :exit
         cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
             -DBUILD_MOCK=no ^
-            -DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dmlc ^
+            "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dmlc" ^
             -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
         cmake --build . --target install --parallel %ncores% || goto :exit
     popd || goto :exit
