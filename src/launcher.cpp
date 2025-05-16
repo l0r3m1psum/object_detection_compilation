@@ -113,17 +113,17 @@ int main() {
       DLDevice{kDLCPU, 0}
     );
     tvm::runtime::NDArray w1 = tvm::runtime::NDArray::Empty(
-      {784, 256},
+      {256, 784},
       DLDataType{kDLFloat, 32, 1},
       DLDevice{kDLCPU, 0}
     );
     tvm::runtime::NDArray b1 = tvm::runtime::NDArray::Empty(
-      {1, 256},
+      {256},
       DLDataType{kDLFloat, 32, 1},
       DLDevice{kDLCPU, 0}
     );
     tvm::runtime::NDArray w2 = tvm::runtime::NDArray::Empty(
-      {256, 10},
+      {10, 256},
       DLDataType{kDLFloat, 32, 1},
       DLDevice{kDLCPU, 0}
     );
