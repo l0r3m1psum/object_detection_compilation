@@ -92,3 +92,15 @@ pip install --no-index --find-links .\wheelhouse torch torchvision
 
 note that somehow the default sys.path is set to the module in cpython's source
 tree. To build a windows installer you have to go to `Tools\msi\build.bat`
+
+```
+import torch
+import torchvision
+import safetensors.torch
+import ssl
+
+ssl._create_default_https_context = ssl._create_stdlib_context
+torch.hub.set_dir(os.path.expandvars('%installdir%\\Programs\\hub'))
+model = torchvision.models.resnet.resnet18(weights='DEFAULT')
+safetensors.torch.save_file(model.state_dict(), 'resnet50.safetensors')
+```
