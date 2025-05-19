@@ -45,6 +45,12 @@ pushd submodules
         popd
     popd
 
+    if not exist safetensors-cpp\build (mkdir safetensors-cpp\build || goto :exit)
+    pushd safetensors-cpp\build
+        cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\safetensors" .. || goto :exit
+        cmake --build . --target install || goto :exit
+    popd
+
 popd
 
 endlocal
