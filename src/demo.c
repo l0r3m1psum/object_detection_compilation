@@ -52,7 +52,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
     }
 
     HANDLE hWndMain = CreateWindow(
-        cls,
+        (LPCTSTR)cls,
         TEXT("WebCam Viewer"),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
