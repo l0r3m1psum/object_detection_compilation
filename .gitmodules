@@ -10,3 +10,6 @@
 [submodule "submodules/llvm-project"]
 	path = submodules/llvm-project
 	url = https://github.com/llvm/llvm-project.git
+[submodule "submodules/safetensors-cpp"]
+	path = submodules/safetensors-cpp
+	url = https://github.com/syoyo/safetensors-cpp.git
