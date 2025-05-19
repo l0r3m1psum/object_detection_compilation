@@ -88,8 +88,9 @@ int main() {
   std::cout << my_c[0] << '\n';
 
   if (false) {
-    // FIXME: brokewn for some reason...
-    tvm::runtime::Module mod2 = tvm::runtime::LoadVMModule(file_so, DLDevice{kDLCPU, 0});
+    // FIXME: Seems to be broken for another compiler bug?
+    const std::string& file_so_copy = file_so;
+    tvm::runtime::Module mod2 = tvm::runtime::LoadVMModule(file_so_copy, DLDevice{kDLCPU, 0});
     std::cout << mod2->type_key() << '\n';
   }
 
