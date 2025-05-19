@@ -69,8 +69,6 @@ http://host.robots.ox.ac.uk/pascal/VOC/
 
 Install Visual Studio
 
-[Install Cuda](https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_576.02_windows.exe)
-
 Download Visdrone
 
 Download and models from torch hub
@@ -78,6 +76,10 @@ Download and models from torch hub
 After doing the build with `build.bat` in `PCbuild`
 
 ```
+pushd %installdir%\Programs
+    curl -O "https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_576.02_windows.exe"
+popd
+git submodule update --init --recursive
 .\python.exe -m ensurepip
 .\python.exe -m pip download -r requirements.txt -d "%installdir%\Programs\wheelhouse"
 .\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d "%installdir%\Programs\wheelhouse"
