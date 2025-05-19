@@ -79,8 +79,8 @@ After doing the build with `build.bat` in `PCbuild`
 
 ```
 .\python.exe -m ensurepip
-.\python.exe -m pip download -r requirements.txt -d .\wheelhouse
-.\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d .\wheelhouse
+.\python.exe -m pip download -r requirements.txt -d "%installdir%\Programs\wheelhouse"
+.\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d "%installdir%\Programs\wheelhouse"
 REM On the offline PC
 .\python.exe -m venv myvenv
 REM Activate virtual environment
