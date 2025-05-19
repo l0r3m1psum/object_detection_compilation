@@ -31,12 +31,9 @@ pushd submodules\tvm || goto :exit
         set "TVM_LIBRARY_PATH=%CD%\Debug" || goto :exit
     popd || goto :exit
     set "LINK=/LIBPATH:%installdir%\Programs\Python\libs /LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit
-    pip install .\python || goto :exit
-    REM FIXME: it does not print!
-    python -c "import tvm; " ^
-        "print(tvm.__file__); " ^
-        "print(tvm._ffi.base._LIB); " ^
-        "print('\n'.join(f'{k}: {v}' for k, v in tvm.support.libinfo().items()))" || goto :exit
+    REM --no-build-isolation makes it faster
+    pip install --verbose --no-build-isolation --no-index --find-links "%installdir%\Programs\wheelhouse" .\python || goto :exit
+    REM python -c "import tvm; print(tvm.__file__); print(tvm._ffi.base._LIB); print('\n'.join(f'{k}: {v}' for k, v in tvm.support.libinfo().items()))" || goto :exit
 
     if not exist 3rdparty\dlpack\build (mkdir 3rdparty\dlpack\build || goto :exit)
     pushd 3rdparty\dlpack\build || goto :exit
