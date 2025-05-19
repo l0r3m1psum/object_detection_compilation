@@ -55,37 +55,37 @@ int main() {
   tvm::runtime::PackedFunc func = (*mod_node).GetFunction(function_name, true);
   if (!func.defined()) {
     std::cerr << "cannot get " << function_name << '\n';
-    return 1;
   }
+  else {
+    static float my_a[256], my_b[256], my_c[256];
 
-  static float my_a[256], my_b[256], my_c[256];
+    for (int i = 0; i < 256; i++) {
+        my_a[i] = 1.0f;
+        my_b[i] = 2.0f;
+    }
+    tvm::runtime::NDArray a = tvm::runtime::NDArray::Empty(
+        { 1, 256 }, // outpur of matmul has two dimensions
+        DLDataType{ kDLFloat, 32, 1 },
+        DLDevice{ kDLCPU, 0 }
+    );
+    tvm::runtime::NDArray b = tvm::runtime::NDArray::Empty(
+        { 256 },
+        DLDataType{ kDLFloat, 32, 1 },
+        DLDevice{ kDLCPU, 0 }
+    );
+    tvm::runtime::NDArray c = tvm::runtime::NDArray::Empty(
+        { 1, 256 },
+        DLDataType{ kDLFloat, 32, 1 },
+        DLDevice{ kDLCPU, 0 }
+    );
 
-  for (int i = 0; i < 256; i++) {
-    my_a[i] = 1.0f;
-    my_b[i] = 2.0f;
+    a.CopyFromBytes(my_a, sizeof my_a);
+    b.CopyFromBytes(my_b, sizeof my_b);
+    func(a, b, c); // DPS
+    c.CopyToBytes(my_c, sizeof my_c);
+
+    std::cout << my_c[0] << '\n';
   }
-  tvm::runtime::NDArray a = tvm::runtime::NDArray::Empty(
-    {1, 256}, // outpur of matmul has two dimensions
-    DLDataType{kDLFloat, 32, 1},
-    DLDevice{kDLCPU, 0}
-  );
-  tvm::runtime::NDArray b = tvm::runtime::NDArray::Empty(
-    {256},
-    DLDataType{kDLFloat, 32, 1},
-    DLDevice{kDLCPU, 0}
-  );
-  tvm::runtime::NDArray c = tvm::runtime::NDArray::Empty(
-    {1, 256},
-    DLDataType{kDLFloat, 32, 1},
-    DLDevice{kDLCPU, 0}
-  );
-
-  a.CopyFromBytes(my_a, sizeof my_a);
-  b.CopyFromBytes(my_b, sizeof my_b);
-  func(a, b, c); // DPS
-  c.CopyToBytes(my_c, sizeof my_c);
-
-  std::cout << my_c[0] << '\n';
 
   if (false) {
     // FIXME: Seems to be broken for another compiler bug?
@@ -99,7 +99,11 @@ int main() {
     std::cout << vm->type_key() << '\n';
 
     tvm::runtime::PackedFunc vm_initialization = vm.GetFunction("vm_initialization");
-    vm_initialization(tvm::runtime::Int{1}, tvm::runtime::Int{0}, tvm::runtime::Int{2});
+    // vm_initialization(tvm::runtime::Int{1}, tvm::runtime::Int{0}, tvm::runtime::Int{2});
+    vm_initialization(
+        static_cast<int>(kDLCUDA), 0, static_cast<int>(tvm::runtime::memory::AllocatorType::kPooled),
+        static_cast<int>(kDLCPU),  0, static_cast<int>(tvm::runtime::memory::AllocatorType::kPooled)
+    );
     tvm::runtime::PackedFunc forward = vm.GetFunction("forward", true);
     if (!forward.defined()) {
       std::cerr << "cannot get " << "forward" << '\n';
@@ -108,31 +112,13 @@ int main() {
 
     std::cout << (forward == nullptr) << '\n';
 
-    tvm::runtime::NDArray x = tvm::runtime::NDArray::Empty(
-      {1, 784},
-      DLDataType{kDLFloat, 32, 1},
-      DLDevice{kDLCPU, 0}
-    );
-    tvm::runtime::NDArray w1 = tvm::runtime::NDArray::Empty(
-      {256, 784},
-      DLDataType{kDLFloat, 32, 1},
-      DLDevice{kDLCPU, 0}
-    );
-    tvm::runtime::NDArray b1 = tvm::runtime::NDArray::Empty(
-      {256},
-      DLDataType{kDLFloat, 32, 1},
-      DLDevice{kDLCPU, 0}
-    );
-    tvm::runtime::NDArray w2 = tvm::runtime::NDArray::Empty(
-      {10, 256},
-      DLDataType{kDLFloat, 32, 1},
-      DLDevice{kDLCPU, 0}
-    );
-    tvm::runtime::NDArray y = tvm::runtime::NDArray::Empty(
-      {1, 10},
-      DLDataType{kDLFloat, 32, 1},
-      DLDevice{kDLCPU, 0}
-    );
+    DLDevice device{ kDLCUDA, 0 };
+    DLDataType datatype{ kDLFloat, 32, 1 };
+    tvm::runtime::NDArray x  = tvm::runtime::NDArray::Empty({1, 784}, datatype, device);
+    tvm::runtime::NDArray w1 = tvm::runtime::NDArray::Empty({256, 784}, datatype, device);
+    tvm::runtime::NDArray b1 = tvm::runtime::NDArray::Empty({256}, datatype, device);
+    tvm::runtime::NDArray w2 = tvm::runtime::NDArray::Empty({10, 256}, datatype, device);
+    tvm::runtime::NDArray y  = tvm::runtime::NDArray::Empty({1, 10}, datatype, device);
 
     tvm::runtime::TVMRetValue rv = forward(x, w1, b1, w2);
     if (rv.type_code() != kTVMNDArrayHandle) {

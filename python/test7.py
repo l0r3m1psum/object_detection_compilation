@@ -21,27 +21,46 @@ class RelaxModel(nn.Module):
 input_shape = (1, 784)
 mod, params = RelaxModel().export_tvm({"forward": {"x": nn.spec.Tensor(input_shape, "float32")}})
 # mod.show()
+options = [
+	'-g',
+	'-L', os.path.expandvars('%installdir%\\Programs\\TVM\\lib'),
+	'-l', 'tvm',
+	'-Wl,/DEBUG:FULL,/PDB:build\\mlp.pdb',
+]
+gen = 'gpu'
 
-target = tvm.target.Target('llvm')
-# ex = tvm.compile(mod, target=target)
-ex = tvm.relax.build(
-	mod,
-	target=target,
-	params=None,
-	relax_pipeline="default",
-	tir_pipeline="default",
-	exec_mode="compiled"
-)
+if gen == 'gpu':
+	target = tvm.target.Target('cuda')
+	with target:
+		cuda_mod = tvm.ir.transform.Sequential([
+			tvm.relax.get_pipeline("zero"),
+			tvm.dlight.ApplyDefaultSchedule(
+				tvm.dlight.gpu.Matmul(),
+				tvm.dlight.gpu.GEMV(),
+				tvm.dlight.gpu.Reduction(),
+				tvm.dlight.gpu.GeneralReduction(),
+				tvm.dlight.gpu.Fallback(),
+			),
+		])(mod)
+
+	ex = tvm.compile(cuda_mod, target)
+elif gen == 'cpu':
+	target = tvm.target.Target('llvm')
+	# ex = tvm.compile(mod, target=target)
+	ex = tvm.relax.build(
+		mod,
+		target=target,
+		params=None,
+		relax_pipeline="default",
+		tir_pipeline="default",
+		exec_mode="compiled"
+	)
+else:
+	assert False
+
 if not os.path.exists('build'): os.mkdir('build')
 ex.export_library(
 	'build/mlp.dll',
 	workspace_dir='build',
-	options=['-L', os.path.expandvars('%installdir%\\Programs\\TVM\\lib'), '-l', 'tvm']
+	options=options
 )
-ex.export_library(
-	'build/mlp.tar',
-	workspace_dir='build',
-)
-
-vm = relax.VirtualMachine(ex, tvm.device('cpu'))
-# vm['forward']
