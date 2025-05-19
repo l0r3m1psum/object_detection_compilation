@@ -47,8 +47,9 @@ pushd submodules
 
     if not exist safetensors-cpp\build (mkdir safetensors-cpp\build || goto :exit)
     pushd safetensors-cpp\build
-        cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\safetensors" .. || goto :exit
-        cmake --build . --target install || goto :exit
+        cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\safetensors" ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
+        cmake --build . --target install --parallel %ncores% || goto :exit
     popd
 
 popd
