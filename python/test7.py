@@ -1,5 +1,7 @@
 import os
 
+import utils
+
 import tvm
 from tvm import IRModule, relax
 from tvm.relax.frontend import nn
@@ -17,16 +19,9 @@ class RelaxModel(nn.Module):
 		x = self.fc2(x)
 		return x
 
-
 input_shape = (1, 784)
 mod, params = RelaxModel().export_tvm({"forward": {"x": nn.spec.Tensor(input_shape, "float32")}})
 # mod.show()
-options = [
-	'-g',
-	'-L', os.path.expandvars('%installdir%\\Programs\\TVM\\lib'),
-	'-l', 'tvm',
-	'-Wl,/DEBUG:FULL,/PDB:build\\mlp.pdb',
-]
 gen = 'gpu'
 
 if gen == 'gpu':
@@ -59,8 +54,4 @@ else:
 	assert False
 
 if not os.path.exists('build'): os.mkdir('build')
-ex.export_library(
-	'build/mlp.dll',
-	workspace_dir='build',
-	options=options
-)
+ex.export_library(**utils.get_export_library_args('mlp'))

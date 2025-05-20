@@ -1,5 +1,6 @@
 import typing
 import logging
+import os
 
 import torch
 import torchvision
@@ -33,6 +34,19 @@ def replace_flatten_with_view(graph: torch.fx.Graph, input_shape: torch.Size) ->
 			batch_size = input_shape[0]
 			node.args = input_node, [batch_size, -1]
 	graph.lint()
+
+def get_export_library_args(name: str) -> dict:
+	res = dict(
+		file_name=f'{name}.dll',
+		workspace_dir='build',
+		options=(
+			'-g',
+			'-L', os.path.expandvars('%installdir%\\Programs\\TVM\\lib'),
+			'-l', 'tvm',
+			f'-Wl,/DEBUG:FULL,/PDB:build\\{name}.pdb',
+		),
+	)
+	return res
 
 # COCO's dataset format for 'labels'
 class Target(typing.TypedDict):
