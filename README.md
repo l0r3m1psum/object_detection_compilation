@@ -81,26 +81,14 @@ pushd %installdir%\Programs
 popd
 git submodule update --init --recursive
 .\python.exe -m ensurepip
-.\python.exe -m pip download -r requirements.txt -d "%installdir%\Programs\wheelhouse"
+.\python.exe -m pip download -r projreq.txt -d "%installdir%\Programs\wheelhouse"
 .\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d "%installdir%\Programs\wheelhouse"
 REM On the offline PC
 .\python.exe -m venv myvenv
 REM Activate virtual environment
-pip install --no-index --find-links .\wheelhouse -r requirements.txt
-pip install --no-index --find-links .\wheelhouse torch torchvision
+pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt
+pip install --no-index --find-links "%installdir%\Programs\wheelhouse" torch torchvision
 ```
 
 note that somehow the default sys.path is set to the module in cpython's source
 tree. To build a windows installer you have to go to `Tools\msi\build.bat`
-
-```
-import torch
-import torchvision
-import safetensors.torch
-import ssl
-
-ssl._create_default_https_context = ssl._create_stdlib_context
-torch.hub.set_dir(os.path.expandvars('%installdir%\\Programs\\hub'))
-model = torchvision.models.resnet.resnet18(weights='DEFAULT')
-safetensors.torch.save_file(model.state_dict(), 'resnet50.safetensors')
-```
