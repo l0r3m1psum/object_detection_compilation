@@ -37,7 +37,7 @@ def replace_flatten_with_view(graph: torch.fx.Graph, input_shape: torch.Size) ->
 
 def get_export_library_args(name: str) -> dict:
 	res = dict(
-		file_name=f'{name}.dll',
+		file_name=f'build\\{name}.dll',
 		workspace_dir='build',
 		options=(
 			'-g',
