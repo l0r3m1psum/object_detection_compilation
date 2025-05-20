@@ -77,7 +77,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
 
     capDriverConnect(hWndC, 0); // FIXME: how do I check for errors?
 
-    capPreviewRate(hWndC, 66);
+    capPreviewRate(hWndC, 16);
     capPreview(hWndC, TRUE);
 
     MSG msg;
