@@ -7,6 +7,31 @@ call config.bat
 
 pushd submodules
 
+    if not exist tvm\3rdparty\dlpack\build (mkdir tvm\3rdparty\dlpack\build || goto :exit)
+    pushd tvm\3rdparty\dlpack\build || goto :exit
+        cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
+            -DBUILD_MOCK=no ^
+            "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dlpack" ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
+        cmake --build . --target install --parallel %ncores% || goto :exit
+    popd || goto :exit
+
+    if not exist tvm\3rdparty\dmlc-core\build (mkdir tvm\3rdparty\dmlc-core\build || goto :exit)
+    pushd tvm\3rdparty\dmlc-core\build || goto :exit
+        cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
+            -DBUILD_MOCK=no ^
+            "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dmlc" ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
+        cmake --build . --target install --parallel %ncores% || goto :exit
+    popd || goto :exit
+
+    if not exist safetensors-cpp\build (mkdir safetensors-cpp\build || goto :exit)
+    pushd safetensors-cpp\build
+        cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\safetensors" ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
+        cmake --build . --target install --parallel %ncores% || goto :exit
+    popd
+
     pushd cpython || goto :exit
         pushd PCbuild || goto :exit
             call build.bat || goto :exit
@@ -43,13 +68,6 @@ pushd submodules
                     "%installdir%\Programs\LLVM\bin\clang.exe"
             )
         popd
-    popd
-
-    if not exist safetensors-cpp\build (mkdir safetensors-cpp\build || goto :exit)
-    pushd safetensors-cpp\build
-        cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\safetensors" ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
-        cmake --build . --target install --parallel %ncores% || goto :exit
     popd
 
 popd
