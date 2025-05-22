@@ -12,7 +12,7 @@ import utils
 ssl._create_default_https_context = ssl._create_stdlib_context
 torch.hub.set_dir(os.path.expandvars('%installdir%\\Programs\\hub'))
 model = torchvision.models.resnet.resnet18(weights='DEFAULT').eval()
-safetensors.torch.save_file(model.state_dict(), 'build\\resnet50.safetensors')
+safetensors.torch.save_file(model.state_dict(), 'build\\resnet18.safetensors')
 
 utils.make_relu_not_inplace(model)
 # FIXME if batchsize is 2 this does not work???
@@ -26,6 +26,6 @@ mod = tvm.relax.frontend.torch.from_exported_program(exported_program, keep_para
 
 # mod, params = tvm.relax.frontend.detach_params(mod)
 ex = tvm.compile(mod, 'llvm')
-ex.export_library(**utils.get_export_library_args('resnet'))
+ex.export_library(**utils.get_export_library_args('resnet18'))
 
 # TODO: tvm.relax.transform.BindParams to bind the weights to the model

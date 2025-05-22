@@ -20,6 +20,9 @@ pushd submodules\tvm || goto :exit
         echo set(USE_CUDA ON) >> config.cmake || goto :exit
         echo set(USE_CUBLAS ON) >> config.cmake || goto :exit
 
+        echo set(TVM_LOG_DEBUG ON) >> config.cmake || goto :exit
+        echo add_compile_definitions(DMLC_LOG_BEFORE_THROW) >> config.cmake || goto :exit
+
         REM echo set(SUMMARIZE ON) >> config.cmake || goto :exit
         REM echo set(CMAKE_C_COMPILER "%installdir:\=\\%\\Programs\\LLVM\\bin\\clang-cl.exe") >> config.cmake || goto :exit
         REM echo set(CMAKE_CXX_COMPILER "%installdir:\=\\%\\Programs\\LLVM\\bin\\clang-cl.exe") >> config.cmake || goto :exit
