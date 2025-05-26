@@ -25,9 +25,9 @@ cl /nologo /std:c++17 /ZI ^
     "/LIBPATH:%installdir%\Programs\safetensors\lib" ^
     || goto :exit
 
-rem python python\export_resnet_model_and_weights.py || goto :exit
+set TVM_LOG_DEBUG=5
+python python\export_resnet_model_and_weights.py || goto :exit
 
-set TVM_LOG_DEBUG=1
 set "PATH=%installdir%\Programs\TVM\lib;%PATH%"
 build\launcher || goto :exit
 
