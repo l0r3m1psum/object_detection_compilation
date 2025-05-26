@@ -9,6 +9,27 @@ import os
 
 import utils
 
+def compile(mod, gen):
+	if gen == 'gpu':
+		target = tvm.target.Target('cuda')
+		with target:
+			cuda_mod = tvm.ir.transform.Sequential([
+				tvm.relax.get_pipeline("zero"),
+				tvm.dlight.ApplyDefaultSchedule(
+					tvm.dlight.gpu.Matmul(),
+					tvm.dlight.gpu.GEMV(),
+					tvm.dlight.gpu.Reduction(),
+					tvm.dlight.gpu.GeneralReduction(),
+					tvm.dlight.gpu.Fallback(),
+				),
+			])(mod)
+		print(cuda_mod)
+		ex = tvm.compile(cuda_mod, target)
+	elif gen == 'cpu':
+		ex = tvm.compile(mod, 'llvm')
+	return ex
+
+
 ssl._create_default_https_context = ssl._create_stdlib_context
 torch.hub.set_dir(os.path.expandvars('%installdir%\\Programs\\hub'))
 model = torchvision.models.resnet.resnet18(weights='DEFAULT').eval()
@@ -24,8 +45,12 @@ with torch.no_grad():
 # utils.replace_add_inplace_with_add(exported_program.graph)
 mod = tvm.relax.frontend.torch.from_exported_program(exported_program, keep_params_as_input=True)
 
-# mod, params = tvm.relax.frontend.detach_params(mod)
-ex = tvm.compile(mod, 'llvm')
+# breakpoint()
+
+mod, params = tvm.relax.frontend.detach_params(mod)
+print(mod)
+ex = compile(mod, 'gpu')
+input()
 ex.export_library(**utils.get_export_library_args('resnet18'))
 
 # TODO: tvm.relax.transform.BindParams to bind the weights to the model
