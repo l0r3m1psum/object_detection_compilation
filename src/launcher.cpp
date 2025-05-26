@@ -11,13 +11,14 @@
 
 #include <safetensors.hh>
 
-std::ostream& operator<<(std::ostream& os, const tvm::Array<tvm::String>& strings) {
-  os << '[';
-  for (int i = 0, e = strings.size(); i != e; ++i) {
-    if (i != 0) os << ',';
-    os << static_cast<std::string>(strings[i]);
+static std::ostream&
+operator<<(std::ostream& os, const std::vector<int64_t>& vec) {
+  os << '{';
+  for (size_t i = 0, e = vec.size(); i != e; ++i) {
+    if (i != 0) os << ", ";
+    os << vec[i];
   }
-  os << ']';
+  os << '}';
   return os;
 }
 
@@ -121,8 +122,24 @@ ends_with(std::string const& value, std::string const& ending)
     return std::equal(ending.crbegin(), ending.crend(), value.crbegin());
 }
 
-#include <windows.h>
-#include <debugapi.h>
+static DLDataType
+dtype_to_DLDataType(safetensors::dtype dtype) {
+  switch (dtype) {
+  case safetensors::dtype::kBOOL:     return DLDataType{ kDLBool, 8, 1 };
+  case safetensors::dtype::kUINT8:    return DLDataType{ kDLUInt, 8, 1 };
+  case safetensors::dtype::kINT8:     return DLDataType{ kDLInt ,8, 1 };
+  case safetensors::dtype::kINT16:    return DLDataType{ kDLInt, 16, 1 };
+  case safetensors::dtype::kUINT16:   return DLDataType{ kDLUInt, 16, 1 };
+  case safetensors::dtype::kFLOAT16:  return DLDataType{ kDLFloat, 16, 1 };
+  case safetensors::dtype::kBFLOAT16: return DLDataType{ kDLBfloat, 16, 1 };
+  case safetensors::dtype::kINT32:    return DLDataType{ kDLInt, 32, 1 };
+  case safetensors::dtype::kUINT32:   return DLDataType{ kDLUInt, 32, 1 };
+  case safetensors::dtype::kFLOAT32:  return DLDataType{ kDLFloat, 32, 1 };
+  case safetensors::dtype::kFLOAT64:  return DLDataType{ kDLFloat, 64, 1 };
+  case safetensors::dtype::kINT64:    return DLDataType{ kDLInt, 64, 1 };
+  case safetensors::dtype::kUINT64:   return DLDataType{ kDLUInt, 64, 1 };
+  }
+}
 
 int main() {
   std::string file_so = "build\\resnet18.dll";
@@ -140,29 +157,21 @@ int main() {
     CHECK(ok) << "cannot load weights: " << err;
   }
 
-  {
-    safetensors::tensor_t tensor{};
-    for (size_t i = 0; i < weights.tensors.size(); i++) {
-      bool found = weights.tensors.at(i, &tensor);
-      if (!found) abort();
-    }
-  }
-
   int num_args = weights.tensors.size() + 1;
   TVMValue *values = new TVMValue[num_args];
   int *type_codes = new int[num_args];
   tvm::runtime::TVMArgsSetter setter(values, type_codes);
 
+  tvm::runtime::NDArray tmp_ndarray; // I hate C++
   {
     DLDevice device{ kDLCUDA, 0 };
     DLDataType datatype{ kDLFloat, 32, 1 };
 
-    // __debugbreak();
     int correction = 0;
     std::vector<tvm::runtime::ShapeTuple::index_type> shape_vec{1, 3, 224, 224};
     safetensors::tensor_t tmp_tensor{};
-    tvm::runtime::NDArray tmp_ndarray = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
-    setter(0, std::move(tmp_ndarray));
+    tmp_ndarray = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
+    setter(0, tmp_ndarray);
     for (int i = 1; i < num_args; i++) {
       bool found = weights.tensors.at(i-1, &tmp_tensor);
       CHECK(found);
@@ -176,12 +185,13 @@ int main() {
       CHECK(tmp_tensor.dtype == safetensors::dtype::kFLOAT32);
       shape_vec.resize(tmp_tensor.shape.size());
       for (size_t i = 0; i < shape_vec.size(); i++) shape_vec[i] = tmp_tensor.shape[i];
-      tvm::runtime::NDArray tmp_ndarray = tvm::runtime::NDArray::Empty(shape_vec, datatype, device); // I hate C++
+      std::cout << key << ' ' << shape_vec << '\n';
+      tmp_ndarray = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
       tmp_ndarray.CopyFromBytes(
         weights.databuffer_addr + tmp_tensor.data_offsets[0],
         tmp_tensor.data_offsets[1] - tmp_tensor.data_offsets[0]
       );
-      setter(i-correction, std::move(tmp_ndarray));
+      setter(i-correction, tmp_ndarray);
     }
     num_args -= correction;
   }
