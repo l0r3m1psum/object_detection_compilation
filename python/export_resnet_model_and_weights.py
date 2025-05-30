@@ -1,6 +1,7 @@
 import torch
 import torchvision
 import safetensors.torch
+import safetensors.numpy
 import tvm
 import tvm.relax.frontend.torch
 
@@ -27,6 +28,8 @@ def compile(mod, gen):
 		ex = tvm.compile(cuda_mod, target)
 	elif gen == 'cpu':
 		ex = tvm.compile(mod, 'llvm')
+	else:
+		raise ValueError("bad gen argument")
 	return ex
 
 
@@ -50,7 +53,13 @@ mod = tvm.relax.frontend.torch.from_exported_program(exported_program, keep_para
 mod, params = tvm.relax.frontend.detach_params(mod)
 print(mod)
 ex = compile(mod, 'gpu')
-input()
+print(ex.as_text())
+# print(ex.as_python())
+import collections
+res = collections.OrderedDict((str(k), {"dtype": v.numpy().dtype.name, "shape": v.numpy().shape, "data": v.numpy().tobytes()}) for k, v in zip(mod['main'].params[1:], params['main']) )
+safetensors.serialize_file(res, 'build\\resnet18.safetensors', metadata={str(key): str(value) for value, key in enumerate(mod['main'].params[1:])})
+breakpoint()
+# TODO: invoke after compilation...
 ex.export_library(**utils.get_export_library_args('resnet18'))
 
 # TODO: tvm.relax.transform.BindParams to bind the weights to the model
