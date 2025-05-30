@@ -10,6 +10,7 @@
 #include <tvm/runtime/container/shape_tuple.h>
 
 #include <safetensors.hh>
+#include <charconv>
 
 static std::ostream&
 operator<<(std::ostream& os, const std::vector<int64_t>& vec) {
@@ -37,9 +38,10 @@ LoadVMModule(const std::string& path, tvm::Device device) {
   CHECK(vm_initialization != nullptr)
       << "ValueError: File `" << path
       << "` is not built by RelaxVM, because `vm_initialization` does not exist";
-  vm_initialization(static_cast<int>(device.device_type), static_cast<int>(device.device_id),
-                    static_cast<int>(AllocatorType::kPooled), static_cast<int>(kDLCPU), 0,
-                    static_cast<int>(AllocatorType::kPooled));
+  vm_initialization(
+    static_cast<int>(device.device_type), static_cast<int>(device.device_id), static_cast<int>(AllocatorType::kPooled),
+    static_cast<int>(kDLCPU),             0,                                  static_cast<int>(AllocatorType::kPooled)
+  );
   return mod;
 }
 
@@ -143,10 +145,25 @@ dtype_to_DLDataType(safetensors::dtype dtype) {
 
 int main() {
   std::string file_so = "build\\resnet18.dll";
-  tvm::runtime::Module vm = LoadVMModule(file_so, tvm::Device{kDLCPU, 0});
-  std::cout << vm->type_key() << '\n';
-  tvm::runtime::PackedFunc forward = vm.GetFunction("main", false);
+  tvm::runtime::Module mod = LoadVMModule(file_so, tvm::Device{kDLCUDA, 0});
+  std::cout << mod->type_key() << '\n';
+  tvm::runtime::PackedFunc forward = mod.GetFunction("main", false);
   CHECK(forward != nullptr) << "cannot get forward";
+
+  {
+    tvm::runtime::ModuleNode *mod_node = mod.operator->();
+    tvm::runtime::relax_vm::VirtualMachine *vm = static_cast<tvm::runtime::relax_vm::VirtualMachine *>(mod_node);
+    tvm::runtime::relax_vm::VMExecutable *ex = static_cast<tvm::runtime::relax_vm::VMExecutable *>(mod_node);
+    // __debugbreak();
+    //tvm::String test = (*ex).GetFunction("as_text", true)();
+#if 0
+    tvm::runtime::PackedFunc as_text = ex->GetFunction(
+      "as_text",
+      static_cast<tvm::runtime::Object>(*ex)
+    );
+    tvm::String test = as_text();
+#endif
+  }
 
   std::string file_safetensors = "build\\resnet18.safetensors";
   safetensors::safetensors_t weights{};
@@ -161,45 +178,49 @@ int main() {
   TVMValue *values = new TVMValue[num_args];
   int *type_codes = new int[num_args];
   tvm::runtime::TVMArgsSetter setter(values, type_codes);
+  tvm::runtime::NDArray *input_and_params = new tvm::runtime::NDArray[num_args]; // I hate C++
 
-  tvm::runtime::NDArray tmp_ndarray; // I hate C++
   {
+    bool found = false;
+    std::string position;
+    size_t position_index = 0;
+    std::from_chars_result res;
+    safetensors::tensor_t tmp_tensor{};
     DLDevice device{ kDLCUDA, 0 };
     DLDataType datatype{ kDLFloat, 32, 1 };
 
-    int correction = 0;
     std::vector<tvm::runtime::ShapeTuple::index_type> shape_vec{1, 3, 224, 224};
-    safetensors::tensor_t tmp_tensor{};
-    tmp_ndarray = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
-    setter(0, tmp_ndarray);
+    input_and_params[0] = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
+    setter(0, input_and_params[0]);
+
     for (int i = 1; i < num_args; i++) {
-      bool found = weights.tensors.at(i-1, &tmp_tensor);
+      found = weights.tensors.at(i-1, &tmp_tensor);
       CHECK(found);
-      const std::string& key = weights.tensors.keys()[i-1];
-      if (ends_with(key, "num_batches_tracked")
-        || ends_with(key, "running_mean")
-        || ends_with(key, "running_var")) {
-        correction++;
-        continue;
-      }
       CHECK(tmp_tensor.dtype == safetensors::dtype::kFLOAT32);
+
+      const std::string& key = weights.tensors.keys()[i-1];
+      found = weights.metadata.at(key, &position);
+      CHECK(found) << "cannot determine where to put " << key << " from the metadata";
+      res = std::from_chars(position.data(), position.data()+position.size(), position_index);
+      CHECK(res.ec == std::errc()) << "position is not a number";
+
       shape_vec.resize(tmp_tensor.shape.size());
       for (size_t i = 0; i < shape_vec.size(); i++) shape_vec[i] = tmp_tensor.shape[i];
       std::cout << key << ' ' << shape_vec << '\n';
-      tmp_ndarray = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
-      tmp_ndarray.CopyFromBytes(
+
+      input_and_params[position_index+1] = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
+      input_and_params[position_index+1].CopyFromBytes(
         weights.databuffer_addr + tmp_tensor.data_offsets[0],
         tmp_tensor.data_offsets[1] - tmp_tensor.data_offsets[0]
       );
-      setter(i-correction, tmp_ndarray);
+      setter(position_index+1, input_and_params[position_index+1]);
     }
-    num_args -= correction;
   }
 
   tvm::runtime::TVMArgs args(values, type_codes, num_args);
   tvm::runtime::TVMRetValue rv;
   forward.CallPacked(args, &rv);
-  CHECK(rv.type_code() == kTVMNDArrayHandle);
+  CHECK(rv.type_code() == kTVMObjectHandle);
 
   if (false) {
     DLDevice device{ kDLCUDA, 0 };
@@ -217,6 +238,6 @@ int main() {
     }
     tvm::runtime::NDArray res = rv.operator tvm::runtime::NDArray();
   }
-  // *(std::string *)((unsigned char *)&key - 8)
+
   return 0;
 }
