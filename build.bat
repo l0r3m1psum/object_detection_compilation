@@ -6,6 +6,7 @@ call config.bat
 
 if not exist build mkdir build
 
+rem     /fsanitize=address /MTd ^
 REM https://learn.microsoft.com/en-us/cpp/build/reference/output-file-f-options
 cl /nologo /std:c++17 /ZI ^
     /I %installdir%\Programs\TVM\include ^
@@ -25,7 +26,7 @@ cl /nologo /std:c++17 /ZI ^
     "/LIBPATH:%installdir%\Programs\safetensors\lib" ^
     || goto :exit
 
-set TVM_LOG_DEBUG=5
+set TVM_LOG_DEBUG=1
 python python\export_resnet_model_and_weights.py || goto :exit
 
 set "PATH=%installdir%\Programs\TVM\lib;%PATH%"
