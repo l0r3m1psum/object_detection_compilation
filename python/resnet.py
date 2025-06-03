@@ -276,24 +276,41 @@ class ResNet50FPN(nn.Module):
 		p2 = self.lateral_conv1(c2) + ip3
 		return p2, p3, p4, p5
 
-mod = ResNet50()
-# print(list(mod.named_parameters()))
-# print(list(mod.parameters()))
-# print(list(mod.state_dict()))
-# TODO: try mod.load_state_dict() con https://huggingface.co/microsoft/resnet-50
-# https://huggingface.co/microsoft/resnet-50/resolve/main/model.safetensors
-import safetensors.torch
-state_dict = safetensors.torch.load_file('resnet-50\\model.safetensors')
-print(len(mod.state_dict()), len(state_dict.keys()))
-irmod, params_spec = mod.export_tvm(
-	{"forward": {"x": nn.spec.Tensor((2, 3, 224, 224), "float32")}},
-	debug=True
-)
+def main():
+	import tvm
+	import numpy
 
-mod = ResNet50FPN()
-irmod, params_spec = mod.export_tvm(
-	{"forward": {"x": nn.spec.Tensor((2, 3, 224, 224), "float32")}},
-	debug=True
-)
+	mod = ResNet50()
+	# print(list(mod.named_parameters()))
+	# print(list(mod.parameters()))
+	# print(list(mod.state_dict()))
+	# TODO: try mod.load_state_dict() con https://huggingface.co/microsoft/resnet-50
+	# https://huggingface.co/microsoft/resnet-50/resolve/main/model.safetensors
+	# import safetensors.torch
+	# state_dict = safetensors.torch.load_file('resnet-50\\model.safetensors')
+	# print(len(mod.state_dict()), len(state_dict.keys()))
 
+	irmod, params_spec = mod.export_tvm(
+		{"forward": {"x": nn.spec.Tensor((2, 3, 224, 224), "float32")}},
+		debug=True
+	)
+
+	if False:
+		mod = ResNet50FPN()
+		irmod, params_spec = mod.export_tvm(
+			{"forward": {"x": nn.spec.Tensor((2, 3, 224, 224), "float32")}},
+			debug=True
+		)
+
+	dev = tvm.device('llvm')
+	vmexec = tvm.compile(irmod, tvm.target.Target('llvm'))
+	vm = relax.VirtualMachine(vmexec, dev)
+	res = vm['forward'](
+		tvm.nd.array(numpy.empty((2,3,224,224)).astype('float32'), dev),
+		tvm.nd.array(numpy.empty((2,3,224,224)).astype('float32'), dev), # wtf??? '.io'
+		*[tvm.nd.array(numpy.empty(tens.shape).astype('float32'), dev) for _, tens in params_spec]
+	)
+
+if __name__ == '__main__':
+	main()
 # https://tvm.d2l.ai/chapter_common_operators/batch_norm.html
