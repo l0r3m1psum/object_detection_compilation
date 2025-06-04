@@ -1158,6 +1158,10 @@ dtype_to_DLDataType(safetensors::dtype dtype) {
   }
 }
 
+// #include <intrin.h>
+
+// #pragma intrinsic(__rdtsc)
+
 int main() {
   std::string file_so = "build\\resnet18.dll";
   tvm::runtime::Module mod = LoadVMModule(file_so, tvm::Device{kDLCUDA, 0});
@@ -1221,7 +1225,7 @@ int main() {
 
       shape_vec.resize(tmp_tensor.shape.size());
       for (size_t i = 0; i < shape_vec.size(); i++) shape_vec[i] = tmp_tensor.shape[i];
-      std::cout << key << ' ' << shape_vec << '\n';
+      // std::cout << key << ' ' << shape_vec << '\n';
 
       input_and_params[position_index+1] = tvm::runtime::NDArray::Empty(shape_vec, datatype, device);
       input_and_params[position_index+1].CopyFromBytes(
@@ -1234,7 +1238,16 @@ int main() {
 
   tvm::runtime::TVMArgs args(values, type_codes, num_args);
   tvm::runtime::TVMRetValue rv;
-  forward.CallPacked(args, &rv);
+  {
+    std::cout << "Making 1000 inferences\n";
+    clock_t start = clock();
+    for (size_t i = 0; i < 1000; ++i) {
+      forward.CallPacked(args, &rv);
+    }
+    clock_t end = clock();
+    float seconds = (float)(end - start) / CLOCKS_PER_SEC;
+    std::cout << "seconds: " << seconds << '\n';
+  }
   CHECK(rv.type_code() == kTVMObjectHandle);
 
   tvm::runtime::ObjectRef res = rv.operator tvm::runtime::ObjectRef();
