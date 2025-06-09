@@ -58,7 +58,7 @@ print(ex.as_text())
 import collections
 res = collections.OrderedDict((str(k), {"dtype": v.numpy().dtype.name, "shape": v.numpy().shape, "data": v.numpy().tobytes()}) for k, v in zip(mod['main'].params[1:], params['main']) )
 safetensors.serialize_file(res, 'build\\resnet18.safetensors', metadata={str(key): str(value) for value, key in enumerate(mod['main'].params[1:])})
-breakpoint()
+# breakpoint()
 # TODO: invoke after compilation...
 ex.export_library(**utils.get_export_library_args('resnet18'))
 
