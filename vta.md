@@ -1,7 +1,5 @@
 # VTA
 
-https://www.hackster.io/mabushaqraedu0/axi-lite-slave-custom-ip-core-to-control-led-under-petalinux-b70b1d
-
 TODO: verilator
 https://www.chisel-lang.org/docs/installation#java-versions
 
@@ -20,6 +18,18 @@ set "PATH=%installdir%\Programs\Java\jdk-17.0.12\bin;%PATH%"
 
 # Pynq
 
+Build requires Ubuntu 20.04,
+[Vivado 2022.1](https://www.xilinx.com/member/forms/download/xef.html?filename=Xilinx_Unified_2022.1_0420_0327_Lin64.bin),
+[petalinux-2022.1](https://www.xilinx.com/member/forms/download/xef.html?filename=petalinux-v2022.1-04191534-installer.run)
+
+```
+wget 'https://bit.ly/pynq_aarch64_v3_0_1' 'https://bit.ly/pynq_arm_v3_1' \
+    'https://bit.ly/pynq_sdist_v3_0_1'
+cp pynq_aarch64_v3_0_1 PYNQ/sdbuild/prebuilt/pynq_rootfs.aarch64.tar.gz
+cp pynq_arm_v3_1       PYNQ/sdbuild/prebuilt/pynq_rootfs.arm.tar.gz
+cp pynq_sdist_v3_0_1   PYNQ/sdbuild/prebuilt/pynq_sdist.tar.gz
+```
+
 [Pynq website](https://www.pynq.io/)
 [Pynq repo](https://github.com/Xilinx/PYNQ)
 [Pynq documentation](https://pynq.readthedocs.io/en/latest/)
@@ -31,3 +41,8 @@ set "PATH=%installdir%\Programs\Java\jdk-17.0.12\bin;%PATH%"
 [Yocto](https://www.yoctoproject.org/)
 [Getting Started with the Yocto Project - New Developer Screencast Tutorial](https://www.youtube.com/watch?v=zNLYanJAQ3s)
 [Buildroot](https://buildroot.org/) is an easier alternative to Yocto
+
+# AXU2CGB
+
+https://www.hackster.io/mabushaqraedu0/axi-lite-slave-custom-ip-core-to-control-led-under-petalinux-b70b1d
+https://www.hackster.io/matjaz4/gnu-radio-toolkit-on-axu2cgb-zynq-ultrascale-board-part2-ace235
