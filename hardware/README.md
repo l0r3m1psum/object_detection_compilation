@@ -4,8 +4,7 @@ https://www.hackster.io/matjaz4/gnu-radio-toolkit-on-axu2cgb-zynq-ultrascale-boa
 
 https://www.hackster.io/mabushaqraedu0/axi-lite-slave-custom-ip-core-to-control-led-under-petalinux-b70b1d
 https://www.hackster.io/caglayandokme/jtag-booting-embedded-linux-on-zynq-soc-cec756
-https://xilinx.github.io/Embedded-Design-Tutorials/docs/2023.1/build/html/docs/Introduction/Versal-EDT/docs/4-boot-and-config.html
-
+https://www.centennialsoftwaresolutions.com/post/install-petalinux-tools-2023-1-on-wsl2-running-on-windows-10-build-and-run-the-vck190-bsp-on-qemu
 
 
 https://xilinx.github.io/Embedded-Design-Tutorials/docs/2023.1/build/html/docs/Introduction/Versal-EDT/docs/4-boot-and-config.html
