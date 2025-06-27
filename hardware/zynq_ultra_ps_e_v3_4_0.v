@@ -2756,10 +2756,8 @@ module zynq_ultra_ps_e_v3_4_0 #(
 			// EMIO Gigabit Ethernet MAC 3
 			.EMIOGEM3TXSOF(emio_enet3_tx_sof), .EMIOGEM3SYNCFRAMETX(emio_enet3_sync_frame_tx), .EMIOGEM3DELAYREQTX(emio_enet3_delay_req_tx), .EMIOGEM3PDELAYREQTX(emio_enet3_pdelay_req_tx), .EMIOGEM3PDELAYRESPTX(emio_enet3_pdelay_resp_tx), .EMIOGEM3RXSOF(emio_enet3_rx_sof), .EMIOGEM3SYNCFRAMERX(emio_enet3_sync_frame_rx), .EMIOGEM3DELAYREQRX(emio_enet3_delay_req_rx), .EMIOGEM3PDELAYREQRX(emio_enet3_pdelay_req_rx), .EMIOGEM3PDELAYRESPRX(emio_enet3_pdelay_resp_rx), .EMIOGEM3TSUINCCTRL(emio_enet3_tsu_inc_ctrl), .EMIOGEM3TSUTIMERCMPVAL(emio_enet3_tsu_timer_cmp_val),
 
-			.FMIOGEMTSUCLKFROMPL(fmio_gem_tsu_clk_from_pl),
-			.FMIOGEMTSUCLKTOPLBUFG(fmio_gem_tsu_clk_to_pl_bufg),
-			.EMIOENETTSUCLK(emio_enet_tsu_clk),
-			.EMIOENET0GEMTSUTIMERCNT(emio_enet0_enet_tsu_timer_cnt),
+			.FMIOGEMTSUCLKFROMPL(fmio_gem_tsu_clk_from_pl), .FMIOGEMTSUCLKTOPLBUFG(fmio_gem_tsu_clk_to_pl_bufg),
+			.EMIOENETTSUCLK(emio_enet_tsu_clk), .EMIOENET0GEMTSUTIMERCNT(emio_enet0_enet_tsu_timer_cnt),
 
 			.EMIOENET0EXTINTIN(emio_enet0_ext_int_in), .EMIOENET1EXTINTIN(emio_enet1_ext_int_in), .EMIOENET2EXTINTIN(emio_enet2_ext_int_in), .EMIOENET3EXTINTIN(emio_enet3_ext_int_in),
 
@@ -2780,10 +2778,10 @@ module zynq_ultra_ps_e_v3_4_0 #(
 			// EMIO Universal Asynchronous Receiver-Transmitter 1
 			.EMIOUART1TX(emio_uart1_txd), .EMIOUART1RX(emio_uart1_rxd), .EMIOUART1CTSN(emio_uart1_ctsn), .EMIOUART1RTSN(emio_uart1_rtsn), .EMIOUART1DSRN(emio_uart1_dsrn), .EMIOUART1DCDN(emio_uart1_dcdn), .EMIOUART1RIN(emio_uart1_rin), .EMIOUART1DTRN(emio_uart1_dtrn),
 
-			// EMIO Secude Digital 0
+			// EMIO Secure Digital 0
 			.EMIOSDIO0CLKOUT(emio_sdio0_clkout), .EMIOSDIO0FBCLKIN(emio_sdio0_fb_clk_in), .EMIOSDIO0CMDOUT(emio_sdio0_cmdout), .EMIOSDIO0CMDIN(emio_sdio0_cmdin), .EMIOSDIO0CMDENA(emio_sdio0_cmdena_i), .EMIOSDIO0DATAIN(emio_sdio0_datain), .EMIOSDIO0DATAOUT(emio_sdio0_dataout), .EMIOSDIO0DATAENA(emio_sdio0_dataena_i), .EMIOSDIO0CDN(emio_sdio0_cd_n), .EMIOSDIO0WP(emio_sdio0_wp), .EMIOSDIO0LEDCONTROL(emio_sdio0_ledcontrol), .EMIOSDIO0BUSPOWER(emio_sdio0_buspower), .EMIOSDIO0BUSVOLT(emio_sdio0_bus_volt),
 
-			// EMIO Secude Digital 1
+			// EMIO Secure Digital 1
 			.EMIOSDIO1CLKOUT(emio_sdio1_clkout), .EMIOSDIO1FBCLKIN(emio_sdio1_fb_clk_in), .EMIOSDIO1CMDOUT(emio_sdio1_cmdout), .EMIOSDIO1CMDIN(emio_sdio1_cmdin), .EMIOSDIO1CMDENA(emio_sdio1_cmdena_i), .EMIOSDIO1DATAIN(emio_sdio1_datain), .EMIOSDIO1DATAOUT(emio_sdio1_dataout), .EMIOSDIO1DATAENA(emio_sdio1_dataena_i), .EMIOSDIO1CDN(emio_sdio1_cd_n), .EMIOSDIO1WP(emio_sdio1_wp), .EMIOSDIO1LEDCONTROL(emio_sdio1_ledcontrol), .EMIOSDIO1BUSPOWER(emio_sdio1_buspower), .EMIOSDIO1BUSVOLT(emio_sdio1_bus_volt),
 
 			// EMIO Serial Peripheral Interface 0
