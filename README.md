@@ -88,6 +88,7 @@ REM On the offline PC
 REM Activate virtual environment
 pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt
 pip install --no-index --find-links "%installdir%\Programs\wheelhouse" torch torchvision
+pip install --no-index --find-links "%installdir%\Programs\wheelhouse" pytest
 ```
 
 note that somehow the default sys.path is set to the module in cpython's source
