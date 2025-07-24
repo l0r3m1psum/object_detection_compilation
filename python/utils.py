@@ -8,11 +8,35 @@ import torchvision
 logger = logging.getLogger(__name__)
 
 # TODO: create an interator class that does the dfs
-def make_relu_not_inplace(module: torch.nn.Module):
+def make_relu_not_inplace(module: torch.nn.Module) -> None:
 	for name, submodule in module.named_children():
 		if name == 'relu':
 			submodule.inplace = False
 		make_relu_not_inplace(submodule)
+
+# Saddly "quantized nyi in meta tensors" (nyi = not yet implemented)
+def make_quantization_parameter_constants(module: torch.nn.Module) -> None:
+	for name, submodule in module.named_children():
+		if name == 'quant':
+			self = submodule
+			scale = float(self.scale)
+			zero_point = int(self.zero_point)
+			submodule.forward = lambda X: torch.quantize_per_tensor(X, scale, zero_point, self.dtype)
+		make_quantization_parameter_constants(submodule)
+
+def export_quant_dequant_params(module: torch.nn.Module):
+	res = []
+	for name, submodule in module.named_children():
+		try:
+			scale = float(submodule.scale)
+			zero_point =  int(submodule.zero_point)
+			# QuantizedLinear has also the qscheme attribute
+			# Quantize        has also the dtype   attribute
+			res.append((name, scale, zero_point))
+		except AttributeError:
+			pass
+		res.extend(export_quant_dequant_params(submodule))
+	return res
 
 # https://pytorch.org/docs/stable/torch.compiler_transformations.html
 # TODO: maybe use https://pytorch.org/docs/stable/fx.html#subgraph-rewriting-with-replace-pattern instead
