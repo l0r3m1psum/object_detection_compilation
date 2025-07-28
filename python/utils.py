@@ -24,6 +24,27 @@ def make_quantization_parameter_constants(module: torch.nn.Module) -> None:
 			submodule.forward = lambda X: torch.quantize_per_tensor(X, scale, zero_point, self.dtype)
 		make_quantization_parameter_constants(submodule)
 
+import types
+
+def my_named_parameters(self):
+	yield from (('weight', self.weight()), ('bias', self.bias()),)
+
+def give_children_named_parameters(module: torch.nn.Module) -> None:
+	for name, submodule in module.named_children():
+		if isinstance(submodule, torch.ao.nn.quantized.modules.utils.WeightedQuantizedModule):
+			if name.startswith('conv'):
+				submodule.named_parameters = types.MethodType(my_named_parameters, submodule)
+		give_children_named_parameters(submodule)
+
+def top_module_named_parameters(module: torch.nn.Module):
+	for name, submodule in module.named_children():
+		yield from submodule.named_parameters()
+		top_module_named_parameters(submodule)
+
+def give_named_parameters(module: torch.nn.Module) -> None:
+	module.named_parameters = types.MethodType(top_module_named_parameters, module)
+	give_children_named_parameters(module)
+
 def export_quant_dequant_params(module: torch.nn.Module):
 	res = []
 	for name, submodule in module.named_children():
