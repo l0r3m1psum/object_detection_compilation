@@ -15,7 +15,7 @@ rmdir /s /q submodules\tvm\build
 rmdir /s /q submodules\tvm\3rdparty\dlpack\build
 rmdir /s /q submodules\tvm\3rdparty\dmlc-core\build
 
-rmdir /s /q submodules\safetensors\build
+rmdir /s /q submodules\safetensors-cpp\build
 
 rmdir /s /q "%installdir%\Programs\LLVM"
 rmdir /s /q "%installdir%\Programs\Python"
