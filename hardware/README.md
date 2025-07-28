@@ -44,3 +44,11 @@ https://unix.stackexchange.com/questions/491315/vfs-cannot-open-root-device-mmcb
 https://docs.amd.com/r/en-US/ug1144-petalinux-tools-reference-guide/Partitioning-and-Formatting-an-SD-Card
 
 https://learn.microsoft.com/en-us/windows/wsl/connect-usb
+
+Connect to Pynq via IP
+
+https://pynq.readthedocs.io/en/latest/getting_started/network_connection.html
+https://superuser.com/a/996144
+```
+netsh interface ip set address name="Ethernet 2" static 192.168.0.1 255.255.255.0
+```
