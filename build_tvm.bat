@@ -20,12 +20,14 @@ pushd submodules\tvm || goto :exit
         echo set(HIDE_PRIVATE_SYMBOLS ON) >> config.cmake || goto :exit
         echo set(USE_CUDA ON) >> config.cmake || goto :exit
         echo set(USE_CUBLAS ON) >> config.cmake || goto :exit
+        echo set(USE_VTA_FSIM ON) >> config.cmake || goto :exit
 
-        echo set(TVM_LOG_DEBUG ON) >> config.cmake || goto :exit
-        echo add_compile_definitions(DMLC_LOG_BEFORE_THROW) >> config.cmake || goto :exit
+        REM echo set(TVM_LOG_DEBUG ON) >> config.cmake || goto :exit
+        REM echo add_compile_definitions(DMLC_LOG_BEFORE_THROW) >> config.cmake || goto :exit
 
         REM When LLVM is compiled in debug mode this is needed when compiling TVM in Release or RelWithDebInfo mode
-        echo set(USE_MSVC_MT ON) >> config.cmake
+        REM echo set(USE_MSVC_MT ON) >> config.cmake
+        echo add_compile_options("/MDd")  >> config.cmake || goto :exit
 
         REM echo set(SUMMARIZE ON) >> config.cmake || goto :exit
         REM echo set(CMAKE_C_COMPILER "%installdir:\=\\%\\Programs\\LLVM\\bin\\clang-cl.exe") >> config.cmake || goto :exit
