@@ -1,5 +1,6 @@
 @echo off
 
+REM TODO: rendere questa chiamata idempotente come fa CPython
 call vcvarsall x64
 
 call config.bat
