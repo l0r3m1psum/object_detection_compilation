@@ -34,7 +34,7 @@ pushd submodules
 
     pushd cpython || goto :exit
         pushd PCbuild || goto :exit
-            call build.bat || goto :exit
+            call build.bat -E || goto :exit
         popd || goto :exit
 
         call python.bat PC\layout ^
