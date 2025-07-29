@@ -80,7 +80,9 @@ pushd %installdir%\Programs
     curl -O "https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_576.02_windows.exe"
 popd
 git submodule update --init --recursive
-git submodule deinit -f submodules\tvm\3rdparty\flashinfer
+pushd submodules\tvm
+  git submodule deinit -f 3rdparty\flashinfer
+popd
 .\python.exe -m ensurepip
 .\python.exe -m pip download -r projreq.txt -d "%installdir%\Programs\wheelhouse"
 .\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d "%installdir%\Programs\wheelhouse"
