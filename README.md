@@ -96,3 +96,8 @@ pip install --no-index --find-links "%installdir%\Programs\wheelhouse" pytest
 
 note that somehow the default sys.path is set to the module in cpython's source
 tree. To build a windows installer you have to go to `Tools\msi\build.bat`
+
+# VTA
+
+`vta/python/vta/top` stands for tensor operators which mirrors
+`python/tvm/topi` tensor operators invetory.
