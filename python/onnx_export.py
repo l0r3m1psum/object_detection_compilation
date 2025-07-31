@@ -226,3 +226,8 @@ mod = tvm.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=True)
 import os, sys
 sys.path.append(os.path.join(os.getcwd(), "submodules\\tvm\\vta\\python"))
 import vta
+
+import ctypes
+# ctypes.cdll.kernel32.DebugBreak()
+
+vta.build(mod)
