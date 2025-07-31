@@ -18,8 +18,8 @@ pushd submodules\tvm || goto :exit
         REM echo set(CMAKE_BUILD_TYPE RelWithDebInfo) >> config.cmake || goto :exit
         echo set(USE_LLVM "llvm-config --ignore-libllvm --link-static") >> config.cmake || goto :exit
         echo set(HIDE_PRIVATE_SYMBOLS ON) >> config.cmake || goto :exit
-        echo set(USE_CUDA ON) >> config.cmake || goto :exit
-        echo set(USE_CUBLAS ON) >> config.cmake || goto :exit
+        REM echo set(USE_CUDA ON) >> config.cmake || goto :exit
+        REM echo set(USE_CUBLAS ON) >> config.cmake || goto :exit
         echo set(USE_VTA_FSIM ON) >> config.cmake || goto :exit
 
         REM echo set(TVM_LOG_DEBUG ON) >> config.cmake || goto :exit
