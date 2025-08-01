@@ -56,6 +56,7 @@ if not (os.path.exists("resnet18_int8.onnx")):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     model.train()
+    model.to(device)
 
     num_epochs = 5  # <-- Qui specifichi il numero di epoche
 
@@ -76,6 +77,7 @@ if not (os.path.exists("resnet18_int8.onnx")):
 
     # valutazione del modello
     model.eval()
+    model.to('cpu')
     dummy_input = torch.randn(1, 3, 224, 224)
     torch.onnx.export(model, dummy_input, "resnet18.onnx",
                     input_names=["input"], output_names=["output"],
