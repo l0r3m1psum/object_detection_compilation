@@ -101,3 +101,20 @@ tree. To build a windows installer you have to go to `Tools\msi\build.bat`
 
 `vta/python/vta/top` stands for tensor operators which mirrors
 `python/tvm/topi` tensor operators invetory.
+
+# Convolution
+
+[CUDA Tensor Layouts for Convolution](https://leimao.github.io/blog/CUDA-Convolution-Tensor-Layouts/)
+where the layout I'm interested in is `N[C/x]HW[x]`.
+
+https://arxiv.org/pdf/2009.11224
+
+https://www.alcf.anl.gov/files/Gouicem_ALCF_SDL_2018_MKLDNN_presentation.pdf#page=8
+
+https://discuss.tvm.apache.org/t/couldnt-find-vta-codegen-file/8079/3#:~:text=of%20NCHW%20to-,NCHW16n16c,-%2C%20and%20print%20Relay
+
+https://tvm.apache.org/docs/v0.16.0/topic/vta/tutorials/optimize/convolution_opt.html
+
+https://dl.acm.org/doi/pdf/10.1145/3625004
+
+https://tvm.d2l.ai/chapter_cpu_schedules/packed_conv.html
