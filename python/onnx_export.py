@@ -202,6 +202,19 @@ class QGemm(tvm.relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# FIXME: this is wrong
 		return tvm.relax.op.astype(tvm.relax.op.add(tvm.relax.op.astype(alphaAB, "int32"), C), "int8")
 
+class QLinearGlobalAveragePool(tvm.relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls, bb, inputs, attr, params):
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearGlobalAveragePool
+		X = inputs[0]
+		x_scale = inputs[0]
+		x_zero_point = inputs[0]
+		y_scale = inputs[0]
+		y_zero_point = inputs[0]
+
+		# FIXME: this is wrong
+		return tvm.relax.op.collapse_sum_to(X, X.struct_info.shape.values[:2]+[1,1])
+
 # TODO: Capire come fare la requantizzatione da int32 a int8
 
 convert_map = {
@@ -209,7 +222,7 @@ convert_map = {
 	"QLinearConv": QLinearConv,
 	"QGemm": QGemm,
 	"QLinearAdd": QLinearAdd,
-	"QLinearGlobalAveragePool": tvm.relax.frontend.onnx.onnx_frontend.GlobalAveragePool,
+	"QLinearGlobalAveragePool": QLinearGlobalAveragePool,
 	"DequantizeLinear": DequantizeLinear,
 }
 
@@ -221,7 +234,7 @@ tvm.relax.frontend.onnx.onnx_frontend._get_convert_map = my_get_convert_map
 path = "build/resnet18_int8.onnx"
 model_onnx = onnx.load(path)
 
-mod = tvm.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=True)
+mod = tvm.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=False)
 
 import os, sys
 sys.path.append(os.path.join(os.getcwd(), "submodules\\tvm\\vta\\python"))
@@ -229,5 +242,17 @@ import vta
 
 import ctypes
 # ctypes.cdll.kernel32.DebugBreak()
+
+if False:
+	env = vta.get_env()
+	mod = vta.top.graph_pack(
+		mod["main"],
+		env.BATCH,
+		env.BLOCK_OUT,
+		env.WGT_WIDTH,
+	)
+
+zero_pipeline = tvm.relax.get_pipeline('zero')
+mod = zero_pipeline(mod)
 
 vta.build(mod)
