@@ -144,6 +144,7 @@ class QLinearConv(tvm.relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		)
 		# FIXME: this is 100% wrong
 		if B is not None:
+			print(B)
 			bias = tvm.relax.op.reshape(B, [1, -1] + [1] * (ndim - 2))
 			conv_out = tvm.relax.op.add(tvm.relax.op.astype(conv_out, "int32"), bias)
 
@@ -236,15 +237,39 @@ model_onnx = onnx.load(path)
 
 mod = tvm.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=False)
 
+raise SystemExit(0)
+
 import os, sys
 sys.path.append(os.path.join(os.getcwd(), "submodules\\tvm\\vta\\python"))
 import vta
+
+env = vta.get_env()
+
+print(
+	"inp_dtype: %s\nwgt_dtype: %s\nout_dtype: %s\nacc_dtype: %s\n" \
+		% (env.inp_dtype, env.wgt_dtype, env.out_dtype, env.acc_dtype,)
+)
+
+# Based on how vta.graph_pack is called
+# https://tvm.apache.org/docs/v0.16.0/topic/vta/tutorials/frontend/deploy_detection.html#build-the-inference-graph-executor
+env.BATCH, env.BLOCK_OUT # batcvh_factor and channel_factor
+env.WGT_WIDTH # number of bits for quantization
+env.BLOCK_IN
+# is accumulator clamped to out_dtype?
+# Based on hardware/xilinx/src/vta.h and hardware/xilinx/src/vta.cc semantically
+"""
+#define VTA_BLOCK_IN 16
+uint8_t inp[VTA_BLOCK_IN], wgt[VTA_BLOCK_IN];
+uint32_t = acc = 0;
+for (int i = 0; i < VTA_BLOCK_IN; i++)
+	acc += (uint32_t) inp[i] * (uint32_t) wgt[i];
+"""
+
 
 import ctypes
 # ctypes.cdll.kernel32.DebugBreak()
 
 if False:
-	env = vta.get_env()
 	mod = vta.top.graph_pack(
 		mod["main"],
 		env.BATCH,

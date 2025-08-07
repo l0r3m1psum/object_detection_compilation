@@ -31,6 +31,7 @@ class TVMScriptModule:
 in_chans = 3,
 out_chans = 2
 kernel_h, kernel_w = 5, 5
+# FIXME: the network has to be quantized first.
 @I.ir_module
 class ConvModel:
 	@R.function
@@ -127,7 +128,8 @@ def _pack_const(data: tvm.relax.Var, bfactor: int, cfactor: int):
 # TODO: per evitare di specificare bitpack_start e bitpack_end serve un'algoritmo
 # che frovi i sottografi di operazioni supportate (per fare il "packing") in automatico
 
-# A Relax IR mutator
+# Per il momento scrivere un "packer" che non considera inizio e fine ma che
+# "esplode" se trova operazioni non supportate.
 @tvm.relax.expr_functor.mutator
 class ReluAndMatmulRewriter(tvm.relax.expr_functor.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
@@ -146,13 +148,13 @@ class ReluAndMatmulRewriter(tvm.relax.expr_functor.PyExprMutator):
 		args = [self.visit_expr(arg) for arg in call.args]
 
 		if call.op.name == self.bitpack_start:
-			breakpoint()
 			self.start_pack = True
 			return _pack_batch_channel(args[0], self.bfactor, self.cfactor)
 
 		if call.op.name == self.bitpack_end:
 			self.start_pack = False
 			old_shape = _get_shape(call.args[0])
+			breakpoint()
 			return tvm.relax.op.reshape(args[0], old_shape)
 
 		if self.start_pack:
@@ -184,8 +186,9 @@ class ReluAndMatmulRewriter(tvm.relax.expr_functor.PyExprMutator):
 
 			if call.op.name == "relax.add":
 				if _get_shape(call.args[0]) == _get_shape(call.args[1]):
-					return call
+					return super().visit_call_(call)
 
+				# NOTE: why 3?
 				if len(_get_shape(call.args[1])) == 3:
 					data, const = args
 					const, input_shape = _const_shape_match(const, input_types[1].shape, self.cfactor)
