@@ -31,6 +31,8 @@ e
 
 `tvmc` si trova fino alla versione 0.19
 
+Relay had a predecessor called [NNVM](https://discuss.tvm.apache.org/t/difference-relay-vs-nnvm/7549#:~:text=NNVM%20was%20the%20precursor%20to%20Relay).
+
 # Resources
 
 ## Visdrone
