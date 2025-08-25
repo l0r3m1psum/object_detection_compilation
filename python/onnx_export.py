@@ -237,8 +237,6 @@ model_onnx = onnx.load(path)
 
 mod = tvm.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=False)
 
-raise SystemExit(0)
-
 import os, sys
 sys.path.append(os.path.join(os.getcwd(), "submodules\\tvm\\vta\\python"))
 import vta
@@ -246,9 +244,11 @@ import vta
 env = vta.get_env()
 
 print(
-	"inp_dtype: %s\nwgt_dtype: %s\nout_dtype: %s\nacc_dtype: %s\n" \
-		% (env.inp_dtype, env.wgt_dtype, env.out_dtype, env.acc_dtype,)
+	"inp_dtype: %s\nwgt_dtype: %s\nout_dtype: %s\nacc_dtype: %s\nBATCH: %d\nBLOCK_IN: %d\nBLOCK_OUT: %d" \
+		% (env.inp_dtype, env.wgt_dtype, env.out_dtype, env.acc_dtype, env.BATCH, env.BLOCK_IN, env.BLOCK_OUT)
 )
+
+raise SystemExit(0)
 
 # Based on how vta.graph_pack is called
 # https://tvm.apache.org/docs/v0.16.0/topic/vta/tutorials/frontend/deploy_detection.html#build-the-inference-graph-executor
