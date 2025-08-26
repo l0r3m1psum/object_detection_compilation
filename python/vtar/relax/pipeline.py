@@ -5,9 +5,6 @@ from tvm import topi
 
 import vtar
 
-import os, sys
-sys.path.append(os.path.join(os.getcwd(), "submodules\\tvm\\vta\\python"))
-
 import vta
 
 # relax.BlockBuilder.call_te transforms relax.Var in te.Tensor allowing easy use
