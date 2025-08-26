@@ -1,5 +1,7 @@
 import tvm
 
+from typing import List
+
 # TVM supports data layouts for convolutions with "factors" i.e.
 # NCHW([1-9][0-9]*n)?([1-9][0-9]*w)?([1-9][0-9]*h)?([1-9][0-9]*w)?
 # where the result resulting shape is {N/n}{C/c}{H/h}{W/w}nchw
