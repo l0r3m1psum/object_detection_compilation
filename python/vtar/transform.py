@@ -160,3 +160,6 @@ class ReluToGeluAndQuantizeMatmul:
 				func = rewriter.visit_expr(func)
 				rewriter.builder_.update_func(g_var, func)
 		return rewriter.builder_.get()
+
+# TODO: hardcode a Relax module (with dimensions multiples of the quantities in
+# vta.get_env()) and try to transform that.
