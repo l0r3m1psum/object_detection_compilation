@@ -84,6 +84,11 @@ def _pack_const(data: tvm.relax.Var, bfactor: int, cfactor: int):
 
 # Per il momento scrivere un "packer" che non considera inizio e fine ma che
 # "esplode" se trova operazioni non supportate.
+
+# Questo itera il grafo di relax contenuto in una funzione. Per ora assumerò
+# che il grafo Relax è tutto contenuto nella funzione main (non so se si possono
+# nidificare i.e. un nodo del grafo chiama una funzione rappresentata da
+# un'altro grafo)
 @tvm.relax.expr_functor.mutator
 class ReluAndMatmulRewriter(tvm.relax.expr_functor.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
@@ -98,8 +103,10 @@ class ReluAndMatmulRewriter(tvm.relax.expr_functor.PyExprMutator):
 		self.conv_kernel_layout = "OIHW%do%di" % (self.cfactor, self.cfactor)
 
 	def visit_call_(self, call: tvm.relax.Call) -> tvm.relax.Expr:
+		print("mutator:", type(call), call)
+		return super().visit_call_(call)
 		# NOTE: pretty sure that this is useless...
-		args = [self.visit_expr(arg) for arg in call.args]
+		# args = [self.visit_expr(arg) for arg in call.args]
 
 		if call.op.name == self.bitpack_start:
 			self.start_pack = True
@@ -134,30 +141,18 @@ class ReluAndMatmulRewriter(tvm.relax.expr_functor.PyExprMutator):
 				)
 				return res
 
-			if (call.op.name == "relax.nn.conv2d_transpose"
-					and call.attrs['out_dtype'] == "int32"):
-				raise Exception("not supported")
-
-			if call.op.name == "relax.add":
-				if _get_shape(call.args[0]) == _get_shape(call.args[1]):
-					return super().visit_call_(call)
-
-				# NOTE: why 3?
-				if len(_get_shape(call.args[1])) == 3:
-					data, const = args
-					const, input_shape = _const_shape_match(const, input_types[1].shape, self.cfactor)
-					const = _pack_const(const, self.bfactor, self.cfactor)
-					return tvm.relax.op.add(data, const)
-
 		return super().visit_call_(call)
 
-# A TVM pass
+# TODO: vedere cosa stampa su un modello vero i.e. ResNet
+# TODO: assert that the Module contains only the main function.
+# Il modulo IR è composto di funzione, questo le itera.
 @tvm.transform.module_pass(opt_level=0, name="ReluToGeluAndQuantizeMatmul")
 class ReluToGeluAndQuantizeMatmul:
 	def transform_module(self, mod: tvm.IRModule, _ctx: tvm.transform.PassContext) -> tvm.IRModule:
 		"""IRModule-level transformation"""
 		rewriter = ReluAndMatmulRewriter(mod)
 		for g_var, func in mod.functions_items():
+			print("pass:", type(func))
 			if isinstance(func, tvm.relax.Function):
 				func = rewriter.visit_expr(func)
 				rewriter.builder_.update_func(g_var, func)
@@ -165,3 +160,24 @@ class ReluToGeluAndQuantizeMatmul:
 
 # TODO: hardcode a Relax module (with dimensions multiples of the quantities in
 # vta.get_env()) and try to transform that.
+
+
+# The ``start_pack`` and ``stop_pack`` labels indicate where
+# to start and end the graph packing relay pass: in other words
+# where to start and finish offloading to VTA.
+
+# Graphpack expects to receive as input a quantized model at least in the
+# ``start_pack`` and ``stop_pack`` range.
+
+# from tvm import ir
+# ir.Op.get("annotation.bitpack_start")
+
+def get_subgraph(expr, start_name, stop_name, start_name_idx, stop_name_idx, count_meta):
+	anf = relax.transform.Normalize()(expr)
+	operator_current_idx = 0
+
+	def _recursion(anf, start_found, stop_found, operator_current_idx):
+		return anf
+
+	annotated = _recursion(anf, False, False, operator_current_idx)
+	return relax.transform.Normalize()(annotated)
