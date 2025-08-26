@@ -43,9 +43,8 @@ class ConvModelVTA:
 		R.func_attr({"num_input": 1})
 		with R.dataflow():
 			conv1 = R.nn.conv2d(x, conv1_weight, strides=1, padding=1, dilation=1,
-				data_layout="NCHW1n16c", kernel_layout="OIHW16o16i")
-			astype1 = R.astype(conv1, "int32")
-			add1 = R.add(astype1, conv1_bias)
+				data_layout="NCHW1n16c", kernel_layout="OIHW16o16i", out_dtype="int32")
+			add1 = R.add(conv1, conv1_bias)
 			gv = add1
 			R.output(gv)
 		return gv
@@ -55,7 +54,7 @@ zero_pipeline = relax.get_pipeline('vtar_zero')
 mod = zero_pipeline(mod)
 
 print(mod)
-print(mod['fused_conv2d_NCHWnc_cast_add'].buffer_map)
+print(mod['fused_conv2d_NCHWnc_add'].buffer_map)
 
 # FIXME: This pass must be called after MakePackedAPI
 try:
@@ -83,7 +82,7 @@ def make_closure_test_hardcoded_relax(mod):
 		res_np    = numpy.zeros(res_shape).astype(res.dtype)
 
 		mod = vta.build(
-			mod['fused_conv2d_NCHWnc_cast_add'],
+			mod['fused_conv2d_NCHWnc_add'],
 			(data, kernel, bias, res),
 			target=tvm.target.Target(env.target, host=env.target_host),
 			name="conv2d"

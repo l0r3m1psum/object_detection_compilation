@@ -5,8 +5,6 @@ from tvm import topi
 
 import vtar
 
-import vta
-
 # relax.BlockBuilder.call_te transforms relax.Var in te.Tensor allowing easy use
 # of topi operations.
 
@@ -18,7 +16,7 @@ def customize_legalize_conv2d(bb: relax.BlockBuilder, call: relax.Call) -> relax
 	dilation = topi.utils.get_const_tuple(call.attrs.dilation)
 	layout = call.attrs.data_layout
 	out_layout = call.attrs.out_layout
-	out_dtype = vta.get_env().acc_dtype
+	out_dtype = call.attrs.out_dtype
 
 	# TODO: dispatch to other conv2d in the topi and error out for unsupported
 	# formats.
