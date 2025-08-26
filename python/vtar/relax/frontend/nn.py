@@ -256,6 +256,7 @@ def ResNet50() -> nn.Module:
 # https://arxiv.org/abs/1612.03144
 # https://rumn.medium.com/f573a889c7b1
 # https://jonathan-hui.medium.com/45b227b9106c
+# This is wrong
 class ResNet50FPN(nn.Module):
 	def __init__(self) -> None:
 		super().__init__()
