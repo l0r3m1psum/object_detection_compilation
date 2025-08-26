@@ -256,10 +256,6 @@ import vta.testing
 
 os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
 
-def customize_legalize_add(bb: relax.BlockBuilder, call: relax.Call) -> relax.Expr:
-	print("af")
-	return bb.call_te(topi.add, call.args[0], call.args[1])
-
 # copied from vta.top.vta_conv2d
 # https://tvm.apache.org/docs/reference/api/python/topi.html#tvm.topi.nn.conv2d_NCHWc
 def topi_conv2d_NCHWnc(
@@ -272,6 +268,9 @@ def topi_conv2d_NCHWnc(
 		out_layout: str,
 		out_dtype='int32'
 	) -> te.Tensor:
+	# TODO: error checking
+	# TODO: add support for single int or list for strides ecc like the other operators topi
+
 	# if not is_packed_layout(layout):
 	# 	raise topi.InvalidShapeError()
 	assert dilation == (1, 1)
@@ -318,58 +317,67 @@ def customize_legalize_conv2d(bb: relax.BlockBuilder, call: relax.Call) -> relax
 	out_layout = call.attrs.out_layout
 	out_dtype = vta.get_env().acc_dtype
 
+	# TODO: dispatch to other conv2d in the topi and error out for unsupported
+	# formats.
+
 	return bb.call_te(topi_conv2d_NCHWnc, data, kernel, strides, padding, dilation, layout, out_layout, out_dtype)
 
 
 mod = ConvModelVTA
 # mod, _ = tvm.relax.frontend.detach_params(mod)
 # mod = tvm.lower(mod)
-mod = relax.transform.LegalizeOps(
-	{
-		"relax.add": customize_legalize_add,
-		"relax.nn.conv2d": customize_legalize_conv2d,
-	},
-	True
-)(mod)
-mod = zero_pipeline(mod)
+# mod = zero_pipeline(mod)
+# This is what zero_pipeline does but wiht the custom LegalizeOps
 seq = tvm.transform.Sequential(
 	[
-				relax.transform.RewriteDataflowReshape(),
-				relax.transform.ToNonDataflow(),
-				relax.transform.RemovePurityChecking(),
-				relax.transform.CallTIRRewrite(),
-				tir.transform.MakePackedAPI(),
-				# relax.transform.StaticPlanBlockMemory(),
-				# relax.transform.LowerAllocTensor(),
-				# relax.transform.KillAfterLastUse(),
-				# relax.transform.LowerRuntimeBuiltin(),
-				# relax.transform.VMShapeLower(),
-				# relax.transform.AttachGlobalSymbol(),
+		relax.transform.LegalizeOps(
+			{"relax.nn.conv2d": customize_legalize_conv2d,}, True
+		),
+		relax.transform.AnnotateTIROpPattern(),
+		relax.transform.FoldConstant(),
+		relax.transform.FuseOps(),
+		relax.transform.FuseTIR(),
+		tir.transform.MakePackedAPI(),
 	]
 )
 mod = seq(mod)
 
 print(mod)
-# print(mod['fused_cast_add'].buffer_map) # this needs to be dropped
+print(mod['fused_topi_conv2d_NCHWnc_cast_add'].buffer_map)
 
 # FIXME: This pass must be called after MakePackedAPI
-vta.build(mod)
-
-raise SystemExit(0)
-
-def to_int_list(x: tvm.ir.Array) -> List[int]:
-	return [int(n) for n in x]
+try:
+	vta.build(mod)
+except tvm.error.TVMError as e:
+	print(e)
 
 def make_closure_test_hardcoded_relax(mod):
 	def test_hardcoded_relax(env: vta.Environment, remote: tvm.rpc.RPCSession) -> None:
 		nonlocal mod
-		x            = te.placeholder((1, 4, 56, 56, 1, 16), name="x",            dtype="int8")
-		conv1_weight = te.placeholder((4, 4, 3, 3, 16, 16),  name="conv1_weight", dtype="int8")
-		conv1_bias   = te.placeholder((1, 4, 1, 1, 1, 16),   name="conv1_bias",   dtype="int32")
-		res          = te.placeholder((1, 4, 56, 56, 1, 16), name="res",          dtype="int32")
+
+		data   = te.placeholder((1, 4, 56, 56, 1, 16), name="data",         dtype="int8")
+		kernel = te.placeholder((4, 4, 3, 3, 16, 16),  name="kernel", dtype="int8")
+		bias   = te.placeholder((1, 4, 1, 1, 1, 16),   name="bias",   dtype="int32")
+		res    = te.placeholder((1, 4, 56, 56, 1, 16), name="res",          dtype="int32")
+
+		data_shape   = topi.utils.get_const_tuple(data.shape)
+		kernel_shape = topi.utils.get_const_tuple(kernel_np.shape)
+		bias_shape   = topi.utils.get_const_tuple(bias_np.shape)
+		res_shape    = topi.utils.get_const_tuple(res_np.shape)
+
+		data_np   = numpy.random.randint(0, 10, size=data_shape).astype(x.dtype)
+		kernel_np = numpy.random.randint(0, 10, size=kernel_shape).astype(kernel.dtype)
+		bias_np   = numpy.random.randint(0, 10, size=bias_shape).astype(bias.dtype)
+		res_np    = numpy.zeros(res_shape).astype(res.dtype)
+
+		data_arr   = tvm.nd.array(data_np, dev)
+		kernel_arr = tvm.nd.array(kernel_np, dev)
+		bias_arr   = tvm.nd.array(bias_np, dev)
+		res_arr    = tvm.nd.array(res_np, dev)
+
 		mod = vta.build(
-			mod['fused_cast_add'],
-			(conv1_weight, conv1_bias, res),
+			mod['fused_topi_conv2d_NCHWnc_cast_add'],
+			(data, kernel, bias, res),
 			target=tvm.target.Target(env.target, host=env.target_host),
 			name="conv2d"
 		)
@@ -379,17 +387,7 @@ def make_closure_test_hardcoded_relax(mod):
 		dev = remote.device(str(env.target))
 		time_f = f.time_evaluator("conv2d", dev, number=1)
 
-		data_np   = numpy.random.randint(0, 10, size=to_int_list(x.shape)).astype(x.dtype)
-		kernel_np = numpy.random.randint(0, 10, size=to_int_list(conv1_weight.shape)).astype(conv1_weight.dtype)
-		bias_np   = numpy.random.randint(0, 10, size=to_int_list(conv1_bias.shape)).astype(conv1_bias.dtype)
-		res_np    = numpy.zeros(to_int_list(res.shape)).astype(res.dtype)
-
-		data_arr = tvm.nd.array(data_np, dev)
-		kernel_arr = tvm.nd.array(kernel_np, dev)
-		bias_arr = tvm.nd.array(bias_np, dev)
-		res_arr = tvm.nd.array(res_np, dev)
-
-		cost = time_f(kernel_arr, bias_arr, res_arr)
+		cost = time_f(data_arr, kernel_arr, bias_arr, res_arr)
 		print(cost)
 	return test_hardcoded_relax
 
