@@ -9,6 +9,7 @@ import vta
 path = "build/resnet18_int8.onnx"
 model_onnx = onnx.load(path)
 
+# FIXME: for some reason it fails in onnx.checker.check_model...
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=False)
 
 print(mod)

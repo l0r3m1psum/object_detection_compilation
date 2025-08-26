@@ -10,14 +10,18 @@ main(void) {
 
 	// FIXME: broken for some reason
 #if 0
-	FILE_STORAGE_INFO fileStorageInfoBuf = {0};
-	GetFileInformationByHandleEx(
-		CreateFile("\\\\.\\PhysicalDrive0", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL),
-		FileStorageInfo,
-		&fileStorageInfoBuf,
-		sizeof fileStorageInfoBuf
-	);
-	__debugbreak();
+	{
+		HANDLE hIn = CreateFile("\\\\.\\PhysicalDrive0", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+		FILE_STORAGE_INFO fileStorageInfoBuf = {0};
+		GetFileInformationByHandleEx(
+			hIn,
+			FileStorageInfo,
+			&fileStorageInfoBuf,
+			sizeof fileStorageInfoBuf
+		);
+		__debugbreak();
+	}
 #endif
 
 	int numArgs = 0;

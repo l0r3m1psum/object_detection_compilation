@@ -1,5 +1,5 @@
 import torch
-from torchvision.models import resnet18
+from torchvision.models import resnet18, ResNet18_Weights
 from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, QuantFormat
 import numpy as np
 import onnxruntime as ort
@@ -32,7 +32,7 @@ def run_inference(session, input_tensor):
 
 
 
-if not (os.path.exists("resnet18_int8.onnx")):
+def main():
 
     # Setup dataset (es. ImageNet valida anche per ResNet18)
     transform = transforms.Compose([
@@ -44,12 +44,16 @@ if not (os.path.exists("resnet18_int8.onnx")):
     ])
 
     # calibrazione per la quantizzazione su CIFAR100
-    train_dataset = datasets.Imagenette(root='./dataset',  split='train', download=False, transform=transform)
+    try:
+        train_dataset = datasets.Imagenette(root='./dataset',  split='train', download=True, transform=transform)
+    except RuntimeError:
+        train_dataset = datasets.Imagenette(root='./dataset',  split='train', download=False, transform=transform)
+
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
     # carico il modello
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = resnet18(pretrained=True)
+    model = resnet18(weights=ResNet18_Weights.DEFAULT)
     model.fc = nn.Linear(model.fc.in_features, len(train_dataset.classes))  # Adatta alle 10 classi di Imagenette
 
     # preparo il train
@@ -133,7 +137,8 @@ if not (os.path.exists("resnet18_int8.onnx")):
 
 
 
-
+if __name__ == "__main__":
+    main()
 
 
 
