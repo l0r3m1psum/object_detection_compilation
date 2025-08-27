@@ -46,10 +46,10 @@ class ConvModelVTA:
 	def main(
 		#             (1//BATCH,      64//BLOCK_IN, 56, 56, BATCH,     BLOCK_IN)
 		x:            R.Tensor((1//1,   64//16, 56, 56, 1,  16), dtype="int8"),
-		#             (64//BLOCK_OUT, 64//BLOCK_IN, 3,  3,  BLOCK_OUT, BLOCK_IN)
+		#             (64//BLOCK_IN,  64//BLOCK_IN, 3,  3,  BLOCK_IN,  BLOCK_IN)
 		conv1_weight: R.Tensor((64//16, 64//16, 3,  3,  16, 16), dtype="int8"),
-		#             (1//BATCH,      64//BLOCK_IN, 1,  1,  BATCH,     BLOCK_OUT)
-		conv1_bias:   R.Tensor((1//1,   64//16, 1,  1,  1,  16), dtype="int32"),
+		#             (1,             64//BLOCK_IN, 1,  1,  1,         BLOCK_IN)
+		conv1_bias:   R.Tensor((1,      64//16, 1,  1,  1,  16), dtype="int32"),
 	):
 		R.func_attr({"num_input": 1})
 		with R.dataflow():
@@ -63,5 +63,6 @@ class ConvModelVTA:
 print(ConvModel)
 print(ConvModelVTA)
 
-res = vtar.relax.transform.ReluToGeluAndQuantizeMatmul()(ConvModel)
-print(res)
+mod = ConvModel
+mod = vtar.relax.transform.ReluToGeluAndQuantizeMatmul()(mod)
+print(mod)
