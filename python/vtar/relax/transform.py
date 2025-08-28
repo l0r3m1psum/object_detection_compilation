@@ -20,17 +20,6 @@ def _get_shape(data: relax.Var) -> Tuple[int]:
 # correctly. This is necessary to be able to do relax.get_shape_of because
 # "GetShapeOf can only be applied to normalized expr".
 
-def _weight_shape_match(bb: relax.BlockBuilder, data: relax.Var, cfactor_out: int) -> relax.Expr:
-	"""Pad the weight if the shape[0] not divisible by cfactor_out."""
-	O, I, H, W = _get_shape(data)
-
-	pad_width = O % cfactor_out
-	if pad_width != 0:
-		data = bb.emit(
-			relax.op.nn.pad(data, [[0, pad_width], [0, 0], [0, 0], [0, 0]])
-		)
-	return data
-
 def pad_channel(bb: relax.BlockBuilder, data: relax.Var, c: int) -> relax.Expr:
 	dshape = _get_shape(data)
 	N, C, H, W = dshape
@@ -131,6 +120,7 @@ class ReluAndMatmulRewriter(relax.expr_functor.PyExprMutator):
 					out_dtype=call.attrs['out_dtype']
 				))
 			elif call.op.name == 'relax.add':
+				# TODO: make this commutative.
 				call_args1 = pad_channel(self.builder_, call.args[1], self.cfactor)
 				call_args1 = pack_nchw_to_NCHWnc(self.builder_, call_args1, 1, self.cfactor)
 				# call_args1 = self.builder_.emit(relax.op.expand_dims(call_args1, 5))
@@ -141,8 +131,11 @@ class ReluAndMatmulRewriter(relax.expr_functor.PyExprMutator):
 			else:
 				raise ValueError
 		else:
+			# For the moment we want to pack the entire graph
 			raise ValueError
 
+		# TODO: check that both start and end are present in the graph otherwise
+		# the transformation can't work.
 		if call.op.name == self.bitpack_end:
 			self.start_pack = False
 			res = self.builder_.emit(res)
@@ -173,8 +166,81 @@ class ReluToGeluAndQuantizeMatmul:
 
 # The ``start_pack`` and ``stop_pack`` labels indicate where
 # to start and end the graph packing relay pass: in other words
-# where to start and finish offloading to VTA.
+# where to start and finish offloading to VTA. Note that the start_pack and
+# stop_pack interval is exclusive on both ends (start_pack, stop_pack).
 
 # Graphpack expects to receive as input a quantized model at least in the
 # ``start_pack`` and ``stop_pack`` range. Also all operations in that range
 # shall be supported by VTA and the subgraph should be in A-Normal Form (ANF).
+
+# TODO: implement transform that simplifies
+#     dequantize -> flatten -> quantize to flatten
+#     dequantize -> maxpool -> quantize to flatten
+
+# https://mlc.ai/chapter_graph_optimization/index.html#fuse-linear-and-relu
+@relax.expr_functor.mutator
+class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
+	def __init__(self, mod: tvm.IRModule) -> None:
+		super().__init__(mod)
+
+	def visit_call_(self, call):
+		# call = self.visit_expr_post_order(call)
+
+		# TODO: relax.nn.max_pool2d
+		# print(call.op.name)
+		try:
+			prev = self.lookup_binding(call.args[0]) or call
+			prev_prev = self.lookup_binding(prev.args[0]) or call
+		# except tvm.error.TVMError as e:
+		# FIXME: this catch all is terrible.
+		except:
+			prev = call
+			prev_prev = call
+
+		wrapper_in_dequant_quant = (
+			call.op.name == 'relax.quantize'
+			and prev_prev.op.name == 'relax.dequantize'
+			and call.args[1].data.numpy() == prev_prev.args[1].data.numpy() # same scale
+			and call.args[2].data.numpy() == prev_prev.args[2].data.numpy() # same zero_point
+		)
+
+		if wrapper_in_dequant_quant:
+			if prev.op.name == 'relax.reshape':
+				res = self.builder_.emit(relax.op.reshape(prev_prev.args[0], prev.args[1]))
+			elif prev.op.name == 'relax.nn.max_pool2d':
+				attrs = {key: prev.attrs[key] for key in prev.attrs.keys()}
+				res = self.builder_.emit(relax.op.nn.max_pool2d(prev_prev.args[0], **attrs))
+			else:
+				res = call
+		else:
+			res = call
+
+		return res
+
+@tvm.ir.transform.module_pass(opt_level=0)
+class RemoveUnnecessaryDequantizeQuantizeWrapping:
+	def transform_module(self, mod, ctx):
+		rewriter = UnnecessaryDequantizeQuantizeWrappingRemover(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				updated_func = rewriter.visit_expr(func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				rewriter.builder_.update_func(global_var, updated_func)
+
+		return rewriter.builder_.get()
+
+# https://arxiv.org/pdf/2311.02103
+# https://mlc.ai/
+if False:
+	# Dataflow Pattern Language
+	x = relax.dpl.wildcard()
+	scale = relax.dpl.wildcard()
+	zero_point = relax.dpl.wildcard()
+	shape = relax.dpl.wildcard()
+
+	lv = relax.dpl.is_op("relax.dequantize")(x, scale, zero_point)
+	lv1 = relax.dpl.is_op("relax.reshape")(lv, shape)
+	lv2 = relax.dpl.is_op("relax.quantize")(lv1, scale, zero_point)
+
+	pattern = lv2

@@ -1,5 +1,10 @@
 from tvm import relax
 import onnx
+if onnx.__version__ != '1.16.1':
+	# https://github.com/lshqqytiger/stable-diffusion-webui-amdgpu/issues/541#issuecomment-2568218608
+	import warnings
+	# it fails in onnx.checker.check_model...
+	warnings.warn("The onnx version is not the expected one, 1.16.1 seems to be the only working one")
 import vtar.relax.frontend.onnx
 
 import os, sys
@@ -7,10 +12,16 @@ sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
 import vta
 
 path = "build/resnet18_int8.onnx"
+# https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx
+# path = "build/resnet50-v1-12-int8.onnx"
 model_onnx = onnx.load(path)
 
-# FIXME: for some reason it fails in onnx.checker.check_model...
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=False)
+
+print(mod)
+
+import vtar.relax.transform
+mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
 
 print(mod)
 

@@ -38,6 +38,9 @@ class ConvModel:
 			R.output(gv)
 		return gv
 
+# TODO: check that the dimension factoring is correct, why in
+# https://tvm.apache.org/docs/v0.16.0/topic/vta/tutorials/optimize/convolution_opt.html#sphx-glr-topic-vta-tutorials-optimize-convolution-opt-py
+# they use also BLOCK_OUT
 # To interpret look at test_benchmark_topi_conv2d.py:run_conv2d
 # H=56, W=56, I=64, O=64, kH=3, kW=3
 @I.ir_module
@@ -66,3 +69,21 @@ print(ConvModelVTA)
 mod = ConvModel
 mod = vtar.relax.transform.ReluToGeluAndQuantizeMatmul()(mod)
 print(mod)
+
+@I.ir_module
+class DequantQuantWrap:
+	@R.function
+	def main(
+		x:            R.Tensor((1,8), dtype="int8"),
+	):
+		R.func_attr({"num_input": 1})
+		with R.dataflow():
+			lv = R.dequantize(x, R.const(1.0), R.const(1, dtype="int8"))
+			lv1 = R.reshape(lv, R.shape((-1,)))
+			lv2 = R.quantize(lv1, R.const(1.0), R.const(1, dtype="int8"))
+			gv = lv2
+			R.output(gv)
+		return gv
+
+print(DequantQuantWrap)
+print(vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(DequantQuantWrap))

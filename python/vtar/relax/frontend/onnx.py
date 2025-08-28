@@ -124,6 +124,8 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# FIXME: this is wrong
 		return relax.op.astype(relax.op.add(relax.op.astype(alphaAB, "int32"), C), "int8")
 
+# TODO: https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html
+
 class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v1(cls, bb, inputs, attr, params):
@@ -146,9 +148,6 @@ convert_map = {
 	"DequantizeLinear": DequantizeLinear,
 }
 
-def my_get_convert_map() -> dict:
-	return original_get_convert_map() | convert_map
-
 def from_onnx(
 		model: GraphProto,
 		shape_dict: Dict[str, List] | None = None,
@@ -157,7 +156,11 @@ def from_onnx(
 		keep_params_in_input: bool = False,
 		sanitize_input_names: bool = True
 	) -> ir.IRModule:
-	original = relax.frontend.onnx.onnx_frontend._get_convert_map
+
+	def my_get_convert_map() -> dict:
+		return original_get_convert_map() | convert_map
+
+	original_get_convert_map = relax.frontend.onnx.onnx_frontend._get_convert_map
 	relax.frontend.onnx.onnx_frontend._get_convert_map = my_get_convert_map
 	try:
 		res = relax.frontend.onnx.from_onnx(
@@ -169,5 +172,5 @@ def from_onnx(
 			sanitize_input_names,
 		)
 	finally:
-		relax.frontend.onnx.onnx_frontend._get_convert_map = original
+		relax.frontend.onnx.onnx_frontend._get_convert_map = original_get_convert_map
 	return res
