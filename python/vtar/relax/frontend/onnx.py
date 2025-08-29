@@ -82,20 +82,38 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		return relax.op.dequantize(x, x_scale, x_zero_point)
 
+def clamp(data, min, max):
+	res = relax.op.minimum(data, relax.const(max))
+	res = relax.op.maximum(relax.const(min), res)
+	return res
+
 class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v1(cls, bb, inputs, attr, params):
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearAdd
-		A            = inputs[0]
-		A_scale      = inputs[1]
-		A_zero_point = inputs[2]
-		B            = inputs[3]
-		B_scale      = inputs[4]
-		B_zero_point = inputs[5]
-		C_scale      = inputs[6]
-		C_zero_point = inputs[7]
-		# FIXME: this is wrong
-		return relax.op.add(A, B)
+		# C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
+		A   = inputs[0].astype("int32")
+		A_s = inputs[1].data.numpy().item()
+		A_z = inputs[2].astype("int32")
+		B   = inputs[3].astype("int32")
+		B_s = inputs[4].data.numpy().item()
+		B_z = inputs[5].astype("int32")
+		C_s = inputs[6].data.numpy().item()
+		C_z = inputs[7].astype("int32")
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/micro/kernels/add_common.cc#L48C62-L48C64
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L211
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L204
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L180
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/common.h#L269
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/common.cc#L22
+		shift = 20
+		s1 = relax.const(int((A_s/C_s) * (1 << shift)))
+		s2 = relax.const(int((B_s/C_s) * (1 << shift)))
+		C = (relax.op.right_shift(s1*(A - A_z), relax.const(shift))
+			+ relax.op.right_shift(s2*(B - B_z), relax.const(shift))
+			+ C_z)
+		C = clamp(C, -128, 127).astype("int8")
+		return C
 
 class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -130,14 +148,21 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 	@classmethod
 	def _impl_v1(cls, bb, inputs, attr, params):
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearGlobalAveragePool
-		X = inputs[0]
-		x_scale = inputs[0]
-		x_zero_point = inputs[0]
-		y_scale = inputs[0]
-		y_zero_point = inputs[0]
+		x = inputs[0]
+		x_s = inputs[1].data.numpy().item()
+		x_z = inputs[2].astype("int32")
+		y_s = inputs[3].data.numpy().item()
+		y_z = inputs[4].astype("int32")
 
-		# FIXME: this is wrong
-		return relax.op.collapse_sum_to(X, X.struct_info.shape.values[:2]+[1,1])
+		shift = 20
+		s = relax.const(int((x_s/y_s) * (1 << shift)))
+		avg = relax.op.nn.avg_pool2d(
+			data=x.astype("int32"),
+			pool_size=x.struct_info.shape.values[2:],
+		)
+		res = relax.op.right_shift(s*(avg - x_z), relax.const(shift)) + y_z
+		res = clamp(res, -128, 127).astype("int8")
+		return res
 
 convert_map = {
 	"QuantizeLinear": QuantizeLinear,
