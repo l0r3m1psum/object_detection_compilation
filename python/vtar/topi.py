@@ -24,7 +24,7 @@ def conv2d_NCHWnc(
 	assert len(data.shape) == 6
 	assert len(kernel.shape) == 6
 
-	ishape = topi.utils.get_const_tuple(data.shape)
+	dshape = topi.utils.get_const_tuple(data.shape)
 	kshape = topi.utils.get_const_tuple(kernel.shape)
 
 	if padding[0]:
@@ -34,12 +34,12 @@ def conv2d_NCHWnc(
 
 	oheight = topi.utils.get_const_int((pad_data.shape[2] - kernel.shape[2]) // strides[0] + 1)
 	owidth = topi.utils.get_const_int((pad_data.shape[3] - kernel.shape[3]) // strides[1] + 1)
-	oshape = (topi.utils.get_const_int(data.shape[0]), topi.utils.get_const_int(kernel.shape[0]), oheight, owidth, topi.utils.get_const_int(data.shape[4]), topi.utils.get_const_int(kernel.shape[4]))
+	oshape = (dshape[0], kshape[0], oheight, owidth, dshape[4], kshape[4])
 
 	d_i = te.reduce_axis((0, kshape[2]), name="d_i")
 	d_j = te.reduce_axis((0, kshape[3]), name="d_j")
-	k_o = te.reduce_axis((0, ishape[1]), name="k_o")
-	k_i = te.reduce_axis((0, ishape[-1]), name="k_i")
+	k_o = te.reduce_axis((0, dshape[1]), name="k_o")
+	k_i = te.reduce_axis((0, dshape[-1]), name="k_i")
 	hstride, wstride = strides
 	res = te.compute(
 		oshape,
