@@ -1,10 +1,16 @@
 from tvm import relax
 from tvm import ir
+from tvm import topi
 import tvm.relax.frontend.onnx
 
 from onnx import GraphProto
 
 from typing import Dict, List
+
+def clamp(data, min, max):
+	res = relax.op.minimum(data, relax.const(max))
+	res = relax.op.maximum(relax.const(min), res)
+	return res
 
 class QuantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -21,56 +27,45 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	def _impl_v10(cls, bb, inputs, attr, params):
 		input0_struct_info = inputs[0].args[0].struct_info
 		# https://onnx.ai/onnx/operators/onnx__QLinearConv.html#inputs
-		x            = inputs[0]
-		x_scale      = inputs[1]
-		x_zero_point = inputs[2]
-		w            = inputs[3]
-		w_scale      = inputs[4]
-		w_zero_point = inputs[5]
-		y_scale      = inputs[6]
-		y_zero_point = inputs[7]
-		B            = inputs[8]
+		X   = inputs[0]
+		X_s = inputs[1].data.numpy().item()
+		X_z = inputs[2].astype("int32")
+		W   = inputs[3]
+		W_s = inputs[4].data.numpy().item()
+		W_z = inputs[5].astype("int32")
+		Y_s = inputs[6].data.numpy().item()
+		Y_z = inputs[7].astype("int32")
+		B   = inputs[8]
+		assert len(X.struct_info.shape) == 4
+		assert len(W.struct_info.shape) == 4
 
-		if hasattr(input0_struct_info, "ndim"):
-			ndim = input0_struct_info.ndim
-		else:
-			ndim = len(input0_struct_info.shape)
-
-		if ndim == 3:
-			op = relax.op.nn.conv1d
-			data_layout = "NCW"
-			kernel_layout = "OIW"
-		elif ndim == 4:
-			op = relax.op.nn.conv2d
-			data_layout = "NCHW"
-			kernel_layout = "OIHW"
-		elif ndim == 5:
-			op = relax.op.nn.conv3d
-			data_layout = "NCDHW"
-			kernel_layout = "OIDHW"
-		else:
-			raise NotImplementedError("Ndim > 5 not supported for convolution.")
-
-		conv_out = bb.normalize(
-			op(
-				data=x,
-				weight=w,
-				strides=attr.get("strides", 1),
-				padding=attr.get("pads", 0),
-				dilation=attr.get("dilations", 1),
-				groups=attr.get("group", 1),
-				data_layout=data_layout,
-				kernel_layout=kernel_layout,
-			)
+		conv = relax.op.nn.conv2d(
+			data=X,
+			weight=W,
+			strides=attr.get("strides", 1),
+			padding=attr.get("pads", 0),
+			dilation=attr.get("dilations", 1),
+			groups=attr.get("group", 1),
+			data_layout="NCHW",
+			kernel_layout="OIHW",
+			out_dtype="int32"
 		)
-		# FIXME: this is 100% wrong
-		if B is not None:
-			print(B)
-			bias = relax.op.reshape(B, [1, -1] + [1] * (ndim - 2))
-			conv_out = relax.op.add(relax.op.astype(conv_out, "int32"), bias)
 
-		# FIXME: this is wrong
-		return relax.op.astype(conv_out, "int8")
+		shift = 20
+		_, c, h, w = topi.utils.get_const_tuple(relax.get_shape_of(W))
+		m = relax.const(int(X_s*W_s/Y_s * (1<<shift)))
+		s3 = relax.const(int(Y_s * (1<<shift)))
+		res = relax.const(int(c*h*w*inputs[2].data.numpy().item()*inputs[5].data.numpy().item()/Y_s)) \
+		+ relax.op.right_shift(m*(
+			conv
+			- X_z*relax.op.reshape(bb.normalize(relax.op.sum(W.astype("int32"), axis=(1,2,3))), (1, -1, 1, 1))   # TODO: sum the last three dimensions
+			# XD: voglio ridere ad esprimere questa cosa.
+			# - W_z*relax.op.sum(W.astype("int32")) # TODO: sum the last three dimensions
+		), relax.const(shift)) \
+		+ relax.op.reshape(bb.normalize(relax.op.left_shift(B/s3, relax.const(shift))), (1,-1,1,1)) + Y_z
+
+		res = clamp(res, -128, 127).astype("int8")
+		return res
 
 class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -82,16 +77,13 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		return relax.op.dequantize(x, x_scale, x_zero_point)
 
-def clamp(data, min, max):
-	res = relax.op.minimum(data, relax.const(max))
-	res = relax.op.maximum(relax.const(min), res)
-	return res
-
 class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v1(cls, bb, inputs, attr, params):
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearAdd
 		# C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
+		# We cast to "int32" because is what VTA internally does and we hope
+		# that gets mapped to TVM later in the compilation.
 		A   = inputs[0].astype("int32")
 		A_s = inputs[1].data.numpy().item()
 		A_z = inputs[2].astype("int32")
@@ -122,25 +114,40 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		alpha  = attr.get('alpha', 0.0)
 		transA = attr.get('transA', 0)
 		transB = attr.get('transB', 0)
-		A            = inputs[0]
-		a_scale      = inputs[1]
-		a_zero_point = inputs[2]
-		B            = inputs[3]
-		b_scale      = inputs[4]
-		b_zero_point = inputs[5]
-		C            = inputs[6]
-		y_scale      = inputs[7]
-		y_zero_point = inputs[8]
-		# FIXME: this is wrong
-		# TODO: relax.op.permute_dims
-		assert A.args[0].struct_info.ndim == B.struct_info.ndim
-		assert B.struct_info.ndim == 2
+
+		assert inputs[0].args[0].struct_info.ndim == inputs[3].struct_info.ndim
+		assert inputs[3].struct_info.ndim == 2
+		assert alpha == 1.0, "alpha != 1.0 requires some work to keep it integer only"
+
+		# A has shape MxN and B has shape NxO
+		n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(inputs[0]))[1])
+		A   = inputs[0]
+		A_s = inputs[1].data.numpy().item()
+		A_z = inputs[2].astype("int32")
+		B   = inputs[3]
+		B_s = inputs[4].data.numpy().item()
+		B_z = inputs[5].astype("int32")
+		C   = inputs[6].astype("int32")
+		Y_s = inputs[7].data.numpy().item()
+		Y_z = inputs[8].astype("int32")
 		AT = relax.op.permute_dims(A) if transA else A
 		BT = relax.op.permute_dims(B) if transB else B
-		AB = relax.op.matmul(AT, BT)
-		alphaAB = relax.op.multiply(AB, alpha) if alpha != 1.0 else AB
-		# FIXME: this is wrong
-		return relax.op.astype(relax.op.add(relax.op.astype(alphaAB, "int32"), C), "int8")
+		AB = relax.op.matmul(AT, BT, out_dtype="int32")
+		breakpoint()
+
+		# Reductions should happen in on the CPU while VTA is doing the matmul
+		a2 = relax.op.sum(BT.astype("int32"), axis=0) # reduce over columns
+		a1 = relax.op.sum(AT.astype("int32"), axis=1) # reduce over rows
+
+		shift = 20
+		m = relax.const(int((A_s*B_s)/Y_s * (1<<shift)))
+		# - A_z*a2 - B_z*a1 is broadcasted
+		res = (Y_z
+			+ relax.op.right_shift(m*(n*A_z*B_z - A_z*a2 - B_z*a1 + AB), relax.const(shift))
+			+ C # FIXME: questo va diviso per Y_s
+		)
+		res = clamp(res, -128, 127).astype("int8")
+		return res
 
 # TODO: https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html
 
