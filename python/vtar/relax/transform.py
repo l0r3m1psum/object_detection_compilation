@@ -76,11 +76,11 @@ def pack_nchw_to_NCHWnc(bb: relax.BlockBuilder, data: relax.Var, n: int, c: int)
 # nidificare i.e. un nodo del grafo chiama una funzione rappresentata da
 # un'altro grafo)
 @relax.expr_functor.mutator
-class ReluAndMatmulRewriter(relax.expr_functor.PyExprMutator):
+class GraphPacker(relax.expr_functor.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
 		super().__init__(mod)
-		self.bitpack_start = "relax.nn.conv2d"
-		self.bitpack_end = "relax.add"
+		self.bitpack_start = "relax.nn.max_pool2d"
+		self.bitpack_end = "relax.nn.avg_pool2d"
 		self.start_pack = False
 
 		self.bfactor = 1 # env.BATCH
@@ -91,19 +91,28 @@ class ReluAndMatmulRewriter(relax.expr_functor.PyExprMutator):
 		self.conv_kernel_layout = "OIHW%do%di" % (self.cfactor, self.cfactor)
 
 	def visit_call_(self, call: relax.Call) -> relax.Expr:
-		print("mutator:", type(call), call)
-		args = [self.visit_expr(arg) for arg in call.args]
+		print("mutator:", type(call), call, repr(call.op.name))
+		packed_args = [self.visit_expr(arg) for arg in call.args]
 
-		call_args0 = call.args[0]
+		# TODO: check that both start and end are present in the graph otherwise
+		# the transformation can't work.
+
+		res = None
 		if call.op.name == self.bitpack_start:
 			self.start_pack = True
-			call_args0 = pack_nchw_to_NCHWnc(self.builder_, call.args[0], self.bfactor, self.cfactor)
-
-		# TODO: add way more checks like input dtypes...
-		if self.start_pack:
+			res = self.builder_.emit(call)
+			res = pack_nchw_to_NCHWnc(self.builder_, res, self.bfactor, self.cfactor)
+		elif call.op.name == self.bitpack_end:
+			self.start_pack = False
+			if len(packed_args) != 1:
+				raise ValueError("The last node should have only one input.")
+			res = unpack_NCHWnc_to_nchw(self.builder_, packed_args[0])
+			res = self.builder_.emit(relax.Call(call.op, (res,), call.attrs))
+		elif self.start_pack:
+			# TODO: add way more checks like input dtypes...
 			if (call.op.name == "relax.nn.conv2d"
 					and call.attrs['out_dtype'] == "int32"):
-				data, weight = call_args0, call.args[1]
+				data, weight = packed_args
 				weight = pad_channel(self.builder_, weight, self.cfactor)
 				weight = pack_nchw_to_NCHWnc(self.builder_, weight, self.cfactor, self.cfactor)
 				# TODO: topi.nn.bitpack
@@ -119,42 +128,68 @@ class ReluAndMatmulRewriter(relax.expr_functor.PyExprMutator):
 					# bb.emit infers the out_layout
 					out_dtype=call.attrs['out_dtype']
 				))
-			elif call.op.name == 'relax.add':
-				# TODO: make this commutative.
-				call_args1 = pad_channel(self.builder_, call.args[1], self.cfactor)
-				call_args1 = pack_nchw_to_NCHWnc(self.builder_, call_args1, 1, self.cfactor)
-				# call_args1 = self.builder_.emit(relax.op.expand_dims(call_args1, 5))
-				print(_get_shape(call_args0), _get_shape(call_args1))
-				# FIXME: This is an ad-hoc thing... I have to make a correct use
-				# of the old graph call.args and the new one args
-				res = self.builder_.emit(relax.op.add(args[0], call_args1))
+			elif call.op.name == 'relax.add' or call.op.name == 'relax.subtract' or call.op.name == 'relax.multiply':
+				arg0_shape = _get_shape(call.args[0])
+				arg1_shape = _get_shape(call.args[1])
+				if arg0_shape == arg1_shape:
+					pass
+				elif not arg0_shape or not arg1_shape: # one of the two is a scalar
+					pass
+				else:
+					# TODO: make this commutative.
+					# TODO: generalize this for any 4 dimensional broadcasting
+					data, bias = packed_args
+					bias_shape = _get_shape(bias)
+					if (len(bias_shape) != 4 or
+						(bias_shape[0] != 1 or bias_shape[0] != 1 or bias_shape[0] != 1)):
+						raise ValueError("Broadcasted %s is only supported channel dimension" % call.op.name)
+					bias = pad_channel(self.builder_, bias, self.cfactor)
+					bias = pack_nchw_to_NCHWnc(self.builder_, bias, 1, self.cfactor)
+					res = self.builder_.emit(relax.Call(call.op, (data, bias)))
+			elif call.op.name == 'relax.reshape':
+				# Data in packed_args is passed in pack_nchw_to_NCHWnc
+				(data, shape) = packed_args
+				shape = topi.utils.get_const_tuple(shape)
+				assert len(shape) == 4 and shape[0] == 1 and shape[2] == 1 and shape[3] == 1, "only reshaping for broadcast is supported"
+				data = self.builder_.emit(call)
+				data = pad_channel(self.builder_, data, self.cfactor)
+				data = pack_nchw_to_NCHWnc(self.builder_, data, 1, self.cfactor)
+				res = data
+				# # self.unpack_transpose = False
+				# # N C H W n c
+				# data = bb.emit(relax.op.permute_dims(data, (0, 4, 1, 5, 2, 3)))
+				# # N n C c H W
+				# new_shape = _get_shape(call.args[0]) # N C H W
+				# res = pad_channel(self.builder_, data, new_shape[1])
+			elif call.op.name == 'relax.pad':
+				assert False, "pad"
+			elif (call.op.name == 'relax.astype'
+				or call.op.name == 'relax.right_shift'
+				or call.op.name == 'relax.left_shift'
+				or call.op.name == 'relax.minimum'
+				or call.op.name == 'relax.maximum'
+				or call.op.name == 'relax.sum'):
+				# breakpoint()
+				pass
 			else:
-				raise ValueError
-		else:
-			# For the moment we want to pack the entire graph
-			raise ValueError
+				raise ValueError("Unsupported operator: %s", call.op.name)
 
-		# TODO: check that both start and end are present in the graph otherwise
-		# the transformation can't work.
-		if call.op.name == self.bitpack_end:
-			self.start_pack = False
-			res = self.builder_.emit(res)
-			res = unpack_NCHWnc_to_nchw(self.builder_, res)
+		if res is None:
+			res = relax.Call(call.op, packed_args, call.attrs)
 
 		return res
-		# return super().visit_call_(call)
 
 # TODO: vedere cosa stampa su un modello vero i.e. ResNet
 # TODO: assert that the Module contains only the main function.
-@tvm.transform.module_pass(opt_level=0, name="ReluToGeluAndQuantizeMatmul")
-class ReluToGeluAndQuantizeMatmul:
+@tvm.transform.module_pass(opt_level=0)
+class GraphPack:
 	def transform_module(self, mod: tvm.IRModule, _ctx: tvm.transform.PassContext) -> tvm.IRModule:
 		"""IRModule-level transformation"""
 
 		# https://matt.might.net/articles/a-normalization/
 		mod = relax.transform.Normalize()(mod) # should remove nested relax calls
 
-		rewriter = ReluAndMatmulRewriter(mod)
+		rewriter = GraphPacker(mod)
 		for g_var, func in mod.functions_items():
 			print("pass:", type(func))
 			if isinstance(func, relax.Function):
@@ -208,8 +243,7 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 			if prev.op.name == 'relax.reshape':
 				res = self.builder_.emit(relax.op.reshape(prev_prev.args[0], prev.args[1]))
 			elif prev.op.name == 'relax.nn.max_pool2d':
-				attrs = {key: prev.attrs[key] for key in prev.attrs.keys()}
-				res = self.builder_.emit(relax.op.nn.max_pool2d(prev_prev.args[0], **attrs))
+				res = self.builder_.emit(relax.Call(prev.op, (prev_prev.args[0],), prev.attrs))
 			else:
 				res = call
 		else:

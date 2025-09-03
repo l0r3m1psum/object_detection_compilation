@@ -31,10 +31,12 @@ class ConvModel:
 	):
 		R.func_attr({"num_input": 1})
 		with R.dataflow():
-			conv1 = R.nn.conv2d(x, conv1_weight, strides=1, padding=1, dilation=1,
+			mp1 = R.nn.max_pool2d(x)
+			conv1 = R.nn.conv2d(mp1, conv1_weight, strides=1, padding=1, dilation=1,
 				out_dtype="int32")
 			add1 = R.add(conv1, conv1_bias)
-			gv = add1
+			avg1 = R.nn.avg_pool2d(add1)
+			gv = avg1
 			R.output(gv)
 		return gv
 
@@ -67,7 +69,7 @@ print(ConvModel)
 print(ConvModelVTA)
 
 mod = ConvModel
-mod = vtar.relax.transform.ReluToGeluAndQuantizeMatmul()(mod)
+mod = vtar.relax.transform.GraphPack()(mod)
 print(mod)
 
 @I.ir_module

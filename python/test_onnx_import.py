@@ -18,10 +18,12 @@ model_onnx = onnx.load(path)
 
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=False)
 
-print(mod)
+# print(mod)
 
 import vtar.relax.transform
 mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
+mod = vtar.relax.transform.GraphPack()(mod)
+mod = relax.get_pipeline('vtar_zero')(mod)
 
 print(mod)
 

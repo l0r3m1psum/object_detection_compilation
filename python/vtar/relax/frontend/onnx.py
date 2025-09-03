@@ -38,6 +38,7 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		B   = inputs[8]
 		assert len(X.struct_info.shape) == 4
 		assert len(W.struct_info.shape) == 4
+		assert inputs[5].data.numpy().item() == 0
 
 		conv = relax.op.nn.conv2d(
 			data=X,
@@ -58,8 +59,9 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		res = relax.const(int(c*h*w*inputs[2].data.numpy().item()*inputs[5].data.numpy().item()/Y_s)) \
 		+ relax.op.right_shift(m*(
 			conv
-			- X_z*relax.op.reshape(bb.normalize(relax.op.sum(W.astype("int32"), axis=(1,2,3))), (1, -1, 1, 1))   # TODO: sum the last three dimensions
-			# XD: voglio ridere ad esprimere questa cosa.
+			# FIXME: the reshape should be correct wrt the batch dimension wich is not necessarelly 1.
+			- X_z*relax.op.reshape(bb.normalize(relax.op.sum(W.astype("int32"), axis=(1,2,3))), (1, -1, 1, 1))
+			# TODO: right now we are asserting that W_z is zero, in the future we have to remove this assumption.
 			# - W_z*relax.op.sum(W.astype("int32")) # TODO: sum the last three dimensions
 		), relax.const(shift)) \
 		+ relax.op.reshape(bb.normalize(relax.op.left_shift(B/s3, relax.const(shift))), (1,-1,1,1)) + Y_z
@@ -133,7 +135,6 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		AT = relax.op.permute_dims(A) if transA else A
 		BT = relax.op.permute_dims(B) if transB else B
 		AB = relax.op.matmul(AT, BT, out_dtype="int32")
-		breakpoint()
 
 		# Reductions should happen in on the CPU while VTA is doing the matmul
 		a2 = relax.op.sum(BT.astype("int32"), axis=0) # reduce over columns
@@ -144,7 +145,8 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# - A_z*a2 - B_z*a1 is broadcasted
 		res = (Y_z
 			+ relax.op.right_shift(m*(n*A_z*B_z - A_z*a2 - B_z*a1 + AB), relax.const(shift))
-			+ C # FIXME: questo va diviso per Y_s
+			# TOOD: check that this is right (problably not)
+			+ relax.op.left_shift(C/relax.const(int(Y_s * (1 << shift))), relax.const(shift))
 		)
 		res = clamp(res, -128, 127).astype("int8")
 		return res
