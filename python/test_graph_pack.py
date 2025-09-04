@@ -73,12 +73,9 @@ mod = vtar.relax.transform.GraphPack()(mod)
 print(mod)
 
 @I.ir_module
-class DequantQuantWrap:
+class DequantReshapeQuant:
 	@R.function
-	def main(
-		x:            R.Tensor((1,8), dtype="int8"),
-	):
-		R.func_attr({"num_input": 1})
+	def main(x: R.Tensor((1, 8), dtype="int8")):
 		with R.dataflow():
 			lv = R.dequantize(x, R.const(1.0), R.const(1, dtype="int8"))
 			lv1 = R.reshape(lv, R.shape((-1,)))
@@ -87,5 +84,19 @@ class DequantQuantWrap:
 			R.output(gv)
 		return gv
 
-print(DequantQuantWrap)
-print(vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(DequantQuantWrap))
+@I.ir_module
+class Reshape:
+	@R.function
+	def main(x: R.Tensor((1, 8), dtype="int8")):
+		with R.dataflow():
+			lv = R.reshape(x, R.shape([8]))
+			gv = lv
+			R.output(gv)
+		return gv
+
+# TODO: DequantMaxpool2DQuant -> Maxpool2D
+
+tvm.ir.assert_structural_equal(
+	vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(DequantReshapeQuant),
+	Reshape
+)

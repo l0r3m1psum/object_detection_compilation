@@ -3,7 +3,7 @@ from tvm import relax
 from tvm import tir
 from tvm import topi
 
-import vtar
+import vtar.topi
 
 # relax.BlockBuilder.call_te transforms relax.Var in te.Tensor allowing easy use
 # of topi operations.

@@ -1,3 +1,4 @@
+import tvm
 from tvm import relax
 import onnx
 if onnx.__version__ != '1.16.1':
@@ -5,19 +6,196 @@ if onnx.__version__ != '1.16.1':
 	import warnings
 	# it fails in onnx.checker.check_model...
 	warnings.warn("The onnx version is not the expected one, 1.16.1 seems to be the only working one")
-import vtar.relax.frontend.onnx
 
 import os, sys
 sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
 import vta
+
+import vtar.relax.frontend.onnx
+import vtar.relax.transform
+
+def prod(iterable, /, start=1):
+	res = start
+	for element in iterable:
+		res *= element
+	return res
+
+def make_conv2d(
+		counter, nodes, initializers,
+		x_name: str, x_scale_name: str, x_zero_point_name: str,
+		O: int, I: int, H: int, W: int,
+		strides, pads
+	) -> str:
+	# The Bottlenect block in ResNet does not use bias, but when quantized the
+	# bias is used to fuse the ReLU in the convolutional layer.
+
+	weight_shape = (O, I, H, H) # OIHW
+	scalar_shape = ()
+	bias_shape = (O,)
+	global conv_counter
+	counter[0] += 1
+	prefix = "conv%d_" % counter[0]
+
+	w_name = prefix + "w"
+	w_scale_name = prefix + "w_scale"
+	w_zero_point_name = prefix + "w_zero_point"
+	y_name = prefix + "y"
+	y_scale_name = prefix + "y_scale"
+	y_zero_point_name = prefix + "y_zero_point"
+	b_name = prefix + "b"
+
+	w            = onnx.helper.make_tensor(w_name,            onnx.TensorProto.INT8,  weight_shape, [i % 256 for i in range(prod(weight_shape))])
+	w_scale      = onnx.helper.make_tensor(w_scale_name,      onnx.TensorProto.FLOAT, scalar_shape, [1])
+	w_zero_point = onnx.helper.make_tensor(w_zero_point_name, onnx.TensorProto.INT8,  scalar_shape, [0])
+	y_scale      = onnx.helper.make_tensor(y_scale_name,      onnx.TensorProto.FLOAT, scalar_shape, [1])
+	y_zero_point = onnx.helper.make_tensor(y_zero_point_name, onnx.TensorProto.INT8,  scalar_shape, [0])
+	b            = onnx.helper.make_tensor(b_name,            onnx.TensorProto.INT32, bias_shape,   [i % 256 for i in range(O)])
+	initializers.extend([w, w_scale, w_zero_point, y_scale, y_zero_point, b])
+
+	conv_node = onnx.helper.make_node(
+		"QLinearConv",
+		[
+			x_name, x_scale_name, x_zero_point_name,
+			w_name, w_scale_name, w_zero_point_name,
+			y_scale_name, y_zero_point_name,
+			b_name,
+		],
+		[y_name],
+		kernel_shape=[H, W],
+		strides=strides,
+		pads=pads,
+		name=prefix[:-1]
+	)
+	nodes.append(conv_node)
+
+	return y_name, y_scale_name, y_zero_point_name
+
+# this function is extremelly bad and just used to create a very simple model
+def create_quantized_bottleneck_model():
+	model_name = "quantized_bottleneck_model"
+	input_shape = (1, 64, 56, 56)
+
+	nodes = []
+	initializers = []
+
+	input_tensor = onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, input_shape)
+	input_scale = onnx.helper.make_tensor("input_scale", onnx.TensorProto.FLOAT, [], [0.01])
+	input_zero_point = onnx.helper.make_tensor("input_zero_point", onnx.TensorProto.INT8, [], [128])
+	initializers.extend([input_scale, input_zero_point])
+
+	quantize_node = onnx.helper.make_node(
+		"QuantizeLinear",
+		["input", "input_scale", "input_zero_point"],
+		["quantized_input"],
+		name="quantize_input"
+	)
+	nodes.append(quantize_node)
+
+	maxpool_node = onnx.helper.make_node(
+		"MaxPool",
+		["quantized_input"],
+		["maxpool_output"],
+		kernel_shape=[1, 1],
+		strides=[1, 1],
+		name="maxpool_layer"
+	)
+	nodes.append(maxpool_node)
+
+	conv_counter = [0]
+	conv1, conv1_scale, conv1_zero_point = make_conv2d(
+		conv_counter, nodes, initializers,
+		"maxpool_output", "input_scale", "input_zero_point",
+		64, 64, 1, 1,
+		[1,1], [0,0,0,0]
+	)
+
+	add_output_scale = onnx.helper.make_tensor("add_output_scale", onnx.TensorProto.FLOAT, [], [0.035])
+	add_output_zero_point = onnx.helper.make_tensor("add_output_zero_point", onnx.TensorProto.INT8, [], [0])
+	initializers.extend([add_output_scale, add_output_zero_point])
+
+	qlinear_add_node = onnx.helper.make_node(
+		"QLinearAdd",
+		[
+			"maxpool_output", "input_scale", "input_zero_point",
+			conv1, conv1_scale, conv1_zero_point,
+			"add_output_scale", "add_output_zero_point"
+		],
+		["bottleneck_output"],
+		name="bottleneck_residual_add"
+	)
+	nodes.append(qlinear_add_node)
+
+	gap_output_scale = onnx.helper.make_tensor("add_output_scale", onnx.TensorProto.FLOAT, [], [0.035])
+	gap_output_zero_point = onnx.helper.make_tensor("add_output_zero_point", onnx.TensorProto.INT8, [], [0])
+	global_average_pool_node = onnx.helper.make_node(
+		"QLinearGlobalAveragePool",
+		["bottleneck_output", "add_output_scale", "add_output_zero_point",
+		gap_output_scale.name, gap_output_zero_point.name],
+		["gap_output"],
+		name="global_average_pool_layer"
+	)
+	nodes.append(global_average_pool_node)
+
+	output_tensor_shape = (1, 64, 1, 1)
+	dequantize_node = onnx.helper.make_node(
+		"DequantizeLinear",
+		["gap_output", gap_output_scale.name, gap_output_zero_point.name],
+		["output"],
+		name="dequantize_output"
+	)
+	nodes.append(dequantize_node)
+
+	output_tensor = onnx.helper.make_tensor_value_info(
+		"output", onnx.TensorProto.FLOAT, output_tensor_shape
+	)
+
+	graph = onnx.helper.make_graph(
+		nodes,
+		model_name,
+		[input_tensor],
+		[output_tensor],
+		initializers,
+	)
+
+	model = onnx.helper.make_model(graph)
+	# onnx.checker.check_model(model)
+	return model
+
+model_onnx = create_quantized_bottleneck_model()
+
+mod = vtar.relax.frontend.onnx.from_onnx(model_onnx)
+print(mod)
+mod = relax.transform.ConvertToDataflow()(mod)
+mod = relax.transform.FoldConstant()(mod)
+print(mod)
+mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
+mod = vtar.relax.transform.GraphPack()(mod)
+print(mod)
+mod = relax.get_pipeline('vtar_zero')(mod)
+print(mod)
+
+# TODO: make it run (see if it is correct) and see how much is really offloaded to VTA
+env = vta.get_env()
+mod = vta.build(
+	mod['fused_cast2_subtract1_multiply4_right_shift1_add4_minimum1_maximum1_cast3_dequantize'], # mod['fused_multiply1_right_shift_add1_add'], #mod['conv2d_NCHWnc'],
+	target=tvm.target.Target(env.target, host=env.target_host),
+	name="conv2d"
+)
+
+raise SystemExit(0)
 
 path = "build/resnet18_int8.onnx"
 # https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx
 # path = "build/resnet50-v1-12-int8.onnx"
 model_onnx = onnx.load(path)
 
-mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=False)
+mod = vtar.relax.frontend.onnx.from_onnx(model_onnx)
+print(mod)
+mod = relax.transform.ConvertToDataflow()(mod)
+mod = relax.transform.FoldConstant()(mod)
+print(mod)
 
+# breakpoint()
 # print(mod)
 
 import vtar.relax.transform

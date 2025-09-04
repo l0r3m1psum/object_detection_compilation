@@ -68,13 +68,6 @@ def pack_nchw_to_NCHWnc(bb: relax.BlockBuilder, data: relax.Var, n: int, c: int)
 # TODO: per evitare di specificare bitpack_start e bitpack_end serve un'algoritmo
 # che frovi i sottografi di operazioni supportate (per fare il "packing") in automatico
 
-# Per il momento scrivere un "packer" che non considera inizio e fine ma che
-# "esplode" se trova operazioni non supportate.
-
-# Questo itera il grafo di relax contenuto in una funzione. Per ora assumerò
-# che il grafo Relax è tutto contenuto nella funzione main (non so se si possono
-# nidificare i.e. un nodo del grafo chiama una funzione rappresentata da
-# un'altro grafo)
 @relax.expr_functor.mutator
 class GraphPacker(relax.expr_functor.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
@@ -104,6 +97,8 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 			res = pack_nchw_to_NCHWnc(self.builder_, res, self.bfactor, self.cfactor)
 		elif call.op.name == self.bitpack_end:
 			self.start_pack = False
+			# This is too strict to allow function like reshape that has two
+			# arguments one tensor and one shape.
 			if len(packed_args) != 1:
 				raise ValueError("The last node should have only one input.")
 			res = unpack_NCHWnc_to_nchw(self.builder_, packed_args[0])
@@ -128,7 +123,8 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 					# bb.emit infers the out_layout
 					out_dtype=call.attrs['out_dtype']
 				))
-			elif call.op.name == 'relax.add' or call.op.name == 'relax.subtract' or call.op.name == 'relax.multiply':
+			elif call.op.name == 'relax.add' or call.op.name == 'relax.multiply':
+				# This code should work for all elementwise binary functions.
 				arg0_shape = _get_shape(call.args[0])
 				arg1_shape = _get_shape(call.args[1])
 				if arg0_shape == arg1_shape:
@@ -163,16 +159,6 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 				# res = pad_channel(self.builder_, data, new_shape[1])
 			elif call.op.name == 'relax.pad':
 				assert False, "pad"
-			elif (call.op.name == 'relax.astype'
-				or call.op.name == 'relax.right_shift'
-				or call.op.name == 'relax.left_shift'
-				or call.op.name == 'relax.minimum'
-				or call.op.name == 'relax.maximum'
-				or call.op.name == 'relax.sum'):
-				# breakpoint()
-				pass
-			else:
-				raise ValueError("Unsupported operator: %s", call.op.name)
 
 		if res is None:
 			res = relax.Call(call.op, packed_args, call.attrs)
@@ -219,10 +205,7 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 		super().__init__(mod)
 
 	def visit_call_(self, call):
-		# call = self.visit_expr_post_order(call)
 
-		# TODO: relax.nn.max_pool2d
-		# print(call.op.name)
 		try:
 			prev = self.lookup_binding(call.args[0]) or call
 			prev_prev = self.lookup_binding(prev.args[0]) or call
@@ -241,9 +224,9 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 
 		if wrapper_in_dequant_quant:
 			if prev.op.name == 'relax.reshape':
-				res = self.builder_.emit(relax.op.reshape(prev_prev.args[0], prev.args[1]))
+				res = relax.Call(prev.op, (prev_prev.args[0], prev.args[1]), prev.attrs)
 			elif prev.op.name == 'relax.nn.max_pool2d':
-				res = self.builder_.emit(relax.Call(prev.op, (prev_prev.args[0],), prev.attrs))
+				res = relax.Call(prev.op, (prev_prev.args[0],), prev.attrs)
 			else:
 				res = call
 		else:

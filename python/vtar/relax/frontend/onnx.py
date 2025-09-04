@@ -60,11 +60,12 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		+ relax.op.right_shift(m*(
 			conv
 			# FIXME: the reshape should be correct wrt the batch dimension wich is not necessarelly 1.
-			- X_z*relax.op.reshape(bb.normalize(relax.op.sum(W.astype("int32"), axis=(1,2,3))), (1, -1, 1, 1))
+			+ (-X_z)*relax.op.reshape(bb.normalize(relax.op.sum(W.astype("int32"), axis=(1,2,3))), (1, -1, 1, 1))
 			# TODO: right now we are asserting that W_z is zero, in the future we have to remove this assumption.
-			# - W_z*relax.op.sum(W.astype("int32")) # TODO: sum the last three dimensions
+			# + (-W_z)*relax.op.sum(W.astype("int32")) # TODO: sum the last three dimensions
 		), relax.const(shift)) \
 		+ relax.op.reshape(bb.normalize(relax.op.left_shift(B/s3, relax.const(shift))), (1,-1,1,1)) + Y_z
+		# FIXME: the VTA accellerator does not support left shift...
 
 		res = clamp(res, -128, 127).astype("int8")
 		return res
@@ -168,7 +169,7 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 		avg = relax.op.nn.avg_pool2d(
 			data=x.astype("int32"),
 			pool_size=x.struct_info.shape.values[2:],
-		)
+		).astype("int32") # This is a workaround because the vtar_zero pipeline is convinced that this is an int64
 		res = relax.op.right_shift(s*(avg - x_z), relax.const(shift)) + y_z
 		res = clamp(res, -128, 127).astype("int8")
 		return res
