@@ -162,16 +162,15 @@ def create_quantized_bottleneck_model():
 	return model
 
 def compile(mod):
-	print(mod)
-	mod = relax.transform.ConvertToDataflow()(mod)
-	# I am afraid that this works only on TIR :(
+	# print(mod)
+	# mod = relax.transform.ConvertToDataflow()(mod)
 	mod = relax.transform.FoldConstant()(mod)
-	print(mod)
+	# print(mod)
 	mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
 	mod = vtar.relax.transform.GraphPack()(mod)
-	print(mod)
+	# print(mod)
 	mod = relax.get_pipeline('vtar_zero')(mod)
-	print(mod)
+	# print(mod)
 	return mod
 
 model_onnx = create_quantized_bottleneck_model()

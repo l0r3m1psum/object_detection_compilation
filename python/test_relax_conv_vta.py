@@ -53,15 +53,6 @@ mod = ConvModelVTA
 zero_pipeline = relax.get_pipeline('vtar_zero')
 mod = zero_pipeline(mod)
 
-print(mod)
-print(mod['fused_conv2d_NCHWnc_add'].buffer_map)
-
-# FIXME: This pass must be called after MakePackedAPI
-try:
-	vta.build(mod)
-except tvm.error.TVMError as e:
-	print(e)
-
 def make_closure_test_hardcoded_relax(mod):
 	def test_hardcoded_relax(env: vta.Environment, remote: tvm.rpc.RPCSession) -> None:
 		nonlocal mod
@@ -81,12 +72,16 @@ def make_closure_test_hardcoded_relax(mod):
 		bias_np   = numpy.random.randint(0, 10, size=bias_shape).astype(bias.dtype)
 		res_np    = numpy.zeros(res_shape).astype(res.dtype)
 
+		with vta.build_config():
+			res = relax.VirtualMachine(relax.build(mod), tvm.device('cpu'))['main'](tvm.nd.array(data_np), tvm.nd.array(kernel_np), tvm.nd.array(bias_np))
+
 		mod = vta.build(
 			mod['fused_conv2d_NCHWnc_add'],
 			(data, kernel, bias, res),
 			target=tvm.target.Target(env.target, host=env.target_host),
 			name="conv2d"
 		)
+
 		mod.save("build/conv2d.o")
 		remote.upload("build/conv2d.o")
 		f = remote.load_module("conv2d.o")

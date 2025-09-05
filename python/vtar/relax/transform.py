@@ -84,7 +84,6 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 		self.conv_kernel_layout = "OIHW%do%di" % (self.cfactor, self.cfactor)
 
 	def visit_call_(self, call: relax.Call) -> relax.Expr:
-		print("mutator:", type(call), call, repr(call.op.name))
 		packed_args = [self.visit_expr(arg) for arg in call.args]
 
 		# TODO: check that both start and end are present in the graph otherwise
@@ -159,6 +158,8 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 				# res = pad_channel(self.builder_, data, new_shape[1])
 			elif call.op.name == 'relax.pad':
 				assert False, "pad"
+			# TODO: should I check which operations we are packing and make sure
+			# that they are all supported by VTA?
 
 		if res is None:
 			res = relax.Call(call.op, packed_args, call.attrs)
@@ -177,7 +178,6 @@ class GraphPack:
 
 		rewriter = GraphPacker(mod)
 		for g_var, func in mod.functions_items():
-			print("pass:", type(func))
 			if isinstance(func, relax.Function):
 				func = rewriter.visit_expr(func)
 				rewriter.builder_.update_func(g_var, func)
