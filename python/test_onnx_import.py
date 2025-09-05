@@ -161,18 +161,23 @@ def create_quantized_bottleneck_model():
 	# onnx.checker.check_model(model)
 	return model
 
+def compile(mod):
+	print(mod)
+	mod = relax.transform.ConvertToDataflow()(mod)
+	# I am afraid that this works only on TIR :(
+	mod = relax.transform.FoldConstant()(mod)
+	print(mod)
+	mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
+	mod = vtar.relax.transform.GraphPack()(mod)
+	print(mod)
+	mod = relax.get_pipeline('vtar_zero')(mod)
+	print(mod)
+	return mod
+
 model_onnx = create_quantized_bottleneck_model()
 
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx)
-print(mod)
-mod = relax.transform.ConvertToDataflow()(mod)
-mod = relax.transform.FoldConstant()(mod)
-print(mod)
-mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
-mod = vtar.relax.transform.GraphPack()(mod)
-print(mod)
-mod = relax.get_pipeline('vtar_zero')(mod)
-print(mod)
+mod = compile(mod)
 
 # TODO: make it run (see if it is correct) and see how much is really offloaded to VTA
 env = vta.get_env()
@@ -182,28 +187,14 @@ mod = vta.build(
 	name="conv2d"
 )
 
-raise SystemExit(0)
+# raise SystemExit(0)
 
 path = "build/resnet18_int8.onnx"
 # https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx
 # path = "build/resnet50-v1-12-int8.onnx"
 model_onnx = onnx.load(path)
-
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx)
-print(mod)
-mod = relax.transform.ConvertToDataflow()(mod)
-mod = relax.transform.FoldConstant()(mod)
-print(mod)
-
-# breakpoint()
-# print(mod)
-
-import vtar.relax.transform
-mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
-mod = vtar.relax.transform.GraphPack()(mod)
-mod = relax.get_pipeline('vtar_zero')(mod)
-
-print(mod)
+mod = compile(mod)
 
 env = vta.get_env()
 

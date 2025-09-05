@@ -5,6 +5,10 @@ from tvm import topi
 
 import vtar.topi
 
+import re
+import copy
+
+
 # relax.BlockBuilder.call_te transforms relax.Var in te.Tensor allowing easy use
 # of topi operations.
 
@@ -15,13 +19,27 @@ def customize_legalize_conv2d(bb: relax.BlockBuilder, call: relax.Call) -> relax
 	padding = topi.utils.get_const_tuple(call.attrs.padding)
 	dilation = topi.utils.get_const_tuple(call.attrs.dilation)
 	layout = call.attrs.data_layout
-	out_layout = call.attrs.out_layout
 	out_dtype = call.attrs.out_dtype
+	# for conv2d
+	kernel_layout = call.attrs.kernel_layout
+	# For conv2d_NCHWnc
+	out_layout = call.attrs.out_layout
 
-	# TODO: dispatch to other conv2d in the topi and error out for unsupported
-	# formats.
+	if layout == "NCHW":
+		res = bb.call_te(
+			topi.nn.conv2d,
+			data, kernel, strides, padding, dilation, layout,
+			kernel_layout, out_dtype)
+	elif re.match("^NCHW\\d+n\\d+c$", layout):
+		res = bb.call_te(
+			vtar.topi.conv2d_NCHWnc,
+			data, kernel, strides, padding, dilation, layout,
+			out_layout, out_dtype)
+	else:
+		raise ValueError("Unsupported conv2d layout '%s', if if it matches "
+			"NCHW\\d+c it may be trivial to add support for it." % layout)
 
-	return bb.call_te(vtar.topi.conv2d_NCHWnc, data, kernel, strides, padding, dilation, layout, out_layout, out_dtype)
+	return res
 
 # This is what zero_pipeline does but wiht the custom LegalizeOps and MakePackedAPI
 @tvm.relax.register_pipeline("vtar_zero")
