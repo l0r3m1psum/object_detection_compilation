@@ -57,6 +57,7 @@ def make_closure_test_hardcoded_relax(mod):
 	def test_hardcoded_relax(env: vta.Environment, remote: tvm.rpc.RPCSession) -> None:
 		nonlocal mod
 
+		# TODO: this are not needed anymore since we are compiling with Relax
 		data   = te.placeholder((1, 4, 56, 56, 1, 16), name="data",   dtype="int8")
 		kernel = te.placeholder((4, 4, 3, 3, 16, 16),  name="kernel", dtype="int8")
 		bias   = te.placeholder((1, 4, 1, 1, 1, 16),   name="bias",   dtype="int32")
@@ -72,26 +73,24 @@ def make_closure_test_hardcoded_relax(mod):
 		bias_np   = numpy.random.randint(0, 10, size=bias_shape).astype(bias.dtype)
 		res_np    = numpy.zeros(res_shape).astype(res.dtype)
 
+		dev = tvm.device(str(env.target))
+		target = tvm.target.Target(env.target, host=env.target_host)
+
 		with vta.build_config():
-			res = relax.VirtualMachine(relax.build(mod), tvm.device('cpu'))['main'](tvm.nd.array(data_np), tvm.nd.array(kernel_np), tvm.nd.array(bias_np))
+			ex = relax.build(mod, target)
+		vm = relax.VirtualMachine(ex, dev)
+		# _ = vm['main'](data_arr, kernel_arr, bias_arr)
+		# FIXME: make this cross platform
+		ex.export_library('build/conv2d.dll')
+		remote.upload("build/conv2d.dll")
+		f = remote.load_module("conv2d.dll")
+		devr = remote.device(str(env.target))
+		time_f = f.time_evaluator(f.entry_name, devr, number=1)
 
-		mod = vta.build(
-			mod['fused_conv2d_NCHWnc_add'],
-			(data, kernel, bias, res),
-			target=tvm.target.Target(env.target, host=env.target_host),
-			name="conv2d"
-		)
-
-		mod.save("build/conv2d.o")
-		remote.upload("build/conv2d.o")
-		f = remote.load_module("conv2d.o")
-		dev = remote.device(str(env.target))
-		time_f = f.time_evaluator("conv2d", dev, number=1)
-
-		data_arr   = tvm.nd.array(data_np, dev)
-		kernel_arr = tvm.nd.array(kernel_np, dev)
-		bias_arr   = tvm.nd.array(bias_np, dev)
-		res_arr    = tvm.nd.array(res_np, dev)
+		data_arr   = tvm.nd.array(data_np, devr)
+		kernel_arr = tvm.nd.array(kernel_np, devr)
+		bias_arr   = tvm.nd.array(bias_np, devr)
+		res_arr    = tvm.nd.array(res_np, devr)
 
 		cost = time_f(data_arr, kernel_arr, bias_arr, res_arr)
 		print(cost)
