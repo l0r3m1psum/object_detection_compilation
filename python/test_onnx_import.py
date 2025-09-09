@@ -9,7 +9,11 @@ if onnx.__version__ != '1.16.1':
 
 import os, sys
 sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
-import vta
+# This is needed to avoid:
+# InternalError: Check failed: (allow_missing) is false: Device API ext_dev is not enabled.
+import vta.testing
+
+os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
 
 import vtar.relax.frontend.onnx
 import vtar.relax.transform
@@ -162,31 +166,55 @@ def create_quantized_bottleneck_model():
 	return model
 
 def compile(mod):
-	# print(mod)
-	# mod = relax.transform.ConvertToDataflow()(mod)
+	# mod = relax.transform.CanonicalizeBindings()(mod)
 	mod = relax.transform.FoldConstant()(mod)
-	# print(mod)
 	mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
 	mod = vtar.relax.transform.GraphPack()(mod)
-	# print(mod)
 	mod = relax.get_pipeline('vtar_zero')(mod)
-	# print(mod)
 	return mod
+
+env = vta.get_env()
+dev = tvm.device(str(env.target))
+target = tvm.target.Target(env.target, host=env.target_host)
 
 model_onnx = create_quantized_bottleneck_model()
 
-mod = vtar.relax.frontend.onnx.from_onnx(model_onnx)
+from tvm.script import ir as I
+from tvm.script import relax as R
+@I.ir_module
+class ConvModelVTA:
+	@R.function
+	def main(
+		#             (1//BATCH,      64//BLOCK_IN, 56, 56, BATCH,     BLOCK_IN)
+		x:            R.Tensor((1//1,   64//16, 56, 56, 1,  16), dtype="int8"),
+		#             (64//BLOCK_OUT, 64//BLOCK_IN, 3,  3,  BLOCK_OUT, BLOCK_IN)
+		conv1_weight: R.Tensor((64//16, 64//16, 3,  3,  16, 16), dtype="int8"),
+		#             (1//BATCH,      64//BLOCK_IN, 1,  1,  BATCH,     BLOCK_OUT)
+		conv1_bias:   R.Tensor((1//1,   64//16, 1,  1,  1,  16), dtype="int32"),
+	):
+		R.func_attr({"num_input": 1})
+		with R.dataflow():
+			conv1 = R.nn.conv2d(x, conv1_weight, strides=1, padding=1, dilation=1,
+				data_layout="NCHW1n16c", kernel_layout="OIHW16o16i", out_dtype="int32")
+			add1 = R.add(conv1, conv1_bias)
+			gv = add1
+			R.output(gv)
+		return gv
+
+mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=True)
+mod, params = relax.frontend.detach_params(mod)
+print(mod)
 mod = compile(mod)
-
+with vta.build_config():
+	ex = relax.build(mod, target, exec_mode="bytecode")
 # TODO: make it run (see if it is correct) and see how much is really offloaded to VTA
-env = vta.get_env()
-mod = vta.build(
-	mod['fused_cast2_subtract1_multiply4_right_shift1_add4_minimum1_maximum1_cast3_dequantize'], # mod['fused_multiply1_right_shift_add1_add'], #mod['conv2d_NCHWnc'],
-	target=tvm.target.Target(env.target, host=env.target_host),
-	name="conv2d"
-)
-
-# raise SystemExit(0)
+vm = relax.VirtualMachine(ex, dev)
+ex.export_library('build/qbottleneck.dll')
+remote = tvm.rpc.LocalSession()
+remote.upload("build/qbottleneck.dll")
+f = remote.load_module("qbottleneck.dll")
+devr = remote.device(str(env.target))
+time_f = f.time_evaluator(f.entry_name, devr, number=1)
 
 path = "build/resnet18_int8.onnx"
 # https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx
@@ -195,7 +223,20 @@ model_onnx = onnx.load(path)
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx)
 mod = compile(mod)
 
-env = vta.get_env()
+# Effettivamente non esporta il __tvm_main__ ma perché?
+# Cosa c'è di diverso con l'altro modulo?
+with vta.build_config():
+	ex = relax.build(mod, target)
+vm = relax.VirtualMachine(ex, dev)
+# FIXME: make this cross platform
+ex.export_library('build/resnet18_int8.dll')
+remote = tvm.rpc.LocalSession()
+remote.upload("build/resnet18_int8.dll")
+f = remote.load_module("resnet18_int8.dll")
+devr = remote.device(str(env.target))
+time_f = f.time_evaluator(f.entry_name, devr, number=1)
+
+# TODO: relax.op.image.resize2d
 
 print(
 	"inp_dtype: %s\n"

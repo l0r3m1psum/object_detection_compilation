@@ -222,6 +222,10 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 			and call.args[2].data.numpy() == prev_prev.args[2].data.numpy() # same zero_point
 		)
 
+		# FIXME: how do I check that in the pattern "dequant -> X -> duant"
+		# the X node has only one outgoing edge to dequant and no other node is
+		# using it downstream?
+
 		if wrapper_in_dequant_quant:
 			if prev.op.name == 'relax.reshape':
 				res = relax.Call(prev.op, (prev_prev.args[0], prev.args[1]), prev.attrs)
@@ -234,6 +238,10 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 
 		return res
 
+# Apparently it is a common pattern to wrap non quantized operations in
+# dequantize quantize blocks to fake support for them and leave the support to
+# the backend/runtime.
+# https://github.com/onnx/onnx/issues/5895#issuecomment-1928446285
 @tvm.ir.transform.module_pass(opt_level=0)
 class RemoveUnnecessaryDequantizeQuantizeWrapping:
 	def transform_module(self, mod, ctx):

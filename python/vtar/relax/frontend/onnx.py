@@ -12,13 +12,45 @@ def clamp(data, min, max):
 	res = relax.op.maximum(relax.const(min), res)
 	return res
 
+def get_data(
+		expr: relax.Expr,
+		params: Dict[str, relax.Expr]
+	) -> float|int:
+	keep_params_in_input = hasattr(expr, 'data')
+	if keep_params_in_input:
+		array = expr.data
+	else:
+		_, array = params[str(expr)]
+	res = array.numpy().item()
+	return res
+
+# TODO: This allows to avoid taking certain parameters from the function input and
+# hardcoding  them as constants allowing for constant folding optimizations etc...
+# This is a bit of an hack, the way that it should be done instead is to create
+# a new function with the paramiters binded the value of the metadata so that
+# they are effectivelly constant in the new function.
+def get_arg(
+		expr: relax.Expr,
+		params: Dict[str, relax.Expr]
+	) -> relax.Expr:
+	keep_params_in_input = bool(params)
+	if keep_params_in_input:
+		_, array = params[str(expr)]
+		if isinstance(array, relax.Expr):
+			res = array
+		else:
+			res = relax.const(array)
+	else:
+		res = expr
+	return res
+
 class QuantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__QuantizeLinear.html#inputs
 		x = inputs[0]
-		y_scale = inputs[1]
-		y_zero_point = inputs[2]
+		y_scale = get_arg(inputs[1], params[1])
+		y_zero_point = get_arg(inputs[2], params[1])
 
 		return relax.op.quantize(x, y_scale, y_zero_point)
 
@@ -28,17 +60,17 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		input0_struct_info = inputs[0].args[0].struct_info
 		# https://onnx.ai/onnx/operators/onnx__QLinearConv.html#inputs
 		X   = inputs[0]
-		X_s = inputs[1].data.numpy().item()
+		X_s = get_data(inputs[1], params[1])
 		X_z = inputs[2].astype("int32")
-		W   = inputs[3]
-		W_s = inputs[4].data.numpy().item()
+		W   = get_arg(inputs[3], params[1])
+		W_s = get_data(inputs[4], params[1])
 		W_z = inputs[5].astype("int32")
-		Y_s = inputs[6].data.numpy().item()
+		Y_s = get_data(inputs[6], params[1])
 		Y_z = inputs[7].astype("int32")
-		B   = inputs[8]
+		B   = get_arg(inputs[8], params[1])
 		assert len(X.struct_info.shape) == 4
 		assert len(W.struct_info.shape) == 4
-		assert inputs[5].data.numpy().item() == 0
+		assert get_data(inputs[5], params[1]) == 0
 
 		conv = relax.op.nn.conv2d(
 			data=X,
@@ -56,7 +88,10 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		_, c, h, w = topi.utils.get_const_tuple(relax.get_shape_of(W))
 		m = relax.const(int(X_s*W_s/Y_s * (1<<shift)))
 		s3 = relax.const(int(Y_s * (1<<shift)))
-		res = relax.const(int(c*h*w*inputs[2].data.numpy().item()*inputs[5].data.numpy().item()/Y_s)) \
+		res = relax.const(
+			int(c*h*w
+				*get_data(inputs[2], params[1])
+				*get_data(inputs[5], params[1])/Y_s)) \
 		+ relax.op.right_shift(m*(
 			conv
 			# FIXME: the reshape should be correct wrt the batch dimension wich is not necessarelly 1.
@@ -75,8 +110,8 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#inputs
 		x = inputs[0]
-		x_scale = inputs[1]
-		x_zero_point = inputs[2]
+		x_scale = get_arg(inputs[1], params[1])
+		x_zero_point = get_arg(inputs[2], params[1])
 
 		return relax.op.dequantize(x, x_scale, x_zero_point)
 
@@ -88,12 +123,12 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# We cast to "int32" because is what VTA internally does and we hope
 		# that gets mapped to TVM later in the compilation.
 		A   = inputs[0].astype("int32")
-		A_s = inputs[1].data.numpy().item()
+		A_s = get_data(inputs[1], params[1])
 		A_z = inputs[2].astype("int32")
 		B   = inputs[3].astype("int32")
-		B_s = inputs[4].data.numpy().item()
+		B_s = get_data(inputs[4], params[1])
 		B_z = inputs[5].astype("int32")
-		C_s = inputs[6].data.numpy().item()
+		C_s = get_data(inputs[6], params[1])
 		C_z = inputs[7].astype("int32")
 		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/micro/kernels/add_common.cc#L48C62-L48C64
 		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L211
@@ -125,13 +160,13 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# A has shape MxN and B has shape NxO
 		n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(inputs[0]))[1])
 		A   = inputs[0]
-		A_s = inputs[1].data.numpy().item()
+		A_s = get_data(inputs[1], params[1])
 		A_z = inputs[2].astype("int32")
 		B   = inputs[3]
-		B_s = inputs[4].data.numpy().item()
+		B_s = get_data(inputs[4], params[1])
 		B_z = inputs[5].astype("int32")
 		C   = inputs[6].astype("int32")
-		Y_s = inputs[7].data.numpy().item()
+		Y_s = get_data(inputs[7], params[1])
 		Y_z = inputs[8].astype("int32")
 		AT = relax.op.permute_dims(A) if transA else A
 		BT = relax.op.permute_dims(B) if transB else B
@@ -159,9 +194,9 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 	def _impl_v1(cls, bb, inputs, attr, params):
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearGlobalAveragePool
 		x = inputs[0]
-		x_s = inputs[1].data.numpy().item()
+		x_s = get_data(inputs[1], params[1])
 		x_z = inputs[2].astype("int32")
-		y_s = inputs[3].data.numpy().item()
+		y_s = get_data(inputs[3], params[1])
 		y_z = inputs[4].astype("int32")
 
 		shift = 20
