@@ -39,7 +39,11 @@ def get_arg(
 		if isinstance(array, relax.Expr):
 			res = array
 		else:
-			res = relax.const(array)
+			# Because non scalars are picked from "metadata"
+			if array.shape:
+				res = expr
+			else:
+				res = relax.const(array)
 	else:
 		res = expr
 	return res
@@ -61,12 +65,12 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# https://onnx.ai/onnx/operators/onnx__QLinearConv.html#inputs
 		X   = inputs[0]
 		X_s = get_data(inputs[1], params[1])
-		X_z = inputs[2].astype("int32")
+		X_z = get_arg(inputs[2], params[1]).astype("int32")
 		W   = get_arg(inputs[3], params[1])
 		W_s = get_data(inputs[4], params[1])
-		W_z = inputs[5].astype("int32")
+		W_z = get_arg(inputs[5], params[1]).astype("int32")
 		Y_s = get_data(inputs[6], params[1])
-		Y_z = inputs[7].astype("int32")
+		Y_z = get_arg(inputs[7], params[1]).astype("int32")
 		B   = get_arg(inputs[8], params[1])
 		assert len(X.struct_info.shape) == 4
 		assert len(W.struct_info.shape) == 4
@@ -124,12 +128,12 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# that gets mapped to TVM later in the compilation.
 		A   = inputs[0].astype("int32")
 		A_s = get_data(inputs[1], params[1])
-		A_z = inputs[2].astype("int32")
+		A_z = get_arg(inputs[2], params[1]).astype("int32")
 		B   = inputs[3].astype("int32")
 		B_s = get_data(inputs[4], params[1])
-		B_z = inputs[5].astype("int32")
+		B_z = get_arg(inputs[5], params[1]).astype("int32")
 		C_s = get_data(inputs[6], params[1])
-		C_z = inputs[7].astype("int32")
+		C_z = get_arg(inputs[7], params[1]).astype("int32")
 		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/micro/kernels/add_common.cc#L48C62-L48C64
 		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L211
 		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L204
@@ -161,13 +165,13 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(inputs[0]))[1])
 		A   = inputs[0]
 		A_s = get_data(inputs[1], params[1])
-		A_z = inputs[2].astype("int32")
-		B   = inputs[3]
+		A_z = get_arg(inputs[2], params[1]).astype("int32")
+		B   = get_arg(inputs[3], params[1])
 		B_s = get_data(inputs[4], params[1])
-		B_z = inputs[5].astype("int32")
-		C   = inputs[6].astype("int32")
+		B_z = get_arg(inputs[5], params[1]).astype("int32")
+		C   = get_arg(inputs[6], params[1]).astype("int32")
 		Y_s = get_data(inputs[7], params[1])
-		Y_z = inputs[8].astype("int32")
+		Y_z = get_arg(inputs[8], params[1]).astype("int32")
 		AT = relax.op.permute_dims(A) if transA else A
 		BT = relax.op.permute_dims(B) if transB else B
 		AB = relax.op.matmul(AT, BT, out_dtype="int32")
@@ -195,9 +199,9 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearGlobalAveragePool
 		x = inputs[0]
 		x_s = get_data(inputs[1], params[1])
-		x_z = inputs[2].astype("int32")
+		x_z = get_arg(inputs[2], params[1]).astype("int32")
 		y_s = get_data(inputs[3], params[1])
-		y_z = inputs[4].astype("int32")
+		y_z = get_arg(inputs[4], params[1]).astype("int32")
 
 		shift = 20
 		s = relax.const(int((x_s/y_s) * (1 << shift)))

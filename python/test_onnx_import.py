@@ -12,6 +12,7 @@ sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
 # This is needed to avoid:
 # InternalError: Check failed: (allow_missing) is false: Device API ext_dev is not enabled.
 import vta.testing
+import vta.testing.simulator
 
 os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
 
@@ -173,48 +174,59 @@ def compile(mod):
 	mod = relax.get_pipeline('vtar_zero')(mod)
 	return mod
 
-env = vta.get_env()
-dev = tvm.device(str(env.target))
-target = tvm.target.Target(env.target, host=env.target_host)
-
 model_onnx = create_quantized_bottleneck_model()
 
-from tvm.script import ir as I
-from tvm.script import relax as R
-@I.ir_module
-class ConvModelVTA:
-	@R.function
-	def main(
-		#             (1//BATCH,      64//BLOCK_IN, 56, 56, BATCH,     BLOCK_IN)
-		x:            R.Tensor((1//1,   64//16, 56, 56, 1,  16), dtype="int8"),
-		#             (64//BLOCK_OUT, 64//BLOCK_IN, 3,  3,  BLOCK_OUT, BLOCK_IN)
-		conv1_weight: R.Tensor((64//16, 64//16, 3,  3,  16, 16), dtype="int8"),
-		#             (1//BATCH,      64//BLOCK_IN, 1,  1,  BATCH,     BLOCK_OUT)
-		conv1_bias:   R.Tensor((1//1,   64//16, 1,  1,  1,  16), dtype="int32"),
-	):
-		R.func_attr({"num_input": 1})
-		with R.dataflow():
-			conv1 = R.nn.conv2d(x, conv1_weight, strides=1, padding=1, dilation=1,
-				data_layout="NCHW1n16c", kernel_layout="OIHW16o16i", out_dtype="int32")
-			add1 = R.add(conv1, conv1_bias)
-			gv = add1
-			R.output(gv)
-		return gv
+import numpy
+from tvm import topi
+
+def remove_unused_arguments(mod):
+	unused_params = {
+		str(param): (param.checked_type.dtype, topi.utils.get_const_tuple(relax.get_shape_of(param)))
+		for param in mod['main'].params
+	}
+	for i in range(len(mod['main'].body.blocks)):
+		for j in range(len(mod['main'].body.blocks[i].bindings)):
+			for k in range(len(mod['main'].body.blocks[i].bindings[j].value.args)):
+				arg = mod['main'].body.blocks[i].bindings[j].value.args[k]
+				_ = unused_params.pop(str(arg), None)
+	params_to_remove = {
+		key: tvm.nd.array(numpy.zeros(shape, dtype=dtype))
+		for key, (dtype, shape) in unused_params.items()
+	}
+	# dict(zip(mod['main'].params[1:], params['main']))
+	mod.update_func(
+		mod.get_global_var('main'),
+		mod['main'].bind_params(params_to_remove)
+	)
+	return mod
 
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=True)
 mod, params = relax.frontend.detach_params(mod)
+mod = remove_unused_arguments(mod)
 print(mod)
-mod = compile(mod)
-with vta.build_config():
-	ex = relax.build(mod, target, exec_mode="bytecode")
-# TODO: make it run (see if it is correct) and see how much is really offloaded to VTA
-vm = relax.VirtualMachine(ex, dev)
-ex.export_library('build/qbottleneck.dll')
-remote = tvm.rpc.LocalSession()
-remote.upload("build/qbottleneck.dll")
-f = remote.load_module("qbottleneck.dll")
-devr = remote.device(str(env.target))
-time_f = f.time_evaluator(f.entry_name, devr, number=1)
+
+def make_closure_test_onnx_import(mod):
+	def test_onnx_import(env: vta.Environment, remote: tvm.rpc.RPCSession) -> None:
+		nonlocal mod
+
+		dev = tvm.device(str(env.target))
+		target = tvm.target.Target(env.target, host=env.target_host)
+
+		mod = compile(mod)
+		with vta.build_config():
+			ex = relax.build(mod, target, exec_mode="bytecode")
+		# TODO: make it run (see if it is correct) and see how much is really offloaded to VTA
+		vm = relax.VirtualMachine(ex, dev)
+		ex.export_library('build/qbottleneck.dll')
+		remote.upload("build/qbottleneck.dll")
+		f = remote.load_module("qbottleneck.dll")
+		devr = remote.device(str(env.target))
+		time_f = f.time_evaluator(f.entry_name, devr, number=1)
+	return test_onnx_import
+
+vta.testing.run(make_closure_test_onnx_import(mod))
+
+	raise SystemExit(0)
 
 path = "build/resnet18_int8.onnx"
 # https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx

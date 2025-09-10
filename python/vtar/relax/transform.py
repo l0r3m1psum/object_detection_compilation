@@ -65,6 +65,18 @@ def pack_nchw_to_NCHWnc(bb: relax.BlockBuilder, data: relax.Var, n: int, c: int)
 
 	return res
 
+def is_broadcastable(shp1, shp2):
+	if len(shp1) == 0 or len(shp2) == 0:
+		return True
+	if len(shp1) != len(shp2):
+		return False
+	for a, b in zip(shp1[::-1], shp2[::-1]):
+		if a == 1 or b == 1 or a == b:
+			pass
+		else:
+			return False
+	return True
+
 # TODO: per evitare di specificare bitpack_start e bitpack_end serve un'algoritmo
 # che frovi i sottografi di operazioni supportate (per fare il "packing") in automatico
 
@@ -124,9 +136,11 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 				))
 			elif call.op.name == 'relax.add' or call.op.name == 'relax.multiply':
 				# This code should work for all elementwise binary functions.
-				arg0_shape = _get_shape(call.args[0])
-				arg1_shape = _get_shape(call.args[1])
+				arg0_shape = _get_shape(packed_args[0])
+				arg1_shape = _get_shape(packed_args[1])
 				if arg0_shape == arg1_shape:
+					pass
+				elif is_broadcastable(arg0_shape, arg1_shape):
 					pass
 				elif not arg0_shape or not arg1_shape: # one of the two is a scalar
 					pass
@@ -134,9 +148,10 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 					# TODO: make this commutative.
 					# TODO: generalize this for any 4 dimensional broadcasting
 					data, bias = packed_args
+					data_shape = _get_shape(data)
 					bias_shape = _get_shape(bias)
 					if (len(bias_shape) != 4 or
-						(bias_shape[0] != 1 or bias_shape[0] != 1 or bias_shape[0] != 1)):
+						(bias_shape[0] != 1 or bias_shape[2] != 1 or bias_shape[3] != 1)):
 						raise ValueError("Broadcasted %s is only supported channel dimension" % call.op.name)
 					bias = pad_channel(self.builder_, bias, self.cfactor)
 					bias = pack_nchw_to_NCHWnc(self.builder_, bias, 1, self.cfactor)
@@ -229,8 +244,8 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 		if wrapper_in_dequant_quant:
 			if prev.op.name == 'relax.reshape':
 				res = relax.Call(prev.op, (prev_prev.args[0], prev.args[1]), prev.attrs)
-			elif prev.op.name == 'relax.nn.max_pool2d':
-				res = relax.Call(prev.op, (prev_prev.args[0],), prev.attrs)
+			# elif prev.op.name == 'relax.nn.max_pool2d':
+			# 	res = relax.Call(prev.op, (prev_prev.args[0],), prev.attrs)
 			else:
 				res = call
 		else:
