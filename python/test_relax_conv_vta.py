@@ -1,3 +1,5 @@
+import fix_tvm_and_vtar_env
+
 import tvm
 
 from tvm import relax, te, tir, topi
@@ -8,16 +10,11 @@ from tvm.script import tir as T
 
 import vtar.topi
 import vtar.relax
+import vtar.testing
 
 import numpy
 
 from typing import List, Tuple
-
-import os, sys
-sys.path.append(os.path.join(os.getcwd(), "submodules\\tvm\\vta\\python"))
-import vta.testing
-
-os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
 
 # inp_dtype: int8
 # wgt_dtype: int8
@@ -54,7 +51,7 @@ zero_pipeline = relax.get_pipeline('vtar_zero')
 mod = zero_pipeline(mod)
 
 def make_closure_test_hardcoded_relax(mod):
-	def test_hardcoded_relax(env: vta.Environment, remote: tvm.rpc.RPCSession) -> None:
+	def test_hardcoded_relax(env: vtar.Environment, remote: tvm.rpc.RPCSession) -> None:
 		nonlocal mod
 
 		# TODO: this are not needed anymore since we are compiling with Relax
@@ -76,7 +73,7 @@ def make_closure_test_hardcoded_relax(mod):
 		dev = tvm.device(str(env.target))
 		target = tvm.target.Target(env.target, host=env.target_host)
 
-		with vta.build_config():
+		with vtar.build_config():
 			ex = relax.build(mod, target)
 		vm = relax.VirtualMachine(ex, dev)
 		# _ = vm['main'](data_arr, kernel_arr, bias_arr)
@@ -96,4 +93,4 @@ def make_closure_test_hardcoded_relax(mod):
 		print(cost)
 	return test_hardcoded_relax
 
-vta.testing.run(make_closure_test_hardcoded_relax(mod))
+vtar.testing.run(make_closure_test_hardcoded_relax(mod))

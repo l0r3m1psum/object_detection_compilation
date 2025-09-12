@@ -3,7 +3,7 @@ import tvm
 from tvm import relax
 from tvm import topi
 
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 # TVM supports data layouts for convolutions with "factors" i.e.
 # NCHW([1-9][0-9]*n)?([1-9][0-9]*w)?([1-9][0-9]*h)?([1-9][0-9]*w)?
@@ -209,10 +209,6 @@ class GraphPack:
 # ``start_pack`` and ``stop_pack`` range. Also all operations in that range
 # shall be supported by VTA and the subgraph should be in A-Normal Form (ANF).
 
-# TODO: implement transform that simplifies
-#     dequantize -> flatten -> quantize to flatten
-#     dequantize -> maxpool -> quantize to flatten
-
 # https://mlc.ai/chapter_graph_optimization/index.html#fuse-linear-and-relu
 @relax.expr_functor.mutator
 class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
@@ -244,8 +240,8 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 		if wrapper_in_dequant_quant:
 			if prev.op.name == 'relax.reshape':
 				res = relax.Call(prev.op, (prev_prev.args[0], prev.args[1]), prev.attrs)
-			# elif prev.op.name == 'relax.nn.max_pool2d':
-			# 	res = relax.Call(prev.op, (prev_prev.args[0],), prev.attrs)
+			elif prev.op.name == 'relax.nn.max_pool2d':
+				res = relax.Call(prev.op, (prev_prev.args[0],), prev.attrs)
 			else:
 				res = call
 		else:
@@ -257,10 +253,56 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 # dequantize quantize blocks to fake support for them and leave the support to
 # the backend/runtime.
 # https://github.com/onnx/onnx/issues/5895#issuecomment-1928446285
+# TODO: in the future this should support also binary operations like addition
 @tvm.ir.transform.module_pass(opt_level=0)
 class RemoveUnnecessaryDequantizeQuantizeWrapping:
 	def transform_module(self, mod, ctx):
 		rewriter = UnnecessaryDequantizeQuantizeWrappingRemover(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				updated_func = rewriter.visit_expr(func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				rewriter.builder_.update_func(global_var, updated_func)
+
+		return rewriter.builder_.get()
+
+def to_dict(attrs: tvm.ir.Attrs) -> Dict:
+	if str(attrs).startswith('relax.attrs.QuantizeAttrs'):
+		return {'axis': attrs.axis, 'out_dtype': attrs.out_dtype}
+	assert isinstance(attrs, tvm.ir.Attrs)
+	return {key: attrs[key] for key in attrs.keys()}
+
+@relax.expr_functor.mutator
+class MaxpoolDequantizeQuantizeWrapper(relax.PyExprMutator):
+	def __init__(self, mod: tvm.IRModule) -> None:
+		super().__init__(mod)
+
+	def visit_call_(self, call):
+
+		if call.op.name == 'relax.nn.max_pool2d':
+			# TODO: This is a naive search for quantization values. A proper
+			# algorithm should be used here.
+			try:
+				quantize = call
+				while quantize.op.name != 'relax.quantize':
+					quantize = self.lookup_binding(call.args[0])
+			except Exception as e:
+				raise ValueError("could not find quantization values") from e
+
+			# breakpoint()
+			res = self.builder_.emit(relax.op.dequantize(call.args[0], *quantize.args[1:]))
+			res = self.builder_.emit(relax.op.nn.max_pool2d(res, **to_dict(call.attrs)))
+			res = self.builder_.emit(relax.op.quantize(res, *quantize.args[1:]))
+		else:
+			res = call
+
+		return res
+
+@tvm.ir.transform.module_pass(opt_level=0)
+class WrapMaxpoolDequantizeQuantize:
+	def transform_module(self, mod, ctx):
+		rewriter = MaxpoolDequantizeQuantizeWrapper(mod)
 
 		for global_var, func in mod.functions.items():
 			if isinstance(func, relax.Function):

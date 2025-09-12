@@ -1,3 +1,5 @@
+import fix_tvm_and_vtar_env
+
 import tvm
 from tvm import relax
 import onnx
@@ -7,14 +9,11 @@ if onnx.__version__ != '1.16.1':
 	# it fails in onnx.checker.check_model...
 	warnings.warn("The onnx version is not the expected one, 1.16.1 seems to be the only working one")
 
-import os, sys
-sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
+import vtar
 # This is needed to avoid:
 # InternalError: Check failed: (allow_missing) is false: Device API ext_dev is not enabled.
-import vta.testing
-import vta.testing.simulator
-
-os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
+import vtar.testing
+import vtar.testing.simulator
 
 import vtar.relax.frontend.onnx
 import vtar.relax.transform
@@ -167,11 +166,21 @@ def create_quantized_bottleneck_model():
 	return model
 
 def compile(mod):
-	# mod = relax.transform.CanonicalizeBindings()(mod)
-	mod = relax.transform.FoldConstant()(mod)
-	mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
-	mod = vtar.relax.transform.GraphPack()(mod)
-	mod = relax.get_pipeline('vtar_zero')(mod)
+	# relax.transform.Normalize()
+	# relax.transform.CanonicalizeBindings()
+	# tvm.transform.PrintIR()
+	mod = tvm.transform.Sequential(
+	[
+		tvm.transform.PrintIR(),
+		relax.transform.FoldConstant(),
+		vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
+		# vtar.relax.transform.GraphPack(),
+		# tvm.transform.PrintIR(),
+		# vtar.relax.transform.WrapMaxpoolDequantizeQuantize(),
+		# tvm.transform.PrintIR(),
+		relax.get_pipeline('vtar_zero'),
+		tvm.transform.PrintIR(),
+	])(mod)
 	return mod
 
 model_onnx = create_quantized_bottleneck_model()
@@ -200,23 +209,82 @@ def remove_unused_arguments(mod):
 	)
 	return mod
 
+from tvm.script import ir as I
+from tvm.script import relax as R
+from tvm.script import tir as T
+
+@I.ir_module
+class Module:
+	@R.function
+	def main(input: R.Tensor((1, 64, 56, 56), dtype="float32"), conv1_w: R.Tensor((64, 64, 1, 1), dtype="int8"), conv1_b: R.Tensor((64,), dtype="int32")):
+		R.func_attr({"num_input": 1})
+		with R.dataflow():
+			lv: R.Tensor((1, 64, 56, 56), dtype="int8") = R.quantize(input, R.const(0.0099999997764825821, "float32"), R.const(-128, "int8"), out_dtype="int8", axis=-1)
+			lv1: R.Tensor((64, 64, 1, 1), dtype="int32") = R.astype(conv1_w, dtype="int32")
+			lv2: R.Tensor((64,), dtype="int32") = R.divide(conv1_b, R.const(1048576, "int32"))
+			lv_1: R.Tensor((1, 64, 56, 56), dtype="float32") = R.dequantize(lv, R.const(0.0099999997764825821, "float32"), R.const(-128, "int8"), out_dtype="float32", axis=-1)
+			lv1_1: R.Tensor((1, 64, 56, 56), dtype="float32") = R.nn.max_pool2d(lv_1, pool_size=[1, 1], strides=[1, 1], dilation=[1, 1], padding=[0, 0, 0, 0], ceil_mode=False, count_include_pad=False, layout="NCHW", out_layout="NCHW")
+			lv2_1: R.Tensor((1, 64, 56, 56), dtype="int8") = R.quantize(lv1_1, R.const(0.0099999997764825821, "float32"), R.const(-128, "int8"), out_dtype="int8", axis=-1)
+			lv1_2: R.Tensor((1, 1, 4, 16, 56, 56), dtype="int8") = R.reshape(lv2_1, R.shape([1, 1, 4, 16, 56, 56]))
+			lv2_2: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int8") = R.permute_dims(lv1_2, axes=[0, 2, 4, 5, 1, 3])
+			lv3: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int8") = lv2_2
+			lv3_1: R.Tensor((4, 16, 4, 16, 1, 1), dtype="int8") = R.reshape(conv1_w, R.shape([4, 16, 4, 16, 1, 1]))
+			lv4:   R.Tensor((4, 4, 1, 1, 16, 16), dtype="int8") = R.permute_dims(lv3_1, axes=[0, 2, 4, 5, 1, 3])
+			# Il problema è conv adesso...
+			lv5 = R.nn.conv2d(lv3, lv4, strides=[1, 1], padding=[1, 1, 1, 1], dilation=[1, 1], groups=1,
+				data_layout="NCHW1n16c", kernel_layout="OIHW16o16i", out_layout="NCHW1n16c", out_dtype="int32")
+			# lv4_1: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int32") = lv5
+			# lv5_1: R.Tensor((), dtype="int32") = R.astype(R.const(-128, "int8"), dtype="int32")
+			# lv6: R.Tensor((), dtype="int32") = R.negative(lv5_1)
+			gv = lv5
+			R.output(gv)
+		return gv
+
+@I.ir_module
+class Module2:
+	@R.function
+	def main(x: R.Tensor((1, 64, 56, 56), dtype="int8"), conv1_weight: R.Tensor((64, 64, 3, 3), dtype="int8"), conv1_bias: R.Tensor((1, 64, 1, 1), dtype="int32")) -> R.Tensor((1, 64, 56, 56), dtype="int32"):
+		R.func_attr({"num_input": 1})
+		with R.dataflow():
+			lv: R.Tensor((1, 64, 56, 56), dtype="int8") = R.nn.max_pool2d(x, pool_size=[1, 1], strides=[1, 1], dilation=[1, 1], padding=[0, 0, 0, 0], ceil_mode=False, count_include_pad=False, layout="NCHW", out_layout="NCHW")
+			lv1: R.Tensor((1, 1, 4, 16, 56, 56), dtype="int8") = R.reshape(lv, R.shape([1, 1, 4, 16, 56, 56]))
+			lv2: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int8") = R.permute_dims(lv1, axes=[0, 2, 4, 5, 1, 3])
+			mp1: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int8") = lv2
+			lv3: R.Tensor((4, 16, 4, 16, 3, 3), dtype="int8") = R.reshape(conv1_weight, R.shape([4, 16, 4, 16, 3, 3]))
+			lv4: R.Tensor((4, 4, 3, 3, 16, 16), dtype="int8") = R.permute_dims(lv3, axes=[0, 2, 4, 5, 1, 3])
+			lv5: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int32") = R.nn.conv2d(mp1, lv4, strides=[1, 1], padding=[1, 1, 1, 1], dilation=[1, 1], groups=1, data_layout="NCHW1n16c", kernel_layout="OIHW16o16i", out_layout="NCHW1n16c", out_dtype="int32")
+			conv1: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int32") = lv5
+			lv6: R.Tensor((1, 1, 4, 16, 1, 1), dtype="int32") = R.reshape(conv1_bias, R.shape([1, 1, 4, 16, 1, 1]))
+			lv7: R.Tensor((1, 4, 1, 1, 1, 16), dtype="int32") = R.permute_dims(lv6, axes=[0, 2, 4, 5, 1, 3])
+			lv8: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int32") = R.add(conv1, lv7)
+			add1: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int32") = lv8
+			lv9: R.Tensor((1, 1, 4, 16, 56, 56), dtype="int32") = R.permute_dims(add1, axes=[0, 4, 1, 5, 2, 3])
+			lv10: R.Tensor((1, 64, 56, 56), dtype="int32") = R.reshape(lv9, R.shape([1, 64, 56, 56]))
+			lv11: R.Tensor((1, 64, 56, 56), dtype="int32") = R.nn.avg_pool2d(lv10, pool_size=[1, 1], strides=[1, 1], dilation=[1, 1], padding=[0, 0, 0, 0], ceil_mode=False, count_include_pad=False, layout="NCHW", out_layout="NCHW")
+			avg1: R.Tensor((1, 64, 56, 56), dtype="int32") = lv11
+			gv: R.Tensor((1, 64, 56, 56), dtype="int32") = avg1
+			R.output(gv)
+		return gv
+
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=True)
+mod = Module
 mod, params = relax.frontend.detach_params(mod)
-mod = remove_unused_arguments(mod)
-print(mod)
+# mod = remove_unused_arguments(mod)
 
 def make_closure_test_onnx_import(mod):
-	def test_onnx_import(env: vta.Environment, remote: tvm.rpc.RPCSession) -> None:
+	def test_onnx_import(env: vtar.Environment, remote: tvm.rpc.RPCSession) -> None:
 		nonlocal mod
 
 		dev = tvm.device(str(env.target))
 		target = tvm.target.Target(env.target, host=env.target_host)
+		print(target)
 
 		mod = compile(mod)
-		with vta.build_config():
-			ex = relax.build(mod, target, exec_mode="bytecode")
+		with vtar.build_config():
+			ex = relax.build(mod, target)
+		print(ex.as_python())
 		# TODO: make it run (see if it is correct) and see how much is really offloaded to VTA
-		vm = relax.VirtualMachine(ex, dev)
+		# vm = relax.VirtualMachine(ex, dev)
 		ex.export_library('build/qbottleneck.dll')
 		remote.upload("build/qbottleneck.dll")
 		f = remote.load_module("qbottleneck.dll")
@@ -224,9 +292,9 @@ def make_closure_test_onnx_import(mod):
 		time_f = f.time_evaluator(f.entry_name, devr, number=1)
 	return test_onnx_import
 
-vta.testing.run(make_closure_test_onnx_import(mod))
+vtar.testing.run(make_closure_test_onnx_import(mod))
 
-	raise SystemExit(0)
+raise SystemExit(0)
 
 path = "build/resnet18_int8.onnx"
 # https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx
@@ -235,8 +303,6 @@ model_onnx = onnx.load(path)
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx)
 mod = compile(mod)
 
-# Effettivamente non esporta il __tvm_main__ ma perché?
-# Cosa c'è di diverso con l'altro modulo?
 with vta.build_config():
 	ex = relax.build(mod, target)
 vm = relax.VirtualMachine(ex, dev)

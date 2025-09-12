@@ -1,3 +1,5 @@
+import fix_tvm_and_vtar_env
+
 import tvm
 from tvm import relax
 from tvm import topi
@@ -7,8 +9,8 @@ from tvm.script import ir as I
 from tvm.script import relax as R
 from tvm.script import tir as T
 
-import os, sys
-sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
+# import os, sys
+# sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
 
 import vtar.relax.transform
 
