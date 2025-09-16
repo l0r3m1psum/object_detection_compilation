@@ -35,6 +35,19 @@ Relay had a predecessor called [NNVM](https://discuss.tvm.apache.org/t/differenc
 
 # Resources
 
+## Compilers
+
+  * [The Deep Learning Compiler: A Comprehensive Survey](https://arxiv.org/abs/2002.03794)
+  * [Relax: Composable Abstractions for End-to-End Dynamic Machine Learning](https://arxiv.org/abs/2311.02103)
+  * [Destination-Passing Style for Efficient Memory Management](https://simon.peytonjones.org/assets/pdfs/destination-passing-style.pdf)
+  * [TensorIR: An Abstraction for Automatic Tensorized Program Optimization](https://arxiv.org/abs/2207.04296)
+
+## Quantization
+
+  * [A White Paper on Neural Network Quantization](https://arxiv.org/abs/2106.08295)
+  * [Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference](https://arxiv.org/abs/1712.05877)
+  * [Speed up integer-arithmetic-only inference via bit-shifting](https://www.nature.com/articles/s41598-025-02544-4)
+
 ## Visdrone
 
 https://aiskyeye.com/home/ this seems to be the home of the VisDrone

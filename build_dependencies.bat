@@ -34,7 +34,14 @@ pushd submodules
 
     pushd cpython || goto :exit
         pushd PCbuild || goto :exit
-            call build.bat -E || goto :exit
+            REM TODO: This should work with the -E flag i.e. we should include
+            REM all python's essential dependencies as submodules. To do so add
+            REM flags:
+            REM     --no-ctypes --no-ssl --no-tkinter
+            REM and download
+            REM     bzip2 sqlite xz zlib
+            REM as get_externals.bat does.
+            call build.bat || goto :exit
         popd || goto :exit
 
         call python.bat PC\layout ^
