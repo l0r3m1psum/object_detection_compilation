@@ -236,7 +236,7 @@ class Module:
 			# lv4_1: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int32") = lv5
 			# lv5_1: R.Tensor((), dtype="int32") = R.astype(R.const(-128, "int8"), dtype="int32")
 			# lv6: R.Tensor((), dtype="int32") = R.negative(lv5_1)
-			gv = lv5
+			gv = lv4
 			R.output(gv)
 		return gv
 
@@ -280,7 +280,12 @@ def make_closure_test_onnx_import(mod):
 		print(target)
 
 		mod = compile(mod)
-		with vtar.build_config():
+		with vtar.build_config(opt_level=0):
+			# The "main" disapears in tvm.relax.build, after _vmcodegen is called.
+			# This problem seem to happen also in newer versions of TVM (0.20.0),
+			# the cases in which it seems to work are just because TVM is able
+			# to fuse all operations in a single function and _vmlink treats
+			# that only function as the "main".
 			ex = relax.build(mod, target)
 		print(ex.as_python())
 		# TODO: make it run (see if it is correct) and see how much is really offloaded to VTA

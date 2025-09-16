@@ -41,7 +41,7 @@ pushd submodules\tvm || goto :exit
     popd || goto :exit
     set "LINK=/LIBPATH:%installdir%\Programs\Python\libs /LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit
     REM --no-build-isolation makes it faster
-    pip install --verbose --no-build-isolation --no-index --find-links "%installdir%\Programs\wheelhouse" .\python || goto :exit
+    python -m pip install --verbose --no-build-isolation --no-index --find-links "%installdir%\Programs\wheelhouse" .\python || goto :exit
     REM python -c "import tvm; print(tvm.__file__); print(tvm._ffi.base._LIB); print('\n'.join(f'{k}: {v}' for k, v in tvm.support.libinfo().items()))" || goto :exit
 popd || goto :exit
 

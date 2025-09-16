@@ -42,6 +42,9 @@ Relay had a predecessor called [NNVM](https://discuss.tvm.apache.org/t/differenc
   * [Destination-Passing Style for Efficient Memory Management](https://simon.peytonjones.org/assets/pdfs/destination-passing-style.pdf)
   * [TensorIR: An Abstraction for Automatic Tensorized Program Optimization](https://arxiv.org/abs/2207.04296)
 
+  * [Dive into Deep Learning Compiler](https://tvm.d2l.ai)
+  * [Machine Learning Compiler](https://mlc.ai)
+
 ## Quantization
 
   * [A White Paper on Neural Network Quantization](https://arxiv.org/abs/2106.08295)
