@@ -50,5 +50,17 @@ Connect to Pynq via IP
 https://pynq.readthedocs.io/en/latest/getting_started/network_connection.html
 https://superuser.com/a/996144
 ```
-netsh interface ip set address name="Ethernet 2" static 192.168.0.1 255.255.255.0
+netsh interface ip set address name="Ethernet 2" static 192.168.2.1 255.255.255.0
+```
+
+```
+cffi-1.17.1-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+cloudpickle-1.1.1-py2.py3-none-any.whl
+numpy-1.19.0-cp38-cp38-manylinux2014_aarch64.whl
+pycparser-2.22-py3-none-any.whl
+
+ssh xilinx@192.168.2.99
+. cpython-3.8/tvm_runtime/bin/activate
+cd tvm/
+sudo -E ./apps/vta_rpc/start_rpc_server.sh
 ```
