@@ -236,7 +236,7 @@ class Module:
 			# lv4_1: R.Tensor((1, 4, 56, 56, 1, 16), dtype="int32") = lv5
 			# lv5_1: R.Tensor((), dtype="int32") = R.astype(R.const(-128, "int8"), dtype="int32")
 			# lv6: R.Tensor((), dtype="int32") = R.negative(lv5_1)
-			gv = lv4
+			gv = lv5
 			R.output(gv)
 		return gv
 

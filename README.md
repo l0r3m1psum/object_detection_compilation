@@ -120,6 +120,12 @@ tree. To build a windows installer you have to go to `Tools\msi\build.bat`
 `vta/python/vta/top` stands for tensor operators which mirrors
 `python/tvm/topi` tensor operators invetory.
 
+Other open source hardware accellerators for deep learning:
+
+  * [NVDLA](https://nvdla.org/)
+  * [OpenDLA](https://github.com/OpenDLA/OpenDLA)
+  * [PipeCNN](https://github.com/doonny/PipeCNN)
+
 # Convolution
 
 [CUDA Tensor Layouts for Convolution](https://leimao.github.io/blog/CUDA-Convolution-Tensor-Layouts/)
