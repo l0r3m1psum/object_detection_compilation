@@ -176,18 +176,20 @@ def _get_shape(data: relax.Var) -> Tuple[int]:
 	res = topi.utils.get_const_tuple(relax.get_shape_of(data))
 	return res
 
+import collections
+
 @relax.expr_functor.visitor
 class MyExprVisitor(relax.PyExprVisitor):
 	def __init__(self):
 		super().__init__()
 		self.ib = tir.ir_builder.create()
-		self.params = {}
+		self.params = collections.OrderedDict()
 		self.locals = {}
 
 	def visit_function_(self, func: relax.Function) -> None:
 		for param in func.params:
-			# self.params[str(param)] = tir.decl_buffer(_get_shape(param), param.struct_info.dtype)
-			self.params[str(param)] = tir.Var(str(param), param.struct_info.dtype)
+			self.params[str(param)] = tir.decl_buffer(_get_shape(param), param.struct_info.dtype)
+			# self.params[str(param)] = tir.Var(str(param), param.struct_info.dtype)
 		super().visit_function_(func)
 
 	def visit_binding(self, binding: relax.Binding) -> None:
@@ -209,15 +211,21 @@ class MyExprVisitor(relax.PyExprVisitor):
 					new_func_args.append(self.params[str(func_arg)])
 				else:
 					raise ValueError("arg not found")
+			# new_func_args.append(buf_var._buffer)
+			# buf_var = call.args[0](*new_func_args)
 			self.ib.emit(tir.call_tir(call.args[0], *new_func_args))
+
+	def get_func(self) -> tir.PrimFunc:
+		return tir.PrimFunc(self.params.values(), self.ib.get())
 
 # TODO: understand how tir Buffer and Var work.
 
 visitor = MyExprVisitor()
 visitor.visit_expr(Module["main"])
-print(visitor.ib.get())
+func = visitor.get_func()
+print(func)
 
-if False:
+if True:
 	n = 128
 	my_add_func = create_add_primfunc(n)
 

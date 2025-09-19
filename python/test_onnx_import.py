@@ -266,10 +266,13 @@ class Module2:
 			R.output(gv)
 		return gv
 
+breakpoint()
 mod = vtar.relax.frontend.onnx.from_onnx(model_onnx, keep_params_in_input=True)
 mod = Module
 mod, params = relax.frontend.detach_params(mod)
 # mod = remove_unused_arguments(mod)
+
+from tvm import tir
 
 def make_closure_test_onnx_import(mod):
 	def test_onnx_import(env: vtar.Environment, remote: tvm.rpc.RPCSession) -> None:
@@ -280,7 +283,7 @@ def make_closure_test_onnx_import(mod):
 		print(target)
 
 		mod = compile(mod)
-		with vtar.build_config(opt_level=0):
+		with vtar.build_config():
 			# The "main" disapears in tvm.relax.build, after _vmcodegen is called.
 			# This problem seem to happen also in newer versions of TVM (0.20.0),
 			# the cases in which it seems to work are just because TVM is able

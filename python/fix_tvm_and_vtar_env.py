@@ -1,5 +1,5 @@
 import os, sys
-# sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
+sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
 # Leave this above any tvm import!
 os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
 # os.environ["CXX"] = "clang"
