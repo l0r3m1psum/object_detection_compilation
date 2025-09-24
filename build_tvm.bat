@@ -27,7 +27,8 @@ pushd submodules\tvm || goto :exit
 
         REM When LLVM is compiled in debug mode this is needed when compiling TVM in Release or RelWithDebInfo mode
         REM echo set(USE_MSVC_MT ON) >> config.cmake
-        echo add_compile_options("/MDd")  >> config.cmake || goto :exit
+        REM echo add_compile_options("/MT") >> config.cmake || goto :exit
+        REM echo add_compile_options("/MDd")  >> config.cmake || goto :exit
 
         REM echo set(SUMMARIZE ON) >> config.cmake || goto :exit
         REM echo set(CMAKE_C_COMPILER "%installdir:\=\\%\\Programs\\LLVM\\bin\\clang-cl.exe") >> config.cmake || goto :exit

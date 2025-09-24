@@ -12,6 +12,13 @@ set "HOME=workaround"
 pushd ..\submodules\tvm
 	copy /y 3rdparty\vta-hw\config\zcu104_sample.json ^
 		3rdparty\vta-hw\config\vta_config.json >NUL
-	python vta\tests\python\integration\test_benchmark_topi_conv2d.py
+	REM python vta\tests\python\integration\test_benchmark_topi_conv2d.py
+	REM copy /y 3rdparty\vta-hw\config\fsim_sample.json ^
+	REM 	3rdparty\vta-hw\config\vta_config.json >NUL
 popd
+
+pushd ..
+	python -i python\test_relay.py
+popd
+
 endlocal
