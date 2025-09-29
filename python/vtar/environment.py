@@ -42,6 +42,21 @@ def pkg_config(cfg):
     PkgConfig = libpkg["PkgConfig"]
     return PkgConfig(cfg)
 
+# TODO(@tvm-team): Deprecate the helper functions below. Encourage the usage of config dict instead.
+def _merge_opts(opts, new_opts):
+    """Helper function to merge options"""
+    if isinstance(new_opts, str):
+        new_opts = new_opts.split()
+    if new_opts:
+        opt_set = set(opts)
+        new_opts = [opt for opt in new_opts if opt not in opt_set]
+        return opts + new_opts
+    return opts
+
+def _vta(model="unknown", options=None):
+    opts = ["-device=vta", "-keys=vta,cpu", "-model=%s" % model]
+    opts = _merge_opts(opts, options)
+    return tvm.target.Target(" ".join(["ext_dev"] + opts))
 
 class DevContext(object):
     """Internal development context
@@ -225,7 +240,7 @@ class Environment(object):
 
     @property
     def target(self):
-        return tvm.target.vta(model=self.MODEL)
+        return _vta(model=self.MODEL)
 
     @property
     def target_host(self):
