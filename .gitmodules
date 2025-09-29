@@ -13,3 +13,6 @@
 [submodule "submodules/safetensors-cpp"]
 	path = submodules/safetensors-cpp
 	url = https://github.com/syoyo/safetensors-cpp.git
+[submodule "submodules/tvm-vta"]
+	path = submodules/tvm-vta
+	url = https://github.com/l0r3m1psum/tvm-vta.git
