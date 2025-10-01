@@ -3,7 +3,7 @@ REM Build all dependencies for the project
 
 setlocal
 
-call config.bat
+set target=install
 
 pushd submodules
 
@@ -13,7 +13,7 @@ pushd submodules
             -DBUILD_MOCK=no ^
             "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dlpack" ^
             -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
-        cmake --build . --target install --parallel %ncores% || goto :exit
+        cmake --build . --target %target% --parallel %NUMBER_OF_PROCESSORS% || goto :exit
     popd || goto :exit
 
     if not exist tvm\3rdparty\dmlc-core\build (mkdir tvm\3rdparty\dmlc-core\build || goto :exit)
@@ -22,14 +22,14 @@ pushd submodules
             -DBUILD_MOCK=no ^
             "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\dmlc" ^
             -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
-        cmake --build . --target install --parallel %ncores% || goto :exit
+        cmake --build . --target %target% --parallel %NUMBER_OF_PROCESSORS% || goto :exit
     popd || goto :exit
 
     if not exist safetensors-cpp\build (mkdir safetensors-cpp\build || goto :exit)
     pushd safetensors-cpp\build
         cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\safetensors" ^
             -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
-        cmake --build . --target install --parallel %ncores% || goto :exit
+        cmake --build . --target %target% --parallel %NUMBER_OF_PROCESSORS% || goto :exit
     popd
 
     pushd cpython || goto :exit
@@ -42,6 +42,7 @@ pushd submodules
             REM     bzip2 sqlite xz zlib
             REM as get_externals.bat does.
             call build.bat || goto :exit
+            REM TODO: call clean.bat when %target% is clean
         popd || goto :exit
 
         call python.bat PC\layout ^
@@ -54,25 +55,17 @@ pushd submodules
             --copy "%installdir%\Programs\Python" || goto :exit
     popd || goto :exit
 
-    set "PATH=%installdir%\Programs\Python;%PATH%"
-
     pushd llvm-project
         if not exist llvm\build (mkdir llvm\build || goto :exit)
         pushd llvm\build || goto :exit
             cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\LLVM" ^
+                -DLLVM_ENABLE_PROJECTS=clang ^
+                -DLLVM_INCLUDE_TESTS=OFF ^
                 -DCMAKE_BUILD_TYPE=RelWithDebInfo .. || goto :exit
-            cmake --build . --target install --parallel %ncores% || goto :exit
-        popd
-
-        if not exist clang\build (mkdir clang\build || goto :exit)
-        pushd clang\build || goto :exit
-            cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\LLVM" ^
-                -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-                -DLLVM_INCLUDE_TESTS=OFF .. || goto :exit
-            cmake --build . --target install --parallel %ncores% || goto :exit
+            cmake --build . --target %target% --parallel %NUMBER_OF_PROCESSORS% || goto :exit
             if not exist "%installdir%\Programs\LLVM\bin\gcc.exe" (
                 mklink /h "%installdir%\Programs\LLVM\bin\gcc.exe" ^
-                    "%installdir%\Programs\LLVM\bin\clang.exe"
+                    "%installdir%\Programs\LLVM\bin\clang.exe" || goto :exit
             )
         popd
     popd

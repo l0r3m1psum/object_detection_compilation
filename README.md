@@ -91,8 +91,6 @@ Download Visdrone
 
 Download and models from torch hub
 
-After doing the build with `build.bat` in `PCbuild`
-
 ```
 pushd %installdir%\Programs
     curl -O "https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_576.02_windows.exe"
@@ -105,8 +103,6 @@ popd
 .\python.exe -m pip download -r projreq.txt -d "%installdir%\Programs\wheelhouse"
 .\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d "%installdir%\Programs\wheelhouse"
 REM On the offline PC
-.\python.exe -m venv myvenv
-REM Activate virtual environment
 pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt
 pip install --no-index --find-links "%installdir%\Programs\wheelhouse" torch torchvision
 pip install --no-index --find-links "%installdir%\Programs\wheelhouse" pytest
