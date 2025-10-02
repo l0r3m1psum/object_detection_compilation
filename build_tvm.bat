@@ -6,12 +6,15 @@ REM vcvarsall.bat has been invoked to correctly setup the build environment.
 
 setlocal
 
+set "VTA_HW_PATH=%CD:\=/%/submodules/tvm-vta"
+
 REM TODO: pip install stuff like in setup env.
 pushd submodules\tvm || goto :exit
     REM git submodule update --init --recursive || goto :exit
     if not exist build (mkdir build || goto :exit)
     pushd build || goto :exit
         copy /y ..\cmake\config.cmake . || goto :exit
+        copy /y ..\..\..\vtar\VTAR.cmake
         REM Ignored by msbuild
         REM echo set(CMAKE_BUILD_TYPE RelWithDebInfo) >> config.cmake || goto :exit
         echo set(USE_LLVM "llvm-config --ignore-libllvm --link-static") >> config.cmake || goto :exit

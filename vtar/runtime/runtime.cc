@@ -300,7 +300,7 @@ class UopKernel {
    * \param imm_val Immediate value in ALU mode.
    */
   void Push(uint32_t mode, uint32_t reset_out, uint32_t dst_index, uint32_t src_index,
-            uint32_t wgt_index, uint32_t opcode, uint32_t use_imm, int32_t imm_val) {
+            uint32_t wgt_index, uint32_t opcode, bool use_imm, int32_t imm_val) {
     // The loop nest structure
     VerifyDep(dst_index);
     VTAUop op;

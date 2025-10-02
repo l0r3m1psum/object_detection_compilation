@@ -38,4 +38,6 @@ where /q python
 if %ERRORLEVEL% equ 0 (
 	python -m pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt || exit /b 1
 	python -m pip install --no-index --find-links "%installdir%\Programs\wheelhouse" torch torchvision || exit /b 1
+	python -m site
+	python -m sysconfig
 )

@@ -50,11 +50,18 @@ elseif(PYTHON)
   # Fast simulator driver build
   if(USE_VTA_FSIM)
     # Add fsim driver sources
-    tvm_file_glob(GLOB FSIM_RUNTIME_SRCS ${VTA_HW_PATH}/src/*.cc)
-    tvm_file_glob(GLOB FSIM_RUNTIME_SRCS vta/runtime/*.cc)
+    # NOTE(Diego): headers are needed on Windows to generate .lib files.
+    tvm_file_glob(GLOB FSIM_RUNTIME_SRCS ${VTA_HW_PATH}/include/vta/*.h)
+    tvm_file_glob(GLOB FSIM_RUNTIME_SRCS ${VTA_HW_PATH}/include/vta/dpi/*.h)
+    # tvm_file_glob(GLOB FSIM_RUNTIME_SRCS ${VTA_HW_PATH}/src/*.cc)
+    # NOTE(Diego): here device_api generates a warning which can be fixed with:
+    # https://learn.microsoft.com/en-us/cpp/error-messages/tool-errors/linker-tools-warning-lnk4217?view=msvc-170
+    tvm_file_glob(GLOB FSIM_RUNTIME_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../../vtar/runtime/*.h)
+    tvm_file_glob(GLOB FSIM_RUNTIME_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../../vtar/runtime/*.cc)
     list(APPEND FSIM_RUNTIME_SRCS ${VTA_HW_PATH}/src/sim/sim_driver.cc)
     list(APPEND FSIM_RUNTIME_SRCS ${VTA_HW_PATH}/src/sim/sim_tlpp.cc)
     list(APPEND FSIM_RUNTIME_SRCS ${VTA_HW_PATH}/src/vmem/virtual_memory.cc)
+    # message(FATAL_ERROR "ciao ${VTA_HW_PATH} ${FSIM_RUNTIME_SRCS}")
     # Target lib: vta_fsim
     add_library(vta_fsim SHARED ${FSIM_RUNTIME_SRCS})
     if(MSVC)
@@ -70,6 +77,7 @@ elseif(PYTHON)
       set_property(TARGET vta_fsim APPEND PROPERTY LINK_FLAGS "-undefined dynamic_lookup")
     endif(APPLE)
     target_compile_definitions(vta_fsim PUBLIC USE_FSIM_TLPP)
+    install(TARGETS vta_fsim EXPORT ${PROJECT_NAME}Targets DESTINATION lib${LIB_SUFFIX})
   endif()
 
   if(MSVC)
