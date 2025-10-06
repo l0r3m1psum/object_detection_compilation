@@ -34,6 +34,8 @@ call "%vspath%\VC\Auxiliary\Build\vcvarsall.bat" x64 || exit /b 1
 
 set "PYTHONUSERBASE=%installdir%\AppData\Roaming\Python"
 
+set "VTA_HW_PATH=%cd%\submodules\tvm-vta"
+
 where /q python
 if %ERRORLEVEL% equ 0 (
 	python -m pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt || exit /b 1

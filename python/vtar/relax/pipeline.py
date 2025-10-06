@@ -41,7 +41,7 @@ def customize_legalize_conv2d(bb: relax.BlockBuilder, call: relax.Call) -> relax
 
 	return res
 
-# This is what zero_pipeline does but wiht the custom LegalizeOps and MakePackedAPI
+# This is what zero_pipeline does but wiht the custom LegalizeOps
 @tvm.relax.register_pipeline("vtar_zero")
 def vtar_zero_pipeline():
 	@tvm.transform.module_pass(opt_level=0)
@@ -55,7 +55,6 @@ def vtar_zero_pipeline():
 				relax.transform.FoldConstant(),
 				relax.transform.FuseOps(),
 				relax.transform.FuseTIR(),
-				tir.transform.MakePackedAPI(),
 			]
 		)
 		mod = seq(mod)

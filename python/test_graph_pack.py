@@ -1,5 +1,3 @@
-import fix_tvm_and_vtar_env
-
 import tvm
 from tvm import relax
 from tvm import topi
@@ -8,9 +6,6 @@ from tvm import tir
 from tvm.script import ir as I
 from tvm.script import relax as R
 from tvm.script import tir as T
-
-# import os, sys
-# sys.path.append(os.path.join(os.getcwd(), "submodules/tvm/vta/python"))
 
 import vtar.relax.transform
 
@@ -48,31 +43,44 @@ class ConvModel:
 # To interpret look at test_benchmark_topi_conv2d.py:run_conv2d
 # H=56, W=56, I=64, O=64, kH=3, kW=3
 @I.ir_module
-class ConvModelVTA:
+class ConvModelPacked:
 	@R.function
 	def main(
-		#             (1//BATCH,      64//BLOCK_IN, 56, 56, BATCH,     BLOCK_IN)
-		x:            R.Tensor((1//1,   64//16, 56, 56, 1,  16), dtype="int8"),
-		#             (64//BLOCK_IN,  64//BLOCK_IN, 3,  3,  BLOCK_IN,  BLOCK_IN)
-		conv1_weight: R.Tensor((64//16, 64//16, 3,  3,  16, 16), dtype="int8"),
-		#             (1,             64//BLOCK_IN, 1,  1,  1,         BLOCK_IN)
-		conv1_bias:   R.Tensor((1,      64//16, 1,  1,  1,  16), dtype="int32"),
-	):
+			x: R.Tensor((1, 64, 56, 56), dtype="int8"),
+			conv1_weight: R.Tensor((64, 64, 3, 3), dtype="int8"),
+			conv1_bias: R.Tensor((1, 64, 1, 1), dtype="int32")
+		) -> R.Tensor((1, 64, 56, 56), dtype="int32"):
 		R.func_attr({"num_input": 1})
 		with R.dataflow():
-			conv1 = R.nn.conv2d(x, conv1_weight, strides=1, padding=1, dilation=1,
-				data_layout="NCHW1n16c", kernel_layout="OIHW16o16i", out_dtype="int32")
-			add1 = R.add(conv1, conv1_bias)
-			gv = add1
+			lv = R.nn.max_pool2d(x)
+			lv1 = R.reshape(lv, R.shape([1, 1, 4, 16, 56, 56]))
+			#             (1//BATCH,      64//BLOCK_IN, 56, 56, BATCH,     BLOCK_IN)
+			lv2: R.Tensor((1//1,   64//16, 56, 56, 1,  16), dtype="int8") = R.permute_dims(lv1, axes=[0, 2, 4, 5, 1, 3])
+
+			lv3 = R.reshape(conv1_weight, R.shape([4, 16, 4, 16, 3, 3]))
+			#             (64//BLOCK_IN,  64//BLOCK_IN, 3,  3,  BLOCK_IN,  BLOCK_IN)
+			lv4: R.Tensor((64//16, 64//16, 3,  3,  16, 16), dtype="int8") = R.permute_dims(lv3, axes=[0, 2, 4, 5, 1, 3])
+			lv5 = R.nn.conv2d(lv2, lv4, strides=1, padding=1, dilation=1, data_layout="NCHW1n16c", kernel_layout="OIHW16o16i", out_layout="NCHW1n16c", out_dtype="int32")
+
+			lv6 = R.reshape(conv1_bias, R.shape([1, 1, 4, 16, 1, 1]))
+			#             (1,             64//BLOCK_IN, 1,  1,  1,         BLOCK_IN)
+			lv7: R.Tensor((1,      64//16, 1,  1,  1,  16), dtype="int32") = R.permute_dims(lv6, axes=[0, 2, 4, 5, 1, 3])
+			lv8 = R.add(lv5, lv7)
+
+			lv9 = R.permute_dims(lv8, axes=[0, 4, 1, 5, 2, 3])
+			lv10 = R.reshape(lv9, R.shape([1, 64, 56, 56]))
+			gv = R.nn.avg_pool2d(lv10)
+
 			R.output(gv)
 		return gv
 
-print(ConvModel)
-print(ConvModelVTA)
-
-mod = ConvModel
-mod = vtar.relax.transform.GraphPack()(mod)
-print(mod)
+tvm.ir.assert_structural_equal(
+	tvm.transform.Sequential([
+		vtar.relax.transform.GraphPack(),
+		relax.transform.CanonicalizeBindings(), # removes redundant assignments
+	])(ConvModel),
+	ConvModelPacked
+)
 
 @I.ir_module
 class DequantReshapeQuant:
@@ -102,3 +110,32 @@ tvm.ir.assert_structural_equal(
 	vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(DequantReshapeQuant),
 	Reshape
 )
+
+import numpy
+from vtar.relax.transform import _get_shape
+
+# It is necessary to use vtar_zero because otherwise we get
+#     TVMError: CodeGenVM cannot handle this intrinsic now:
+#     Op(relax.nn.conv2d)
+# This is because CodeGenVM::VisitExpr_(const CallNode*) can handle very few
+# operatons and Relax nodes are not among them; we have to convert them to
+# R.call_tir with our custom legalize ops.
+irmods = (ConvModel, ConvModelPacked)
+vms = []
+for irmod in irmods:
+	irmod = relax.get_pipeline('vtar_zero')(irmod)
+	irmod = tvm.transform.PrintIR()(irmod)
+	dev = tvm.device('llvm')
+	target = tvm.target.Target('llvm')
+	vmexec = tvm.compile(irmod, target)
+	vms.append(relax.VirtualMachine(vmexec, dev))
+
+seed = 42
+rng = numpy.random.default_rng(seed)
+params = [_get_shape(param) for param in ConvModel['main'].params]
+x = tvm.nd.array((rng.random(params[0])*255).astype('int8'), device=dev)
+w = tvm.nd.array((rng.random(params[1])*255).astype('int8'), device=dev)
+b = tvm.nd.array((rng.random(params[2])*255).astype('int32'), device=dev)
+ok = numpy.all(numpy.equal(vms[0]['main'](x, w, b).numpy(), vms[1]['main'](x, w, b).numpy()))
+if not ok:
+	raise ValueError("Packed and not packed are not equal...")
