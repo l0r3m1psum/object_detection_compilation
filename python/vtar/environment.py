@@ -102,7 +102,7 @@ class DevContext(object):
         self.command_handle = tvm.tir.Call("handle", "tir.tvm_thread_context", [ctx])
         self.DEBUG_NO_SYNC = False
         env._dev_ctx = self
-        self.gemm = intrin.gemm(env, env.mock_mode)
+        # self.gemm = intrin.gemm(env, env.mock_mode)
 
     def get_task_qid(self, qid):
         """Get transformed queue index."""

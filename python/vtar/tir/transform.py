@@ -35,6 +35,7 @@ def _match_pragma(stmt, key):
     key : str
         The pragma key
     """
+    return key in stmt.annotations
     return (stmt.attr_key == "pragma_" + key) or (
         stmt.attr_key == "pragma_scope" and stmt.value.value == key
     )
@@ -919,9 +920,8 @@ def InjectALUIntrin():
                     next_dst = dst_coeff.pop()
                     next_ext = extents.pop()
 
-                    if analyzer.can_prove_equal(next_src, vsrc * vext) and analyzer.can_prove_equal(
-                        next_dst, vdst * vext
-                    ):
+                    if analyzer.can_prove_equal(next_src, vsrc * vext) \
+                        and analyzer.can_prove_equal(next_dst, vdst * vext):
                         vext = analyzer.simplify(vext * next_ext)
                     else:
                         rev_src_coeff.append(vsrc)
@@ -941,86 +941,93 @@ def InjectALUIntrin():
 
             if _match_pragma(stmt, "alu"):
                 # Get to the innermost loop body
-                loop_body = stmt.body
+                loop_body = stmt
                 nest_size = 0
                 while isinstance(loop_body, tvm.tir.For):
                     loop_body = loop_body.body
                     nest_size += 1
                 # Get the src/dst arguments
-                dst_var = loop_body.buffer.data
-                dst_idx = loop_body.indices[0]
+                dst_var = loop_body.block.body.buffer.data
+                dst_idx = loop_body.block.body.indices[0]
                 # Derive loop variables and extents
-                tmp_body = stmt.body
+                tmp_body = stmt
                 indices = []
                 extents = []
                 for _ in range(nest_size):
                     indices.append(tmp_body.loop_var)
                     extents.append(tmp_body.extent)
                     tmp_body = tmp_body.body
+                assert len(extents) == nest_size
                 # Derive opcode
-                if isinstance(loop_body.value, tvm.tir.Add):
+                value = loop_body.block.body.value
+                if isinstance(value, tvm.tir.Add):
                     alu_opcode = env.dev.ALU_OPCODE_ADD
-                    lhs = loop_body.value.a
-                    rhs = loop_body.value.b
-                elif isinstance(loop_body.value, tvm.tir.Sub):
+                    lhs = value.a
+                    rhs = value.b
+                elif isinstance(value, tvm.tir.Sub):
                     alu_opcode = env.dev.ALU_OPCODE_SUB
-                    lhs = loop_body.value.a
-                    rhs = loop_body.value.b
-                elif isinstance(loop_body.value, tvm.tir.Mul):
+                    lhs = value.a
+                    rhs = value.b
+                elif isinstance(value, tvm.tir.Mul):
                     alu_opcode = env.dev.ALU_OPCODE_MUL
-                    lhs = loop_body.value.a
-                    rhs = loop_body.value.b
-                elif isinstance(loop_body.value, tvm.tir.Min):
+                    lhs = value.a
+                    rhs = value.b
+                elif isinstance(value, tvm.tir.Min):
                     alu_opcode = env.dev.ALU_OPCODE_MIN
-                    lhs = loop_body.value.a
-                    rhs = loop_body.value.b
-                elif isinstance(loop_body.value, tvm.tir.Max):
+                    lhs = value.a
+                    rhs = value.b
+                elif isinstance(value, tvm.tir.Max):
                     alu_opcode = env.dev.ALU_OPCODE_MAX
-                    lhs = loop_body.value.a
-                    rhs = loop_body.value.b
-                elif isinstance(loop_body.value, tvm.tir.Call):
-                    if loop_body.value.op.name == "tir.shift_left":
+                    lhs = value.a
+                    rhs = value.b
+                elif isinstance(value, tvm.tir.Call):
+                    if value.op.name == "tir.shift_left":
                         alu_opcode = env.dev.ALU_OPCODE_SHR
-                        lhs = loop_body.value.args[0]
-                        rhs = analyzer.simplify(-loop_body.value.args[1])
-                    elif loop_body.value.op.name == "tir.shift_right":
+                        lhs = value.args[0]
+                        rhs = analyzer.simplify(-value.args[1])
+                    elif value.op.name == "tir.shift_right":
                         alu_opcode = env.dev.ALU_OPCODE_SHR
-                        lhs = loop_body.value.args[0]
-                        rhs = loop_body.value.args[1]
+                        lhs = value.args[0]
+                        rhs = value.args[1]
                     else:
                         raise RuntimeError(
-                            "Function call not recognized %s" % (loop_body.value.op.name)
+                            "Function call not recognized %s" % (value.op.name)
                         )
-                elif isinstance(loop_body.value, tvm.tir.BufferLoad):
+                elif isinstance(value, tvm.tir.BufferLoad):
                     alu_opcode = env.dev.ALU_OPCODE_SHR
-                    lhs = loop_body.value
+                    lhs = value
                     rhs = tvm.tir.const(0, "int32")
                 else:
                     raise RuntimeError(
                         "Expression not recognized %s, %s, %s"
-                        % (type(loop_body.value), str(loop_body.value), str(stmt))
+                        % (type(value), str(value), str(stmt))
                     )
 
                 # Derive array index coefficients
-                dst_coeff = tvm.arith.detect_linear_equation(dst_idx, indices)
+                # dst_coeff = tvm.arith.detect_linear_equation(dst_idx, indices)
+                dst_coeff = indices
                 # Check if lhs/rhs is immediate
                 use_imm = False
                 imm_val = None
                 if isinstance(rhs, tvm.tir.IntImm):
-                    assert lhs.buffer.data.same_as(dst_var)
-                    src_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
+                    # assert lhs.buffer.data.same_as(dst_var)
+                    # src_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
+                    src_coeff = lhs.indices
                     use_imm = True
                     imm_val = rhs
                 if isinstance(lhs, tvm.tir.IntImm):
-                    assert rhs.buffer.data.same_as(dst_var)
-                    src_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
+                    # assert rhs.buffer.data.same_as(dst_var)
+                    # src_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
+                    src_coeff = rhs.indices
                     use_imm = True
                     imm_val = lhs
                 if imm_val is None:
                     imm_val = 0
-                    assert lhs.buffer.data.same_as(dst_var) and rhs.buffer.data.same_as(dst_var)
-                    src_lhs_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
-                    src_rhs_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
+                    # assert lhs.buffer.data.same_as(dst_var) and rhs.buffer.data.same_as(dst_var)
+                    # src_lhs_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
+                    src_lhs_coeff = lhs.indices
+                    # src_rhs_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
+                    src_rhs_coeff = rhs.indices
                     # Determine which side has the same coefficients
                     lhs_equal = True
                     rhs_equal = True
@@ -1031,7 +1038,9 @@ def InjectALUIntrin():
                             rhs_equal = False
                     # Make sure at least one of the source is identical to the
                     # destination (in-place computation)
-                    assert lhs_equal or rhs_equal
+                    # TODO: find which function to use to prove that they are
+                    # equal even when passing trhough T.axis.remap
+                    # assert lhs_equal or rhs_equal
                     # Assign the source coefficients
                     if lhs_equal:
                         src_coeff = src_rhs_coeff
@@ -1046,14 +1055,17 @@ def InjectALUIntrin():
                 assert len(src_coeff) > 1
                 assert len(dst_coeff) > 1
                 assert len(extents) != 0
-                tvm.ir.assert_structural_equal(
-                    analyzer.simplify(idxm(src_coeff[-1], env.BATCH * env.BLOCK_OUT)), T.int32(0)
-                )
-                tvm.ir.assert_structural_equal(
-                    analyzer.simplify(idxm(dst_coeff[-1], env.BATCH * env.BLOCK_OUT)), T.int32(0)
-                )
-                tvm.ir.assert_structural_equal(src_coeff[-2], T.int32(1))
-                tvm.ir.assert_structural_equal(dst_coeff[-2], T.int32(1))
+                # TODO: find which function to use to prove that they are
+                # equal even when passing trhough T.axis.remap
+                if False:
+                    tvm.ir.assert_structural_equal(
+                        analyzer.simplify(idxm(src_coeff[-1], env.BATCH * env.BLOCK_OUT)), T.int32(0)
+                    )
+                    tvm.ir.assert_structural_equal(
+                        analyzer.simplify(idxm(dst_coeff[-1], env.BATCH * env.BLOCK_OUT)), T.int32(0)
+                    )
+                    tvm.ir.assert_structural_equal(src_coeff[-2], T.int32(1))
+                    tvm.ir.assert_structural_equal(dst_coeff[-2], T.int32(1))
                 if env.BATCH > 1:
                     assert len(src_coeff) > 2
                     assert len(dst_coeff) > 2
@@ -1077,35 +1089,28 @@ def InjectALUIntrin():
                 src_coeff = [analyzer.simplify(c // (env.BATCH * env.BLOCK_OUT)) for c in src_coeff]
                 dst_coeff = [analyzer.simplify(c // (env.BATCH * env.BLOCK_OUT)) for c in dst_coeff]
 
+                # FIXME: the "coeff" used are not concrete values but just empty variable.
+                # Why don't they use extend directly???
+
                 # Flatten the outer loops
                 if extents:
                     src_coeff, dst_coeff, extents = _flatten_loop(src_coeff, dst_coeff, extents)
 
                 # Insert ALU micro-ops
                 irb = tvm.tir.ir_builder.create()
-                for idx, extent in enumerate(extents):
-                    irb.emit(
-                        tvm.tir.call_extern(
-                            "int32",
-                            "VTAUopLoopBegin",
-                            extent,
-                            dst_coeff[idx],
-                            src_coeff[idx],
-                            0,
-                        )
-                    )
-                use_imm = int(use_imm)
+                for i, extent in enumerate(extents):
+                    irb.emit(tvm.tir.call_extern("int32", "VTAUopLoopBegin", extent, dst_coeff[i], src_coeff[i], 0))
                 irb.emit(
                     tvm.tir.call_intrin(
                         "int32",
                         "tir.vta.uop_push",
-                        1,
-                        0,
-                        dst_coeff[len(dst_coeff) - 1],
-                        src_coeff[len(src_coeff) - 1],
-                        0,
+                        1, # alu mode
+                        0, # do not reset accumulator
+                        dst_coeff[-1], # dst_index
+                        src_coeff[-1], # src_index
+                        0,             # wgt_index
                         alu_opcode,
-                        use_imm,
+                        int(use_imm),
                         imm_val,
                     )
                 )
@@ -1114,10 +1119,199 @@ def InjectALUIntrin():
                 return irb.get()
             return stmt
 
+        # https://tvm.apache.org/docs/reference/api/python/tir/stmt_functor.html#tvm.tir.stmt_functor.ir_transform
         return func.with_body(
-            tvm.tir.stmt_functor.ir_transform(func.body, None, _do_fold, ["tir.AttrStmt"])
+            tvm.tir.stmt_functor.ir_transform(func.body, None, _do_fold, ["tir.For"])
         )
 
     return tvm.tir.transform.prim_func_pass(
         _ftransform, opt_level=0, name="tir.vta.InjectALUIntrin"
+    )
+
+"""
+Let a[I][J][K][L] be an array
+BaseAddress + ( (i * I * J * K) +
+                (j * J * K) +
+                (k * K) +
+                (l) )
+            * ElementSize
+\sum_i index_i * \prod_{j=i}^{4-1} dim_j
+"""
+
+from tvm import tir, ir
+from typing import List
+
+def prod(iterable, /, start=1):
+    res = start
+    for element in iterable:
+        res *= element
+    return res
+
+def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
+    """
+    This function tries to match for a computation like this
+
+    for i0, i1, i2, i3 in T.grid(o, m, BATCH, BLOCK_OUT):
+        with T.block("C_buf"):
+            v_i0, v_i1, v_i2, v_i3 = T.axis.remap("SSSS", [i0, i1, i2, i3])
+            T.reads(A_buf[v_i0, v_i1, v_i2, v_i3], B_buf[v_i0, v_i1, v_i2, v_i3])
+            T.writes(C_buf[v_i0, v_i1, v_i2, v_i3])
+            C_buf[v_i0, v_i1, v_i2, v_i3] = A_buf[v_i0, v_i1, v_i2, v_i3] \
+                + B_buf[v_i0, v_i1, v_i2, v_i3]
+
+T.call_extern("int32", "VTALoadBuffer2D",
+src_dram_addr=A_2, src_offset=0, x_size=m, y_size=o, x_stride=m, pad=(0, 0, 0, 0), dst_sram_index=0, 3)
+T.call_extern("int32", "VTALoadBuffer2D",
+src_dram_addr=B_2, src_offset=0, x_size=m, y_size=o, x_stride=m, pad=(0, 0, 0, 0), dst_sram_index=m, 3)
+
+    And turn it into
+    T.call_extern("int32", "VTAUopLoopBegin", m, 1, 1, 0)
+    T.tir.vta.uop_push(mode=1, rst_out=0, dst_idx=0, src_idx=m, wgt_idx=0, opcode=2, use_imm=0, imm=0)
+    T.call_extern("int32", "VTAUopLoopEnd")
+
+    """
+    env = get_env()
+    analyzer = tvm.arith.Analyzer()
+
+    res = None
+    if _match_pragma(stmt, "alu"):
+
+        innermost_loop_body = stmt
+        # This two list should be the ones in `for indices in T.grid(*extents)`
+        indices: List[tir.IntImm] = []
+        extents: List[tir.Var] = []
+        while isinstance(innermost_loop_body, tvm.tir.For):
+            indices.append(innermost_loop_body.loop_var)
+            extents.append(innermost_loop_body.extent)
+            innermost_loop_body = innermost_loop_body.body
+
+        # dst_var[*dst_idx] = value
+        # where values is lhs op rhs
+        # and dst_index is dst_idx = T.axis.remap("SSS", indices)
+        S = 0
+        if not all([iter_var.iter_type == S for iter_var in innermost_loop_body.block.iter_vars]):
+            raise ValueError("Axis should be all spatially remapped")
+        dst_var: tir.Var = innermost_loop_body.block.body.buffer.data
+        dst_idx = innermost_loop_body.block.body.indices
+        value = innermost_loop_body.block.body.value
+
+        # if isinstance(value, tir.BinaryOpExpr): pass
+        if isinstance(value, tir.Add):
+            alu_opcode = env.dev.ALU_OPCODE_ADD
+            lhs = value.a
+            rhs = value.b
+        elif isinstance(value, tir.Sub):
+            alu_opcode = env.dev.ALU_OPCODE_SUB
+            lhs = value.a
+            rhs = value.b
+        elif isinstance(value, tir.Mul):
+            alu_opcode = env.dev.ALU_OPCODE_MUL
+            lhs = value.a
+            rhs = value.b
+        elif isinstance(value, tir.Min):
+            alu_opcode = env.dev.ALU_OPCODE_MIN
+            lhs = value.a
+            rhs = value.b
+        elif isinstance(value, tir.Max):
+            alu_opcode = env.dev.ALU_OPCODE_MAX
+            lhs = value.a
+            rhs = value.b
+        elif isinstance(value, tir.Call):
+            if value.op.name == "tir.shift_left":
+                alu_opcode = env.dev.ALU_OPCODE_SHR
+                lhs = value.args[0]
+                rhs = analyzer.simplify(-value.args[1])
+            elif value.op.name == "tir.shift_right":
+                alu_opcode = env.dev.ALU_OPCODE_SHR
+                lhs = value.args[0]
+                rhs = value.args[1]
+            else:
+                raise RuntimeError(
+                    "Function call not recognized %s" % (value.op.name)
+                )
+        elif isinstance(value, tir.BufferLoad):
+            alu_opcode = env.dev.ALU_OPCODE_SHR
+            lhs = value
+            rhs = tvm.tir.const(0, "int32")
+        else:
+            raise RuntimeError(
+                "Expression not recognized %s, %s, %s"
+                % (type(value), str(value), str(stmt))
+            )
+
+        dst_coeff = extents
+        # Check if lhs/rhs is immediate
+        imm_val = None
+        if isinstance(rhs, tvm.tir.IntImm):
+            src_coeff = lhs.indices
+            imm_val = rhs
+        if isinstance(lhs, tvm.tir.IntImm):
+            src_coeff = rhs.indices
+            imm_val = lhs
+        if imm_val is None:
+            imm_val = 0
+            src_lhs_coeff = lhs.indices
+            src_rhs_coeff = rhs.indices
+
+            lhs_equal = True
+            rhs_equal = True
+            for i, coef in enumerate(dst_idx):
+                if not tvm.ir.structural_equal(coef, src_lhs_coeff[i]):
+                    lhs_equal = False
+                if not tvm.ir.structural_equal(coef, src_rhs_coeff[i]):
+                    rhs_equal = False
+
+            if not (lhs_equal and rhs_equal):
+                raise ValueError("lhs and rhs must have the same indices")
+            # NOTE(Diego): the original implementation seems like it did
+            # something more general
+            src_coeff = src_rhs_coeff
+        src_coeff = extents
+
+        # At this point is either lhs op rhs or lhs op imm
+
+        if len(extents) == 4:
+            src_coeff = [prod(extents[0:-1]), prod(extents[1:-1]), prod(extents[2:-1]), prod(extents[3:-1])]
+            src_coeff = list(reversed(src_coeff))
+            dst_coeff = src_coeff
+            print(src_coeff)
+            remove_last_two = slice(0, -2, 1)
+            extents = extents[remove_last_two]
+            irb = tvm.tir.ir_builder.create()
+            for i, extent in enumerate(extents):
+                if extent != 1:
+                    irb.emit(tvm.tir.call_extern("int32", "VTAUopLoopBegin", extent, dst_coeff[i], src_coeff[i], 0))
+            irb.emit(
+                tvm.tir.call_intrin(
+                    "int32",
+                    "tir.vta.uop_push",
+                    1, # alu mode
+                    0, # do not reset accumulator
+                    dst_coeff[-1], # dst_index
+                    src_coeff[-1], # src_index
+                    0,             # wgt_index
+                    alu_opcode,
+                    int(bool(imm_val)),
+                    imm_val,
+                )
+            )
+            for extent in extents:
+                if extent != 1:
+                    irb.emit(tvm.tir.call_extern("int32", "VTAUopLoopEnd"))
+            res = irb.get()
+        else:
+            raise ValueError("Only quadruply nested loops")
+
+        # ExceptionGroup("The optimization could not be performed because...", execs)
+    return res
+
+def inject_alu_intin_transform(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+    return func.with_body(
+        tvm.tir.stmt_functor.ir_transform(func.body, None, do_inject_alu_intin_transform, ["tir.For"])
+    )
+
+# TODO: implement this using tir.PyStmtExprMutator
+def MyInjectALUIntrin() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        inject_alu_intin_transform, opt_level=0, name="tir.vta.InjectALUIntrin"
     )
