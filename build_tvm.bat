@@ -41,13 +41,15 @@ pushd submodules\tvm || goto :exit
         cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\TVM" .. || goto :exit
         REM Needed because otherwise LINK.EXE cannot find tvm.lib
         set "LINK=/LIBPATH:%CD%\RelWithDebInfo /LIBPATH:%installdir%\Programs\Python\libs" || goto :exit
+        set "INCLUDE=%cd%\..\ffi\include"
+        set UseEnv=true
         cmake --build . --config RelWithDebInfo --verbose --target install --parallel %NUMBER_OF_PROCESSORS% || goto :exit
         set "TVM_LIBRARY_PATH=%CD%\RelWithDebInfo" || goto :exit
     popd || goto :exit
     set "LINK=/LIBPATH:%installdir%\Programs\Python\libs /LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit
     REM --no-build-isolation makes it faster
     python -m pip install --no-build-isolation --no-index --find-links "%installdir%\Programs\wheelhouse" .\python || goto :exit
-    python -c "import tvm; print(tvm.__file__); print(tvm._ffi.base._LIB); print('\n'.join(f'{k}: {v}' for k, v in tvm.support.libinfo().items()))" || goto :exit
+    python -c "import tvm; print(tvm.__file__); print('\n'.join(f'{k}: {v}' for k, v in tvm.support.libinfo().items()))" || goto :exit
 popd || goto :exit
 
 endlocal
