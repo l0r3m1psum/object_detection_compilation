@@ -114,8 +114,32 @@ def vta_alu():
 
     # s.trace.show()
 
-    mod = vtar.tir.transform.MyInjectALUIntrin()(s.mod)
+    mod = s.mod
+
+    # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod)
+    mod = vtar.tir.transform.InjectDMAIntrin()(mod)
+    # mod = vtar.tir.transform.InjectSkipCopy()(mod) # Just for debug
+    mod = vtar.tir.transform.AnnotateALUCoProcScope()(mod)
+    # mod = tvm.tir.transform.LiftAttrScope("coproc_uop_scope")(mod) # Does not exists anymore
+    # mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod)
+    # mod = tvm.tir.transform.LiftAttrScope("coproc_scope")(mod) # Does not exists anymore
+    mod = vtar.tir.transform.InjectCoProcSync()(mod)
+    # mod = vtar.tir.transform.InjectDeclBuffer(mod)
+    try:
+        mod = tvm.tir.transform.StorageRewrite()(mod)
+    except:
+        mod.show()
+        raise
+    mod = vtar.tir.transform.InjectDebug(mod)
+    mod = vtar.tir.transform.InjectALUIntrin()(mod)
+    try:
+        mod = tvm.tir.transform.LowerDeviceStorageAccessInfo()(mod)
+    except:
+        pass
+    # mod = vtar.tir.transform.FoldUopLoop()(mod)
+    # mod = vtar.tir.transform.CPUAccessRewrite()(mod)
     mod.show()
+    print(tvm.tir.analysis.analysis.verify_well_formed(mod))
     return s
 
 vta_alu()
