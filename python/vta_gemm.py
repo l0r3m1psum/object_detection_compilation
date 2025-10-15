@@ -69,6 +69,28 @@ def f():
     x = numpy.transpose(x, (2, 3, 0, 1,)) # FIXME: this is wrong
     print(x)
 
+def test():
+    A = te.placeholder((128, 128), name="A")
+    B = te.placeholder((128, 128), name="B")
+    k = te.reduce_axis((0, 128), "k")
+    C = te.compute((128, 128), lambda x, y: te.sum(A[x, k] * B[y, k], axis=k), name="C")
+    func = te.create_prim_func([A, B, C])
+    print(func.script())
+
+test()
+
+def test():
+    n = te.var('n')
+    m = te.var('m')
+    l = te.var('l')
+    A = te.placeholder((n, l), name='A')
+    B = te.placeholder((m, l), name='B')
+    k = te.reduce_axis((0, l), name='k')
+    C = te.compute((n, m), lambda i, j: te.sum(A[i, k] * B[j, k], axis=k))
+    func = te.create_prim_func([A, B, C])
+    print(func)
+test()
+
 def vta_alu():
     # A and B originally have shape (O, M). To use VTA to accellerate the alu
     # (elementwise operations) we have to reshape them to
@@ -77,8 +99,9 @@ def vta_alu():
 
     M, O = 1024, 1
     m, o = M//env.BLOCK_OUT, O//env.BATCH
+    # o, m = te.var("o"), te.var("m")
     shape = (o, m, env.BATCH, env.BLOCK_OUT)
-    # FIXME: How do I make MyInjectALUIntrin work when dtype=env.inp_dtype and
+    # FIXME: How do I make InjectALUIntrin work when dtype=env.inp_dtype and
     # astype becomes a Cast?
     A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
     B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
@@ -94,10 +117,12 @@ def vta_alu():
 
     D = te.compute(shape, lambda *i: D_buf(*i).astype(env.inp_dtype), name="D")
 
+    # https://tvm.apache.org/docs/reference/api/python/tir/tir.html#tvm.tir.PrimFunc
     alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
     Module = tvm.IRModule({"alu": alu})
     s = tvm.tir.Schedule(Module)
     s.work_on('alu')
+    s.mod.show()
 
     s.set_scope(s.get_block("A_buf"), 0, env.acc_scope)
     s.set_scope(s.get_block("B_buf"), 0, env.acc_scope)
@@ -116,28 +141,20 @@ def vta_alu():
 
     mod = s.mod
 
-    # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod)
+    # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod) # TODO
     mod = vtar.tir.transform.InjectDMAIntrin()(mod)
     # mod = vtar.tir.transform.InjectSkipCopy()(mod) # Just for debug
     mod = vtar.tir.transform.AnnotateALUCoProcScope()(mod)
-    # mod = tvm.tir.transform.LiftAttrScope("coproc_uop_scope")(mod) # Does not exists anymore
+    # mod = tvm.tir.transform.LiftAttrScope("coproc_uop_scope")(mod) # DEPRECATED
     # mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod)
-    # mod = tvm.tir.transform.LiftAttrScope("coproc_scope")(mod) # Does not exists anymore
+    # mod = tvm.tir.transform.LiftAttrScope("coproc_scope")(mod) # DEPRECATED
     mod = vtar.tir.transform.InjectCoProcSync()(mod)
-    # mod = vtar.tir.transform.InjectDeclBuffer(mod)
-    try:
-        mod = tvm.tir.transform.StorageRewrite()(mod)
-    except:
-        mod.show()
-        raise
+    # mod = tvm.tir.transform.StorageRewrite()(mod) # BROKEN!
     mod = vtar.tir.transform.InjectDebug(mod)
     mod = vtar.tir.transform.InjectALUIntrin()(mod)
-    try:
-        mod = tvm.tir.transform.LowerDeviceStorageAccessInfo()(mod)
-    except:
-        pass
-    # mod = vtar.tir.transform.FoldUopLoop()(mod)
-    # mod = vtar.tir.transform.CPUAccessRewrite()(mod)
+    # mod = tvm.tir.transform.LowerDeviceStorageAccessInfo()(mod) # BROKEN!
+    # mod = vtar.tir.transform.FoldUopLoop()(mod) # TODO
+    # mod = vtar.tir.transform.CPUAccessRewrite()(mod) # TODO
     mod.show()
     print(tvm.tir.analysis.analysis.verify_well_formed(mod))
     return s

@@ -520,13 +520,21 @@ def InjectDebug(f, *_):
 
     return f.with_body(tir.stmt_seq(debug, f.body))
 
+from tvm import ir
+
 # TODO: make this behave as any other pass.
 @tvm.tir.transform.prim_func_pass(opt_level=0)
 def InjectDeclBuffer(f, *_):
     alloc_buffers = f.body.block.alloc_buffers
-    body = f.body
-    for i in range(len(alloc_buffers)):
-        body = tir.DeclBuffer(alloc_buffers[i], body)
+    breakpoint()
+    match_buffers = []
+    for alloc_buffer in alloc_buffers:
+        region = [ir.Range(n) for n in alloc_buffer.shape]
+        match_buffers.append(tir.MatchBufferRegion(alloc_buffer, tir.BufferRegion(alloc_buffer, region)))
+    block = f.body.block
+    body = tir.Block(block.iter_vars, block.reads, block.reads, block.name_hint,
+        block.body, block.init, block.alloc_buffers, match_buffers,
+        block.annotations)
     return f.with_body(body)
 
 
