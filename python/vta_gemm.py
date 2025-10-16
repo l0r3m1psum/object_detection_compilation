@@ -79,6 +79,7 @@ def test():
 
 test()
 
+from tvm import tir
 def test():
     n = te.var('n')
     m = te.var('m')
@@ -88,6 +89,8 @@ def test():
     k = te.reduce_axis((0, l), name='k')
     C = te.compute((n, m), lambda i, j: te.sum(A[i, k] * B[j, k], axis=k))
     func = te.create_prim_func([A, B, C])
+    print(func)
+    func = func.specialize(dict(zip(func.params, (tir.decl_buffer((16, 16)),tir.decl_buffer((16, 16)),tir.decl_buffer((16, 16))))))
     print(func)
 test()
 
@@ -111,14 +114,14 @@ def vta_alu():
     C_buf = te.compute(
         shape,
         lambda *i: A_buf(*i).astype(env.acc_dtype) + B_buf(*i).astype(env.acc_dtype),
-        name="C_buf",
+        "C_buf",
     )
-    D_buf = te.compute(shape, lambda *i: C_buf(*i) >> 2, name="D_buf")
+    # D_buf = te.compute(shape, lambda *i: C_buf(*i) >> 2, "D_buf")
 
-    D = te.compute(shape, lambda *i: D_buf(*i).astype(env.inp_dtype), name="D")
+    C = te.compute(shape, lambda *i: C_buf(*i).astype(env.inp_dtype), "C")
 
     # https://tvm.apache.org/docs/reference/api/python/tir/tir.html#tvm.tir.PrimFunc
-    alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
+    alu = te.create_prim_func([A, B, C]).with_attr({"global_symbol": "alu"})
     Module = tvm.IRModule({"alu": alu})
     s = tvm.tir.Schedule(Module)
     s.work_on('alu')
@@ -127,19 +130,30 @@ def vta_alu():
     s.set_scope(s.get_block("A_buf"), 0, env.acc_scope)
     s.set_scope(s.get_block("B_buf"), 0, env.acc_scope)
     s.set_scope(s.get_block("C_buf"), 0, env.acc_scope)
-    s.set_scope(s.get_block("D_buf"), 0, env.acc_scope)
+    # s.set_scope(s.get_block("D_buf"), 0, env.acc_scope)
 
     s.annotate(s.get_loops(s.get_block("A_buf"))[0], env.dma_copy, True)
     s.annotate(s.get_loops(s.get_block("B_buf"))[0], env.dma_copy, True)
     s.annotate(s.get_loops(s.get_block("C_buf"))[0], env.alu, True)
-    s.annotate(s.get_loops(s.get_block("D_buf"))[0], env.alu, True)
-    s.annotate(s.get_loops(s.get_block("D"))[0], env.dma_copy, True)
+    # s.annotate(s.get_loops(s.get_block("D_buf"))[0], env.alu, True)
+    s.annotate(s.get_loops(s.get_block("C"))[0], env.dma_copy, True)
+
+    s.annotate(s.get_block("root"), "coproc_sync", True)
 
     s.mod.show()
 
+    # Strumentopolo molto utile!
+    # https://tvm.apache.org/docs/reference/api/python/tir/schedule.html#tvm.tir.schedule.Schedule.tensorize
+
+    # https://tvm.apache.org/docs/reference/api/python/tir/schedule.html#tvm.tir.schedule.Schedule.transform_layout
     # s.trace.show()
 
     mod = s.mod
+
+    # TODO: il mio TIR è diverso dal Relay originale solo per la mancanza di
+    # coproc_dep_push e coproc_dep_pop che non è chiaro chi li debba inserire.
+    # Questo ignorando i gli effetti di LiftAttrScope che dovrei poter
+    # implementare ma non ne vedo l'utilità.
 
     # https://mlc.ai/docs/reference/api/tir/transform.html
     # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod) # TODO
@@ -150,6 +164,7 @@ def vta_alu():
     # mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod)
     # mod = tvm.tir.transform.LiftAttrScope("coproc_scope")(mod) # DEPRECATED
     mod = vtar.tir.transform.InjectCoProcSync()(mod)
+    # mod = tvm.tir.transform.CoProcSync()(mod) # DEPRECATED
     # mod = tvm.tir.transform.StorageRewrite()(mod) # BROKEN!
     mod = vtar.tir.transform.InjectDebug(mod)
     mod = vtar.tir.transform.InjectALUIntrin()(mod)
@@ -169,13 +184,40 @@ rng = numpy.random.default_rng(42)
 os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
 device = tvm.cpu()
 ex = tvm.compile(mod)
+# TODO: start from an IRModule with a Relax main
 # vm = relax.VirtualMachine(ex, device)
 A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
 B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
 C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"))
 ex(A, B, C)
+print(C)
 
 raise SystemExit(0)
+
+"""
+primfn(A_1: handle, B_1: handle, C_1: handle) -> ()
+  attr = {"from_legacy_te_schedule": True, "global_symbol": "main", "tir.noalias": True}
+  buffers = {C: Buffer(C_2: Pointer(int8), int8, [1, 64, 1, 16], []),
+             A: Buffer(A_2: Pointer(int32), int32, [1, 64, 1, 16], []),
+             B: Buffer(B_2: Pointer(int32), int32, [1, 64, 1, 16], [])}
+  buffer_map = {A_1: A, B_1: B, C_1: C} {
+  attr [IterVar(vta: int32, (nullptr), "ThreadIndex", "vta")] "coproc_scope" = 2 {
+    @tir.call_extern("VTALoadBuffer2D", @tir.tvm_thread_context(@tir.vta.command_handle(, dtype=handle), dtype=handle), A_2, 0, 64, 1, 64, 0, 0, 0, 0, 0, 3, dtype=int32)
+    @tir.call_extern("VTALoadBuffer2D", @tir.tvm_thread_context(@tir.vta.command_handle(, dtype=handle), dtype=handle), B_2, 0, 64, 1, 64, 0, 0, 0, 0, 64, 3, dtype=int32)
+    attr [IterVar(vta, (nullptr), "ThreadIndex", "vta")] "coproc_uop_scope" = "VTAPushALUOp" {
+      @tir.call_extern("VTAUopLoopBegin", 64, 1, 1, 0, dtype=int32)
+      @tir.vta.uop_push(1, 0, 0, 64, 0, 2, 0, 0, dtype=int32)
+      @tir.call_extern("VTAUopLoopEnd", dtype=int32)
+    }
+    @tir.vta.coproc_dep_push(2, 3, dtype=int32)
+  }
+  attr [IterVar(vta, (nullptr), "ThreadIndex", "vta")] "coproc_scope" = 3 {
+    @tir.vta.coproc_dep_pop(2, 3, dtype=int32)
+    @tir.call_extern("VTAStoreBuffer2D", @tir.tvm_thread_context(@tir.vta.command_handle(, dtype=handle), dtype=handle), 0, 4, C_2, 0, 64, 1, 64, dtype=int32)
+  }
+  @tir.vta.coproc_sync(, dtype=int32)
+}
+"""
 
 # Computation Declaration ######################################################
 
