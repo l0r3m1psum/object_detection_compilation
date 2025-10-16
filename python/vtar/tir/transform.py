@@ -568,8 +568,15 @@ def AnnotateALUCoProcScope() -> tir.transform.PrimFuncPass:
 
 def do_inject_coproc_sync(stmt: tir.Stmt) -> tir.Stmt | None:
     if _match_pragma(stmt, "coproc_sync"):
-        sync = tir.Call("int32", "vta.coproc_sync", [])
-        return tir.SeqStmt([stmt.body, tir.Evaluate(sync)])
+        sync = tir.Call("int32", "tir.vta.coproc_sync", [])
+        print("TODO: if isinstance(stmt.body, tir.SeqStmt) flatten")
+        print("TODO: preserve annotations that are not \"coproc_sync\"")
+        annotations = {}
+        body = tir.SeqStmt([stmt.body, tir.Evaluate(sync)])
+        res = tir.Block(stmt.iter_vars, stmt.reads, stmt.writes, stmt.name_hint,
+            body, stmt.init, stmt.alloc_buffers, stmt.match_buffers, annotations)
+        return res
+
     if _match_pragma(stmt, "trim_loop"):
         op = stmt.body
         if not isinstance(op, tir.For): raise ValueError("Not an instance of tir.For")
@@ -580,7 +587,7 @@ def do_inject_coproc_sync(stmt: tir.Stmt) -> tir.Stmt | None:
 
 def inject_coproc_sync(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
     return func.with_body(
-        tvm.tir.stmt_functor.ir_transform(func.body, None, do_inject_coproc_sync, ["tir.For"]) # FIXME: tir.For is wrong
+        tvm.tir.stmt_functor.ir_transform(func.body, None, do_inject_coproc_sync, ["tir.Block"])
     )
 
 # TODO: implement this using tir.PyStmtExprMutator
