@@ -110,14 +110,21 @@ def build(*args, **kwargs):
 
 # Register key ops
 tvm.ir.register_op_attr("tir.vta.coproc_sync", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
+tvm.ir.register_op_attr("tir.vta.coproc_sync", "TScriptPrinterName", "tir.vta.coproc_sync")
+
 tvm.ir.register_op_attr("tir.vta.coproc_dep_push", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
+tvm.ir.register_op_attr("tir.vta.coproc_dep_push", "TScriptPrinterName", "tir.vta.coproc_dep_push")
+
 tvm.ir.register_op_attr("tir.vta.coproc_dep_pop", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
+tvm.ir.register_op_attr("tir.vta.coproc_dep_pop", "TScriptPrinterName", "tir.vta.coproc_dep_pop")
 
 tvm.ir.register_op_attr("tir.vta.uop_push", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
 tvm.ir.register_op_attr("tir.vta.uop_push", "TGlobalSymbol", "VTAUopPush")
+tvm.ir.register_op_attr("tir.vta.uop_push", "TScriptPrinterName", "tir.vta.uop_push")
 
 tvm.ir.register_op_attr("tir.vta.command_handle", "TGlobalSymbol", "VTATLSCommandHandle")
 tvm.ir.register_op_attr("tir.vta.command_handle", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
+tvm.ir.register_op_attr("tir.vta.command_handle", "TScriptPrinterName", "tir.vta.command_handle")
 
 # The memory information for the compiler
 @tvm.register_func("tvm.info.mem.%s" % Environment.inp_scope)
