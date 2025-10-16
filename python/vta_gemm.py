@@ -141,6 +141,7 @@ def vta_alu():
 
     mod = s.mod
 
+    # https://mlc.ai/docs/reference/api/tir/transform.html
     # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod) # TODO
     mod = vtar.tir.transform.InjectDMAIntrin()(mod)
     # mod = vtar.tir.transform.InjectSkipCopy()(mod) # Just for debug
@@ -157,9 +158,22 @@ def vta_alu():
     # mod = vtar.tir.transform.CPUAccessRewrite()(mod) # TODO
     mod.show()
     print(tvm.tir.analysis.analysis.verify_well_formed(mod))
-    return s
+    return s.mod
 
-vta_alu()
+mod = vta_alu()
+
+import os
+import numpy
+rng = numpy.random.default_rng(42)
+# from tvm import relax
+os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
+device = tvm.cpu()
+ex = tvm.compile(mod)
+# vm = relax.VirtualMachine(ex, device)
+A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
+B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
+C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"))
+ex(A, B, C)
 
 raise SystemExit(0)
 
