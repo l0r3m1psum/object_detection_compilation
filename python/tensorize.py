@@ -151,6 +151,11 @@ def before(
 # https://tvm.apache.org/docs/reference/api/python/tir/schedule.html#tvm.tir.schedule.Schedule.cache_read
 # https://tvm.apache.org/docs/v0.8.0/topic/vta/tutorials/optimize/matrix_multiply_opt.html#sphx-glr-topic-vta-tutorials-optimize-matrix-multiply-opt-py
 
+# TODO: the TIR pattern for padding is to use if_then_else when loading e.g.
+# y[vi] = T.if_then_else(vi >= 6 and vi < 134, x[vi - 6], 0, dtype="int32")
+# study how to schedule it to VTALoadBuffer2D
+# https://tvm.apache.org/docs/reference/api/python/tir/schedule.html#tvm.tir.schedule.Schedule.decompose_padding
+
 sch = tir.Schedule(before)
 C = sch.get_block("C")
 i, j, k = sch.get_loops(C)
