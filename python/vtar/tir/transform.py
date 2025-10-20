@@ -595,3 +595,11 @@ def InjectCoProcSync() -> tir.transform.PrimFuncPass:
     return tir.transform.prim_func_pass(
         inject_coproc_sync, opt_level=0, name="tir.vta.InjectCoProcSync"
     )
+
+from tvm.tir.transform import _ffi_api
+
+def LiftAttrScope(s: str):
+    return _ffi_api.LiftAttrScope(s)
+
+def CoProcSync():
+    return _ffi_api.CoProcSync()

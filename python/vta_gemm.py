@@ -62,43 +62,26 @@ def f():
     import numpy
     BATCH, BLOCK_OUT = 3, 2
     O, M = 3, 4
-    x = numpy.arange(M)
-    x = numpy.vstack((x, x, x))
-    print(x)
-    x = numpy.reshape(x, (O//BATCH, M//BLOCK_OUT, BATCH, BLOCK_OUT))
-    x = numpy.transpose(x, (2, 3, 0, 1,)) # FIXME: this is wrong
-    print(x)
+    o, m = O//BATCH, M//BLOCK_OUT
+    rng = numpy.random.default_rng(42)
 
-def test():
-    A = te.placeholder((128, 128), name="A")
-    B = te.placeholder((128, 128), name="B")
-    k = te.reduce_axis((0, 128), "k")
-    C = te.compute((128, 128), lambda x, y: te.sum(A[x, k] * B[y, k], axis=k), name="C")
-    func = te.create_prim_func([A, B, C])
-    print(func.script())
+    A_orig = rng.integers(-128, 128, size=(O, M)).astype("int8")
+    B_orig = rng.integers(-128, 128, size=(O, M)).astype("int8")
+    A_orig = numpy.arange(O*M).reshape((O, M)).astype("int8")
 
-test()
+    A_pack = A_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+    B_pack = B_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
 
-from tvm import tir
-def test():
-    n = te.var('n')
-    m = te.var('m')
-    l = te.var('l')
-    A = te.placeholder((n, l), name='A')
-    B = te.placeholder((m, l), name='B')
-    k = te.reduce_axis((0, l), name='k')
-    C = te.compute((n, m), lambda i, j: te.sum(A[i, k] * B[j, k], axis=k))
-    func = te.create_prim_func([A, B, C])
-    print(func)
-    func = func.specialize(dict(zip(func.params, (tir.decl_buffer((16, 16)),tir.decl_buffer((16, 16)),tir.decl_buffer((16, 16))))))
-    print(func)
-test()
+    print("Tensorization/matricization is vectorization applied also to the "
+        "batch dimension.")
+    print(A_orig)
+    print(A_pack)
+f()
 
 def vta_alu():
     # A and B originally have shape (O, M). To use VTA to accellerate the alu
     # (elementwise operations) we have to reshape them to
     # (o, m, BATCH, BLOCK_OUT) where o = O//BATCH and m = M//BLOCK_OUT.
-    # TODO: find how to reshape
 
     M, O = 1024, 1
     m, o = M//env.BLOCK_OUT, O//env.BATCH
@@ -138,8 +121,6 @@ def vta_alu():
     # s.annotate(s.get_loops(s.get_block("D_buf"))[0], env.alu, True)
     s.annotate(s.get_loops(s.get_block("C"))[0], env.dma_copy, True)
 
-    s.annotate(s.get_block("root"), "coproc_sync", True)
-
     s.mod.show()
 
     # Strumentopolo molto utile!
@@ -150,21 +131,15 @@ def vta_alu():
 
     mod = s.mod
 
-    # TODO: il mio TIR è diverso dal Relay originale solo per la mancanza di
-    # coproc_dep_push e coproc_dep_pop che non è chiaro chi li debba inserire.
-    # Questo ignorando i gli effetti di LiftAttrScope che dovrei poter
-    # implementare ma non ne vedo l'utilità.
-
     # https://mlc.ai/docs/reference/api/tir/transform.html
     # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod) # TODO
     mod = vtar.tir.transform.InjectDMAIntrin()(mod)
     # mod = vtar.tir.transform.InjectSkipCopy()(mod) # Just for debug
     mod = vtar.tir.transform.AnnotateALUCoProcScope()(mod)
-    # mod = tvm.tir.transform.LiftAttrScope("coproc_uop_scope")(mod) # DEPRECATED
-    # mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod)
-    # mod = tvm.tir.transform.LiftAttrScope("coproc_scope")(mod) # DEPRECATED
-    mod = vtar.tir.transform.InjectCoProcSync()(mod)
-    # mod = tvm.tir.transform.CoProcSync()(mod) # DEPRECATED
+    mod = vtar.tir.transform.LiftAttrScope("coproc_uop_scope")(mod)
+    # mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod) # TODO
+    mod = vtar.tir.transform.LiftAttrScope("coproc_scope")(mod)
+    mod = vtar.tir.transform.CoProcSync()(mod) # This inserts the copro_(dep_push|dep_pop|sync)
     # mod = tvm.tir.transform.StorageRewrite()(mod) # BROKEN!
     mod = vtar.tir.transform.InjectDebug(mod)
     mod = vtar.tir.transform.InjectALUIntrin()(mod)
@@ -195,6 +170,31 @@ print(C)
 raise SystemExit(0)
 
 """
+@I.ir_module
+@T.prim_func
+def alu(A: T.Buffer((1, 64, 1, 16), "int32"), B: T.Buffer((1, 64, 1, 16), "int32"), C: T.Buffer((1, 64, 1, 16), "int8")):
+    T.func_attr({"tir.noalias": T.bool(True)})
+    T.call_extern("int32", "VTASetDebugMode", T.tvm_thread_context(T.tir.vta.command_handle()), 1)
+    with T.block("root"):
+        T.reads()
+        T.writes()
+        A_buf_local_acc_buffer = T.alloc_buffer((1, 64, 1, 16), "int32", scope="local.acc_buffer")
+        B_buf_local_acc_buffer = T.alloc_buffer((1, 64, 1, 16), "int32", scope="local.acc_buffer")
+        C_buf_local_acc_buffer = T.alloc_buffer((1, 64, 1, 16), "int32", scope="local.acc_buffer")
+        vta = T.int32()
+        with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_scope", 2):
+            T.call_extern("int32", "VTALoadBuffer2D", T.tvm_thread_context(T.tir.vta.command_handle()), A.data, 0, 64, 1, 64, 0, 0, 0, 0, T.tvm_access_ptr(T.type_annotation("int32"), A_buf_local_acc_buffer.data, 0, 1024, 1), 3)
+            T.call_extern("int32", "VTALoadBuffer2D", T.tvm_thread_context(T.tir.vta.command_handle()), B.data, 0, 64, 1, 64, 0, 0, 0, 0, T.tvm_access_ptr(T.type_annotation("int32"), B_buf_local_acc_buffer.data, 0, 1024, 1), 3)
+            with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_uop_scope", "VTAPushALUOp"):
+                T.call_extern("int32", "VTAUopLoopBegin", 64, 1, 1, 0)
+                T.tir.vta.uop_push(1, 0, 64, 64, 0, 2, 0, 0)
+                T.call_extern("int32", "VTAUopLoopEnd")
+            T.tir.vta.coproc_dep_push(2, 3)
+        T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_scope", 3)
+        T.tir.vta.coproc_dep_pop(2, 3)
+        T.call_extern("int32", "VTAStoreBuffer2D", T.tvm_thread_context(T.tir.vta.command_handle()), T.tvm_access_ptr(T.type_annotation("int32"), C_buf_local_acc_buffer.data, 0, 1024, 1), 4, C.data, 0, 64, 1, 64)
+    T.tir.vta.coproc_sync()
+
 primfn(A_1: handle, B_1: handle, C_1: handle) -> ()
   attr = {"from_legacy_te_schedule": True, "global_symbol": "main", "tir.noalias": True}
   buffers = {C: Buffer(C_2: Pointer(int8), int8, [1, 64, 1, 16], []),
