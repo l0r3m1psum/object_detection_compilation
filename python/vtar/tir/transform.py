@@ -83,6 +83,7 @@ def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List
         if buf.strides:
             if not utils.equal_const_int(buf.strides[ndim - i] - x_size, 0):
                 raise RuntimeError("scope %s needs to have block=%d" % (scope, elem_block))
+        # NOTE(Diego) I guess that this still expects for the buffer to have the shape information
         x_size = x_size * buf.shape[ndim - i]
         if utils.equal_const_int(x_size - elem_block, 0):
             base = i + 1
@@ -103,7 +104,7 @@ def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List
         x_size = 1
         x_stride = buf.strides[ndim - base]
         next_base = base
-        if not utils.equal_const_int(idxm(x_stride, elem_block), 0):
+        if not utils.equal_const_int(tir.indexmod(x_stride, elem_block), 0):
             raise RuntimeError(
                 "scope %s need to have block=%d, shape=%s, strides=%s"
                 % (scope, elem_block, buf.shape, buf.strides)
@@ -127,6 +128,7 @@ def _get_2d_pattern(buf: tir.Buffer, elem_width: int, elem_bytes: int, dtype: st
     elem_block = elem_bytes * 8 // elem_width
     shape, strides = buf.shape, buf.strides
 
+    breakpoint()
     if not utils.equal_const_int(tir.indexmod(buf.elem_offset, elem_block), 0):
         raise RuntimeError("scope %s need to have block=%d" % (scope, elem_block))
 
@@ -352,7 +354,6 @@ def InjectDMAIntrin() -> tir.transform.PrimFuncPass:
     return tir.transform.prim_func_pass(
         inject_dma_intin_transform, opt_level=0, name="tir.vta.InjectDMAIntrin"
     )
-
 
 def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
     """
@@ -603,3 +604,62 @@ def LiftAttrScope(s: str):
 
 def CoProcSync():
     return _ffi_api.CoProcSync()
+
+
+def lift_alloc_to_scope_begin(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+    lift_stmt = [[]]
+
+    def _merge_block(slist, body):
+        for op in slist:
+            if op.body == body:
+                body = op
+            elif isinstance(op, tvm.tir.Allocate):
+                body = tvm.tir.Allocate(op.buffer_var, op.dtype, op.extents, op.condition, body)
+            elif isinstance(op, tvm.tir.AttrStmt):
+                body = tvm.tir.AttrStmt(op.node, op.attr_key, op.value, body)
+            elif isinstance(op, tvm.tir.For):
+                body = tvm.tir.For(
+                    op.loop_var,
+                    op.min,
+                    op.extent,
+                    op.kind,
+                    body,
+                    op.thread_binding,
+                    op.annotations,
+                )
+            else:
+                raise RuntimeError("unexpected op")
+        del slist[:]
+        return body
+
+    def do_lift_alloc_to_scope_begin_pre_order(op: tir.Stmt) -> tir.Stmt | None:
+        if isinstance(op, tvm.tir.For):
+            lift_stmt.append([])
+        elif isinstance(op, tvm.tir.AttrStmt):
+            if op.attr_key == "virtual_thread":
+                lift_stmt.append([])
+
+    def do_lift_alloc_to_scope_begin_post_order(op: tir.Stmt) -> tir.Stmt | None:
+        if isinstance(op, tvm.tir.Allocate):
+            lift_stmt[-1].append(op)
+            return op.body
+        if isinstance(op, tvm.tir.AttrStmt):
+            if op.attr_key == "storage_scope":
+                lift_stmt[-1].append(op)
+                return op.body
+            if op.attr_key == "virtual_thread":
+                return _merge_block(lift_stmt.pop() + [op], op.body)
+            return op
+        if isinstance(op, tvm.tir.For):
+            return _merge_block(lift_stmt.pop() + [op], op.body)
+        raise RuntimeError("not reached")
+
+    return func.with_body(
+        tvm.tir.stmt_functor.ir_transform(func.body, do_lift_alloc_to_scope_begin_pre_order, do_lift_alloc_to_scope_begin_post_order, ["tir.Allocate", "tir.AttrStmt", "tir.For"])
+    )
+
+# TODO: implement this using tir.PyStmtExprMutator
+def LiftAllocToScopeBegin() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        lift_alloc_to_scope_begin, opt_level=0, name="tir.vta.LiftAllocToScopeBegin"
+    )

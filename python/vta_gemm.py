@@ -78,6 +78,26 @@ def f():
     print(A_pack)
 f()
 
+def vta_alu_prime():
+    M, O = 1024, 1
+    m, o = M//env.BLOCK_OUT, O//env.BATCH
+    shape = (o, m, env.BATCH, env.BLOCK_OUT)
+
+    A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
+    B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
+    C = te.compute(shape, lambda *i: (A(*i) + B(*i)).astype(env.inp_dtype), "C")
+
+    alu = te.create_prim_func([A, B, C]).with_attr({"global_symbol": "alu"})
+    Module = tvm.IRModule({"alu": alu})
+    s = tvm.tir.Schedule(Module)
+    s.work_on('alu')
+    s.cache_read(s.get_block("C"), 0, env.acc_scope)
+    s.cache_read(s.get_block("C"), 1, env.acc_scope)
+    # s.reverse_compute_inline(s.get_block("C"))
+    # FIXME: this is wrong the cast should be done while storing but
+    # reverse_compute_inline can't be used if the block reads more than one buffer...
+    s.cache_write(s.get_block("C"), 0, env.acc_scope)
+
 def vta_alu():
     # A and B originally have shape (O, M). To use VTA to accellerate the alu
     # (elementwise operations) we have to reshape them to
@@ -131,19 +151,27 @@ def vta_alu():
 
     mod = s.mod
 
+    mod.show(syntax_sugar=True)
     # https://mlc.ai/docs/reference/api/tir/transform.html
     # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod) # TODO
     mod = vtar.tir.transform.InjectDMAIntrin()(mod)
-    # mod = vtar.tir.transform.InjectSkipCopy()(mod) # Just for debug
+    # mod = vtar.tir.transform.InjectSkipCopy()(mod) # TODO: Just for debug
     mod = vtar.tir.transform.AnnotateALUCoProcScope()(mod)
     mod = vtar.tir.transform.LiftAttrScope("coproc_uop_scope")(mod)
-    # mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod) # TODO
+    mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod)
     mod = vtar.tir.transform.LiftAttrScope("coproc_scope")(mod)
     mod = vtar.tir.transform.CoProcSync()(mod) # This inserts the copro_(dep_push|dep_pop|sync)
-    # mod = tvm.tir.transform.StorageRewrite()(mod) # BROKEN!
     mod = vtar.tir.transform.InjectDebug(mod)
     mod = vtar.tir.transform.InjectALUIntrin()(mod)
-    # mod = tvm.tir.transform.LowerDeviceStorageAccessInfo()(mod) # BROKEN!
+    # Taken from tvm.tir.get_default_tir_pipeline
+    if True:
+        mod = tvm.tir.transform.ConvertBlocksToOpaque()(mod)
+        mod = tvm.tir.transform.CompactBufferAllocation()(mod)
+        mod = tvm.tir.transform.LowerMatchBuffer()(mod)
+        mod = tvm.tir.transform.LowerOpaqueBlock()(mod)
+        mod = tvm.tir.transform.FlattenBuffer()(mod)
+    mod = tvm.tir.transform.StorageRewrite()(mod)
+    mod = tvm.tir.transform.LowerDeviceStorageAccessInfo()(mod)
     # mod = vtar.tir.transform.FoldUopLoop()(mod) # TODO
     # mod = vtar.tir.transform.CPUAccessRewrite()(mod) # TODO
     mod.show()
@@ -165,6 +193,7 @@ A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
 B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
 C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"))
 ex(A, B, C)
+numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
 print(C)
 
 raise SystemExit(0)
