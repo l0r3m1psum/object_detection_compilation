@@ -3,6 +3,9 @@
 
 import tvm
 from tvm import te
+import ctypes
+vta_fsim = ctypes.CDLL("vta_fsim")
+
 import vtar
 
 env = vtar.get_env()
@@ -76,32 +79,76 @@ def f():
         "batch dimension.")
     print(A_orig)
     print(A_pack)
-f()
+# f()
 
 def vta_alu_prime():
-    M, O = 1024, 1
-    m, o = M//env.BLOCK_OUT, O//env.BATCH
+    # A and B originally have shape (O, M). To use VTA to accelerate the alu
+    # (element-wise operations) we have to reshape them to
+    # (o, m, BATCH, BLOCK_OUT) where o = O//BATCH and m = M//BLOCK_OUT.
+    O, M = 1, 1024
+    o, m = O//env.BATCH, M//env.BLOCK_OUT
     shape = (o, m, env.BATCH, env.BLOCK_OUT)
 
     A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
     B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
-    C = te.compute(shape, lambda *i: (A(*i) + B(*i)).astype(env.inp_dtype), "C")
+    C = te.compute(shape, lambda *i: A(*i) + B(*i), "C")
+    # Since TVM Schedule.reverse_compute_inline cannot breakup block reads more
+    # than one buffer we have to do the split at the TE level instead of
+    # scheduling with:
+    # s.reverse_compute_inline(s.get_block("D"))
+    # s.cache_write(s.get_block("D"), 0, env.acc_scope)
+    D = te.compute(shape, lambda *i: C(*i).astype(env.inp_dtype), "D")
 
-    alu = te.create_prim_func([A, B, C]).with_attr({"global_symbol": "alu"})
+    alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
     Module = tvm.IRModule({"alu": alu})
+
     s = tvm.tir.Schedule(Module)
     s.work_on('alu')
     s.cache_read(s.get_block("C"), 0, env.acc_scope)
     s.cache_read(s.get_block("C"), 1, env.acc_scope)
-    # s.reverse_compute_inline(s.get_block("C"))
-    # FIXME: this is wrong the cast should be done while storing but
-    # reverse_compute_inline can't be used if the block reads more than one buffer...
-    s.cache_write(s.get_block("C"), 0, env.acc_scope)
+    s.set_scope(s.get_block("C"), 0, env.acc_scope)
+    s.annotate(s.get_loops(s.get_block("A_local.acc_buffer"))[0], env.dma_copy, True)
+    s.annotate(s.get_loops(s.get_block("B_local.acc_buffer"))[0], env.dma_copy, True)
+    s.annotate(s.get_loops(s.get_block("C"))[0], env.alu, True)
+    s.annotate(s.get_loops(s.get_block("D"))[0], env.dma_copy, True)
+    s.mod.show()
+
+# vta_alu_prime()
+
+from tvm import ir
+
+def get_vtar_tir_transform() -> ir.transform.Pass:
+    # Some documentation for old transformations is still available here
+    # https://mlc.ai/docs/reference/api/tir/transform.html
+    return tvm.transform.Sequential([
+        # vtar.tir.transform.InjectConv2DTransposeSkip(), # TODO
+        vtar.tir.transform.InjectDMAIntrin(),
+        # vtar.tir.transform.InjectSkipCopy(), # TODO: Just for debug
+        vtar.tir.transform.AnnotateALUCoProcScope(),
+        vtar.tir.transform.LiftAttrScope("coproc_uop_scope"),
+        vtar.tir.transform.LiftAllocToScopeBegin(),
+        vtar.tir.transform.LiftAttrScope("coproc_scope"),
+        vtar.tir.transform.CoProcSync(), # This inserts the copro_(dep_push|dep_pop|sync)
+        # vtar.tir.transform.InjectDebug,
+        vtar.tir.transform.InjectALUIntrin(),
+        # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
+        tvm.tir.transform.ConvertBlocksToOpaque(),
+        tvm.tir.transform.CompactBufferAllocation(),
+        tvm.tir.transform.LowerMatchBuffer(),
+        tvm.tir.transform.LowerOpaqueBlock(),
+        tvm.tir.transform.FlattenBuffer(), tvm.ir.transform.PrintIR("After FlattenBuffer"),
+        ########################################################################
+        tvm.tir.transform.StorageRewrite(), tvm.ir.transform.PrintIR("After StorageRewrite"),
+        tvm.tir.transform.LowerDeviceStorageAccessInfo(), tvm.ir.transform.PrintIR("After LowerDeviceStorageAccessInfo"),
+        # mod = vtar.tir.transform.FoldUopLoop(), # TODO
+        # mod = vtar.tir.transform.CPUAccessRewrite(), # TODO
+    ])
 
 def vta_alu():
-    # A and B originally have shape (O, M). To use VTA to accellerate the alu
-    # (elementwise operations) we have to reshape them to
+    # A and B originally have shape (O, M). To use VTA to accelerate the alu
+    # (element-wise operations) we have to reshape them to
     # (o, m, BATCH, BLOCK_OUT) where o = O//BATCH and m = M//BLOCK_OUT.
+    # https://tvm.apache.org/docs/reference/api/python/tir/schedule.html#tvm.tir.schedule.Schedule.transform_layout
 
     M, O = 1024, 1
     m, o = M//env.BLOCK_OUT, O//env.BATCH
@@ -119,134 +166,66 @@ def vta_alu():
         lambda *i: A_buf(*i).astype(env.acc_dtype) + B_buf(*i).astype(env.acc_dtype),
         "C_buf",
     )
-    # D_buf = te.compute(shape, lambda *i: C_buf(*i) >> 2, "D_buf")
 
     C = te.compute(shape, lambda *i: C_buf(*i).astype(env.inp_dtype), "C")
 
-    # https://tvm.apache.org/docs/reference/api/python/tir/tir.html#tvm.tir.PrimFunc
     alu = te.create_prim_func([A, B, C]).with_attr({"global_symbol": "alu"})
     Module = tvm.IRModule({"alu": alu})
+
     s = tvm.tir.Schedule(Module)
     s.work_on('alu')
-    s.mod.show()
+    # s.mod.show()
 
+    # TODO: try extern_scope AttrStmt to work around InplaceOpVerifier
     s.set_scope(s.get_block("A_buf"), 0, env.acc_scope)
     s.set_scope(s.get_block("B_buf"), 0, env.acc_scope)
     s.set_scope(s.get_block("C_buf"), 0, env.acc_scope)
-    # s.set_scope(s.get_block("D_buf"), 0, env.acc_scope)
 
     s.annotate(s.get_loops(s.get_block("A_buf"))[0], env.dma_copy, True)
     s.annotate(s.get_loops(s.get_block("B_buf"))[0], env.dma_copy, True)
     s.annotate(s.get_loops(s.get_block("C_buf"))[0], env.alu, True)
-    # s.annotate(s.get_loops(s.get_block("D_buf"))[0], env.alu, True)
     s.annotate(s.get_loops(s.get_block("C"))[0], env.dma_copy, True)
 
-    s.mod.show()
-
-    # Strumentopolo molto utile!
-    # https://tvm.apache.org/docs/reference/api/python/tir/schedule.html#tvm.tir.schedule.Schedule.tensorize
-
-    # https://tvm.apache.org/docs/reference/api/python/tir/schedule.html#tvm.tir.schedule.Schedule.transform_layout
-    # s.trace.show()
-
     mod = s.mod
+    # mod.show()
+    return mod
 
-    mod.show(syntax_sugar=True)
-    # https://mlc.ai/docs/reference/api/tir/transform.html
-    # mod = vtar.tir.transform.InjectConv2DTransposeSkip()(mod) # TODO
-    mod = vtar.tir.transform.InjectDMAIntrin()(mod)
-    # mod = vtar.tir.transform.InjectSkipCopy()(mod) # TODO: Just for debug
-    mod = vtar.tir.transform.AnnotateALUCoProcScope()(mod)
-    mod = vtar.tir.transform.LiftAttrScope("coproc_uop_scope")(mod)
-    mod = vtar.tir.transform.LiftAllocToScopeBegin()(mod)
-    mod = vtar.tir.transform.LiftAttrScope("coproc_scope")(mod)
-    mod = vtar.tir.transform.CoProcSync()(mod) # This inserts the copro_(dep_push|dep_pop|sync)
-    mod = vtar.tir.transform.InjectDebug(mod)
-    mod = vtar.tir.transform.InjectALUIntrin()(mod)
-    # Taken from tvm.tir.get_default_tir_pipeline
-    if True:
-        mod = tvm.tir.transform.ConvertBlocksToOpaque()(mod)
-        mod = tvm.tir.transform.CompactBufferAllocation()(mod)
-        mod = tvm.tir.transform.LowerMatchBuffer()(mod)
-        mod = tvm.tir.transform.LowerOpaqueBlock()(mod)
-        mod = tvm.tir.transform.FlattenBuffer()(mod)
-    mod = tvm.tir.transform.StorageRewrite()(mod)
-    mod = tvm.tir.transform.LowerDeviceStorageAccessInfo()(mod)
-    # mod = vtar.tir.transform.FoldUopLoop()(mod) # TODO
-    # mod = vtar.tir.transform.CPUAccessRewrite()(mod) # TODO
-    mod.show()
-    print(tvm.tir.analysis.analysis.verify_well_formed(mod))
-    return s.mod
+# tvm._ffi.register_func("VTADepPop", lambda *i: print(i))
+from tvm.script import ir as I
+from tvm.script import tir as T
+
+@I.ir_module
+class Module:
+    @T.prim_func
+    def alu(A: T.Buffer((1, 64, 1, 16), "int32"), B: T.Buffer((1, 64, 1, 16), "int32"), C: T.Buffer((1, 64, 1, 16), "int8")):
+        T.func_attr({"tir.noalias": T.bool(True)})
+        T.call_packed("VTADepPop", 1)
 
 mod = vta_alu()
+mod = get_vtar_tir_transform()(mod)
+# mod.with_attr("system_lib_prefix", "D:/Programs/TVM/lib")
+mod.show(syntax_sugar=True)
+
+# mod = Module
 
 import os
 import numpy
 rng = numpy.random.default_rng(42)
 # from tvm import relax
-os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
-device = tvm.cpu()
-ex = tvm.compile(mod)
+# os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
+ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
 # TODO: start from an IRModule with a Relax main
-# vm = relax.VirtualMachine(ex, device)
-A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
-B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"))
-C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"))
+dev = tvm.device(str(env.target))
+# vm = relax.VirtualMachine(ex, dev)
+A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
+# ex.jit().get_function("alu")(A, B, C)
 ex(A, B, C)
 numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
 print(C)
 
 raise SystemExit(0)
-
-"""
-@I.ir_module
-@T.prim_func
-def alu(A: T.Buffer((1, 64, 1, 16), "int32"), B: T.Buffer((1, 64, 1, 16), "int32"), C: T.Buffer((1, 64, 1, 16), "int8")):
-    T.func_attr({"tir.noalias": T.bool(True)})
-    T.call_extern("int32", "VTASetDebugMode", T.tvm_thread_context(T.tir.vta.command_handle()), 1)
-    with T.block("root"):
-        T.reads()
-        T.writes()
-        A_buf_local_acc_buffer = T.alloc_buffer((1, 64, 1, 16), "int32", scope="local.acc_buffer")
-        B_buf_local_acc_buffer = T.alloc_buffer((1, 64, 1, 16), "int32", scope="local.acc_buffer")
-        C_buf_local_acc_buffer = T.alloc_buffer((1, 64, 1, 16), "int32", scope="local.acc_buffer")
-        vta = T.int32()
-        with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_scope", 2):
-            T.call_extern("int32", "VTALoadBuffer2D", T.tvm_thread_context(T.tir.vta.command_handle()), A.data, 0, 64, 1, 64, 0, 0, 0, 0, T.tvm_access_ptr(T.type_annotation("int32"), A_buf_local_acc_buffer.data, 0, 1024, 1), 3)
-            T.call_extern("int32", "VTALoadBuffer2D", T.tvm_thread_context(T.tir.vta.command_handle()), B.data, 0, 64, 1, 64, 0, 0, 0, 0, T.tvm_access_ptr(T.type_annotation("int32"), B_buf_local_acc_buffer.data, 0, 1024, 1), 3)
-            with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_uop_scope", "VTAPushALUOp"):
-                T.call_extern("int32", "VTAUopLoopBegin", 64, 1, 1, 0)
-                T.tir.vta.uop_push(1, 0, 64, 64, 0, 2, 0, 0)
-                T.call_extern("int32", "VTAUopLoopEnd")
-            T.tir.vta.coproc_dep_push(2, 3)
-        T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_scope", 3)
-        T.tir.vta.coproc_dep_pop(2, 3)
-        T.call_extern("int32", "VTAStoreBuffer2D", T.tvm_thread_context(T.tir.vta.command_handle()), T.tvm_access_ptr(T.type_annotation("int32"), C_buf_local_acc_buffer.data, 0, 1024, 1), 4, C.data, 0, 64, 1, 64)
-    T.tir.vta.coproc_sync()
-
-primfn(A_1: handle, B_1: handle, C_1: handle) -> ()
-  attr = {"from_legacy_te_schedule": True, "global_symbol": "main", "tir.noalias": True}
-  buffers = {C: Buffer(C_2: Pointer(int8), int8, [1, 64, 1, 16], []),
-             A: Buffer(A_2: Pointer(int32), int32, [1, 64, 1, 16], []),
-             B: Buffer(B_2: Pointer(int32), int32, [1, 64, 1, 16], [])}
-  buffer_map = {A_1: A, B_1: B, C_1: C} {
-  attr [IterVar(vta: int32, (nullptr), "ThreadIndex", "vta")] "coproc_scope" = 2 {
-    @tir.call_extern("VTALoadBuffer2D", @tir.tvm_thread_context(@tir.vta.command_handle(, dtype=handle), dtype=handle), A_2, 0, 64, 1, 64, 0, 0, 0, 0, 0, 3, dtype=int32)
-    @tir.call_extern("VTALoadBuffer2D", @tir.tvm_thread_context(@tir.vta.command_handle(, dtype=handle), dtype=handle), B_2, 0, 64, 1, 64, 0, 0, 0, 0, 64, 3, dtype=int32)
-    attr [IterVar(vta, (nullptr), "ThreadIndex", "vta")] "coproc_uop_scope" = "VTAPushALUOp" {
-      @tir.call_extern("VTAUopLoopBegin", 64, 1, 1, 0, dtype=int32)
-      @tir.vta.uop_push(1, 0, 0, 64, 0, 2, 0, 0, dtype=int32)
-      @tir.call_extern("VTAUopLoopEnd", dtype=int32)
-    }
-    @tir.vta.coproc_dep_push(2, 3, dtype=int32)
-  }
-  attr [IterVar(vta, (nullptr), "ThreadIndex", "vta")] "coproc_scope" = 3 {
-    @tir.vta.coproc_dep_pop(2, 3, dtype=int32)
-    @tir.call_extern("VTAStoreBuffer2D", @tir.tvm_thread_context(@tir.vta.command_handle(, dtype=handle), dtype=handle), 0, 4, C_2, 0, 64, 1, 64, dtype=int32)
-  }
-  @tir.vta.coproc_sync(, dtype=int32)
-}
-"""
 
 # Computation Declaration ######################################################
 

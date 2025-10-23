@@ -23,7 +23,7 @@ if %errorlevel% neq 0 (
 REM We set the path to the Windows' default to avoid "interferences" from outside programs
 set "PATH=%SystemRoot%\system32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\"
 
-set "PATH=%gitpath%;%installdir%\Programs\LLVM\bin;%installdir%\Programs\Python;%installdir%\Appdata\Roaming\Python\Python311\Scripts;%PATH%"
+set "PATH=%gitpath%;%installdir%\Programs\TVM\lib;%installdir%\Programs\LLVM\bin;%installdir%\Programs\Python;%installdir%\Appdata\Roaming\Python\Python311\Scripts;%PATH%"
 
 FOR /F "tokens=*" %%a in ('"%PROGRAMFILES(X86)%\Microsoft Visual Studio\Installer\vswhere.exe" -property installationPath') do SET vspath=%%a
 if %errorlevel% neq 0 (

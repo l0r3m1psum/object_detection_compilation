@@ -282,6 +282,7 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
 
             o, m, BATCH, BLOCK_OUT = src.shape
             offset, x_size, y_size, x_stride = 0, m, o, m
+            # breakpoint()
             irb.emit(
                 tvm.tir.call_extern(
                     "int32",
@@ -296,7 +297,7 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                     y_pad_before,
                     x_pad_after,
                     y_pad_after,
-                    dst.access_ptr("r", "int32"),
+                    dst.access_ptr(tir.Buffer.WRITE, "int32"),
                     mem_type,
                 )
             )
@@ -323,7 +324,7 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                     "int32",
                     "VTAStoreBuffer2D",
                     env.dev.command_handle,
-                    src.access_ptr("r", "int32"),
+                    src.access_ptr(tir.Buffer.READ, "int32"),
                     mem_type,
                     dst.data,
                     # FIXME: this numbers are just place holders...
