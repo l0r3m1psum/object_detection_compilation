@@ -7,6 +7,7 @@ REM vcvarsall.bat has been invoked to correctly setup the build environment.
 setlocal
 
 set "VTA_HW_PATH=%CD:\=/%/submodules/tvm-vta"
+set target=install
 
 REM TODO: pip install stuff like in setup env.
 pushd submodules\tvm || goto :exit
@@ -43,7 +44,8 @@ pushd submodules\tvm || goto :exit
         set "LINK=/LIBPATH:%CD%\RelWithDebInfo /LIBPATH:%installdir%\Programs\Python\libs" || goto :exit
         set "INCLUDE=%cd%\..\ffi\include"
         set UseEnv=true
-        cmake --build . --config RelWithDebInfo --verbose --target install --parallel %NUMBER_OF_PROCESSORS% || goto :exit
+        cmake --build . --config RelWithDebInfo --verbose --target %target% --parallel %NUMBER_OF_PROCESSORS% || goto :exit
+        if "%target%" == "clean" (exit /b 0)
         set "TVM_LIBRARY_PATH=%CD%\RelWithDebInfo" || goto :exit
     popd || goto :exit
     set "LINK=/LIBPATH:%installdir%\Programs\Python\libs /LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit
