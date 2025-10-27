@@ -128,6 +128,7 @@ def get_vtar_tir_transform() -> ir.transform.Pass:
         vtar.tir.transform.LiftAttrScope("coproc_uop_scope"),
         vtar.tir.transform.LiftAllocToScopeBegin(),
         vtar.tir.transform.LiftAttrScope("coproc_scope"),
+        vtar.tir.transform.LiftAttrScope("extern_scope"),
         vtar.tir.transform.CoProcSync(), # This inserts the copro_(dep_push|dep_pop|sync)
         # vtar.tir.transform.InjectDebug,
         vtar.tir.transform.InjectALUIntrin(),

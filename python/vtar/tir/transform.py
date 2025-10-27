@@ -279,6 +279,11 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
 
             irb = tvm.tir.ir_builder.create()
             irb.scope_attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(task_qid))
+            # This is needed because otherwise the InplaceOpVerifier of the
+            # StorageRewtire transform wrongly determines that the load
+            # operation can be performed in-place i.e. the second load
+            # overwrites the first.
+            irb.scope_attr(env.dev.vta_axis, "extern_scope", True)
 
             o, m, BATCH, BLOCK_OUT = src.shape
             offset, x_size, y_size, x_stride = 0, m, o, m
@@ -484,7 +489,7 @@ def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                     "tir.vta.uop_push",
                     1, # alu mode
                     0, # do not reset accumulator
-                    dst_coeff[-1], # dst_index
+                    dst_coeff[-1], # dst_index # FIXME: this is wrong!
                     src_coeff[-1], # src_index
                     0,             # wgt_index
                     alu_opcode,
