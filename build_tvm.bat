@@ -15,7 +15,7 @@ pushd submodules\tvm || goto :exit
     if not exist build (mkdir build || goto :exit)
     pushd build || goto :exit
         copy /y ..\cmake\config.cmake . || goto :exit
-        copy /y ..\..\..\vtar\VTAR.cmake
+        copy /y ..\..\..\vtar\VTAR.cmake || goto :exit
         REM Ignored by msbuild
         REM echo set(CMAKE_BUILD_TYPE RelWithDebInfo) >> config.cmake || goto :exit
         echo set(USE_LLVM "llvm-config --ignore-libllvm --link-static") >> config.cmake || goto :exit
