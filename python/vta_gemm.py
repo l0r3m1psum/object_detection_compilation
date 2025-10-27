@@ -177,7 +177,6 @@ def vta_alu():
     s.work_on('alu')
     # s.mod.show()
 
-    # TODO: try extern_scope AttrStmt to work around InplaceOpVerifier
     s.set_scope(s.get_block("A_buf"), 0, env.acc_scope)
     s.set_scope(s.get_block("B_buf"), 0, env.acc_scope)
     s.set_scope(s.get_block("C_buf"), 0, env.acc_scope)
@@ -191,20 +190,8 @@ def vta_alu():
     # mod.show()
     return mod
 
-# tvm._ffi.register_func("VTADepPop", lambda *i: print(i))
-from tvm.script import ir as I
-from tvm.script import tir as T
-
-@I.ir_module
-class Module:
-    @T.prim_func
-    def alu(A: T.Buffer((1, 64, 1, 16), "int32"), B: T.Buffer((1, 64, 1, 16), "int32"), C: T.Buffer((1, 64, 1, 16), "int8")):
-        T.func_attr({"tir.noalias": T.bool(True)})
-        T.call_packed("VTADepPop", 1)
-
 mod = vta_alu()
 mod = get_vtar_tir_transform()(mod)
-# mod.with_attr("system_lib_prefix", "D:/Programs/TVM/lib")
 mod.show(syntax_sugar=True)
 
 # mod = Module

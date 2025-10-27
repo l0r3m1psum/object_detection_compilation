@@ -287,7 +287,6 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
 
             o, m, BATCH, BLOCK_OUT = src.shape
             offset, x_size, y_size, x_stride = 0, m, o, m
-            # breakpoint()
             irb.emit(
                 tvm.tir.call_extern(
                     "int32",
