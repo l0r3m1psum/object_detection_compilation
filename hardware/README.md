@@ -58,9 +58,12 @@ cffi-1.17.1-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
 cloudpickle-1.1.1-py2.py3-none-any.whl
 numpy-1.19.0-cp38-cp38-manylinux2014_aarch64.whl
 pycparser-2.22-py3-none-any.whl
+# TODO: add cython wheel
 
 ssh xilinx@192.168.2.99
 . cpython-3.8/tvm_runtime/bin/activate
 cd tvm/
-sudo -E ./apps/vta_rpc/start_rpc_server.sh
+# sudo -E ./apps/vta_rpc/start_rpc_server.sh
+cd python # Since sudo -E ignores PYTHONPATH
+python -m tvm.exec.rpc_server --load-lib=libvta.so
 ```
