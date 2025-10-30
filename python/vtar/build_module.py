@@ -17,95 +17,37 @@
 # pylint: disable=unused-argument, invalid-name
 """VTA specific buildin for runtime."""
 import tvm
-from tvm.ir import register_intrin_lowering
 from .tir import transform
 from .environment import get_env, Environment
 
 
-def EarlyRewrite():
-    """Try to do storage rewrite in early pass."""
-
-    def _transform(mod, ctx):
-        try:
-            return tvm.tir.transform.StorageRewrite()(mod)
-        except tvm.error.TVMError:
-            return mod
-
-    return tvm.transform.module_pass(_transform, opt_level=0, name="tir.vta.EarlyRewrite")
-
-
-def build_config(debug_flag=0, **kwargs):
-    """Build a build config for VTA.
-
-    Parameters
-    ----------
-    debug_flag : int
-        The dbeug flag to be passed.
-
-    kwargs : dict
-        Additional configurations.
-
-    Returns
-    -------
-    build_config: tvm.transform.PassContext
-        The build config that can be used in TVM.
-
-    Example
-    --------
-    .. code-block:: python
-
-      # build a vta module.
-      with vta.build_config():
-          vta_module = tvm.build(s, ...)
-    """
-    env = get_env()
-
-    @tvm.tir.transform.prim_func_pass(opt_level=0)
-    def add_debug(f, *_):
-        debug = tvm.tir.call_extern("int32", "VTASetDebugMode", env.dev.command_handle, debug_flag)
-
-        return f.with_body(tvm.tir.stmt_seq(debug, f.body))
-
-    pass_list = [
-        (0, transform.InjectConv2DTransposeSkip()),
-        (1, transform.InjectDMAIntrin()),
-        (1, transform.InjectSkipCopy()),
-        (1, transform.AnnotateALUCoProcScope()),
-        (1, tvm.tir.transform.LiftAttrScope("coproc_uop_scope")),
-        (1, transform.LiftAllocToScopeBegin()),
-        (1, tvm.tir.transform.LiftAttrScope("coproc_scope")),
-        (1, transform.InjectCoProcSync()),
-        (1, EarlyRewrite()),
-    ]
-    if debug_flag:
-        pass_list.append((1, add_debug))
-    pass_list.append((2, transform.InjectALUIntrin()))
-    pass_list.append((3, tvm.tir.transform.LowerDeviceStorageAccessInfo()))
-    pass_list.append((3, transform.FoldUopLoop()))
-    pass_list.append((3, transform.CPUAccessRewrite()))
-    config = {"tir.add_lower_pass": pass_list}
-    if kwargs.get("config"):
-        config.update(kwargs[config])
-        del kwargs["config"]
-
-    return tvm.transform.PassContext(config=config, **kwargs)
-
-
-def build(*args, **kwargs):
-    """Thin wrapper of tvm.build
-
-    This wrapper automatically applies VTA's build_config
-    if there is no user specified build_config in context.
-
-    See Also
-    --------
-    tvm.build : The original TVM's build function
-    """
-    pass_ctx = tvm.transform.PassContext.current()
-    if not pass_ctx.config.get("tir.add_lower_pass"):
-        with build_config():
-            return tvm.build(*args, **kwargs)
-    return tvm.build(*args, **kwargs)
+def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
+    # Some documentation for old transformations is still available here
+    # https://mlc.ai/docs/reference/api/tir/transform.html
+    return tvm.transform.Sequential([
+        # vtar.tir.transform.InjectConv2DTransposeSkip(), # TODO
+        transform.InjectDMAIntrin(),
+        # transform.InjectSkipCopy(), # TODO: Just for debug
+        transform.AnnotateALUCoProcScope(),
+        transform.LiftAttrScope("coproc_uop_scope"),
+        transform.LiftAllocToScopeBegin(),
+        transform.LiftAttrScope("coproc_scope"),
+        transform.LiftAttrScope("extern_scope"),
+        transform.CoProcSync(), # This inserts the copro_(dep_push|dep_pop|sync)
+        # transform.InjectDebug,
+        transform.InjectALUIntrin(),
+        # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
+        tvm.tir.transform.ConvertBlocksToOpaque(),
+        tvm.tir.transform.CompactBufferAllocation(),
+        tvm.tir.transform.LowerMatchBuffer(),
+        tvm.tir.transform.LowerOpaqueBlock(),
+        tvm.tir.transform.FlattenBuffer(), tvm.ir.transform.PrintIR("After FlattenBuffer"),
+        ########################################################################
+        tvm.tir.transform.StorageRewrite(), tvm.ir.transform.PrintIR("After StorageRewrite"),
+        tvm.tir.transform.LowerDeviceStorageAccessInfo(), tvm.ir.transform.PrintIR("After LowerDeviceStorageAccessInfo"),
+        # transform.FoldUopLoop(), # TODO
+        # transform.CPUAccessRewrite(), # TODO
+    ])
 
 
 # Register key ops
@@ -164,7 +106,7 @@ def mem_info_acc_buffer():
 
 
 # TVM Op related registration
-@register_intrin_lowering("tir.vta.coproc_sync", "default")
+@tvm.ir.register_intrin_lowering("tir.vta.coproc_sync", "default")
 def coproc_sync(op):
     _ = op
     return tvm.tir.call_extern(
@@ -175,14 +117,14 @@ def coproc_sync(op):
     )
 
 
-@register_intrin_lowering("tir.vta.coproc_dep_push", "default")
+@tvm.ir.register_intrin_lowering("tir.vta.coproc_dep_push", "default")
 def coproc_dep_push(op):
     return tvm.tir.call_extern(
         "int32", "VTADepPush", get_env().dev.command_handle, op.args[0], op.args[1]
     )
 
 
-@register_intrin_lowering("tir.vta.coproc_dep_pop", "default")
+@tvm.ir.register_intrin_lowering("tir.vta.coproc_dep_pop", "default")
 def coproc_dep_pop(op):
     return tvm.tir.call_extern(
         "int32", "VTADepPop", get_env().dev.command_handle, op.args[0], op.args[1]

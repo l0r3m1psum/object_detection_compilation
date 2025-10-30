@@ -23,7 +23,7 @@ import json
 import copy
 import tvm
 from tvm import te
-from . import intrin
+# from . import intrin
 
 
 def get_vta_hw_path():
