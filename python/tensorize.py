@@ -195,46 +195,140 @@ print(sch.mod["main"].script())
 
 ################################################################################
 
+from typing import Tuple
+
+def make_vta_gemm_intrinsic(n: int) -> Tuple[tir.PrimFunc, tir.PrimFunc]:
+    if n < 1:
+        raise ValueError("n must be greater than 1")
+
+    @T.prim_func
+    def vta_gemm_desc(
+            A: T.Buffer((16, 16), "int8"),
+            B: T.Buffer((n, 16), "int8"),
+            C: T.Buffer((n, 16), "int32")
+        ) -> None:
+        """Calculates the entries of a row vector (C) by doing a dot product of
+        a row vector (B) and the rows of a matrix (A). The computation can be
+        written as
+            c' = b' A'
+        in matrix notation or as
+            c_j = b_k a_jk
+        in Einstein notation.
+        """
+
+        with T.block("root"):
+            T.reads(C[0:n, 0:16], B[0:n, 0:16], A[0:16, 0:16])
+            T.writes(C[0:n, 0:16])
+            for i, j, k in T.grid(n, 16, 16):
+                with T.block("C"):
+                    vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+                    T.reads(C[vi, vj], B[vi, vk], A[vj, vk])
+                    T.writes(C[vi, vj])
+                    # with T.init(): C[vi, vj] = 0
+                    C[vi, vj] += B[vi, vk].astype("int32") * A[vj, vk].astype("int32")
+
+    @T.prim_func
+    def vta_gemm_intrin(
+            A: T.Buffer((16, 16), "int8"),
+            B: T.Buffer((n, 16), "int8"),
+            C: T.Buffer((n, 16), "int32")
+        ) -> None:
+        T.func_attr({"tir.noalias": T.bool(True)})
+        with T.block("root"):
+            T.reads(A[0:16, 0:16], B[0:n, 0:16], C[0:n, 0:16])
+            T.writes(C[0:n, 0:16])
+            # with T.init(): T.evaluate(T.call_extern("int32", "SomethingInit", C.data))
+            T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
+
+    return vta_gemm_desc, vta_gemm_intrin
+
+tir.TensorIntrin.register("test_vta_gemm_intrin", *make_vta_gemm_intrinsic(2))
+
+def test_vta_gemm_intrin(n: int) -> None:
+    if n < 1:
+        raise ValueError("n must be greater than 1")
+
+    @T.prim_func
+    def before(
+            A: T.Buffer((128, 128), "int8"),
+            B: T.Buffer((128, 128), "int8"),
+            C: T.Buffer((128, 128), "int32"),
+        ) -> None:
+        # with T.block("root")
+        for i, j, k in T.grid(128, 128, 128):
+            with T.block("update"):
+                vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+                # with T.init(): C[vi, vj] = 0
+                C[vi, vj] += B[vi, vk].astype("int32") * A[vj, vk].astype("int32")
+
+    sch = tir.Schedule(before)
+    i, j, k = sch.get_loops(sch.get_block("update"))
+    i0, i1 = sch.split(i, (128//n, n))
+    j0, j1 = sch.split(j, (128//16, 16))
+    k0, k1 = sch.split(k, (128//16, 16))
+    sch.reorder(i0, j0, k0, i1, j1, k1)
+    sch.mod.show()
+    sch.tensorize(i1, "test_vta_gemm_intrin")
+    sch.mod.show()
+
+test_vta_gemm_intrin(2)
+
+# n = 2; tir.TensorIntrin.register("test_vta_gemm_intrin", *make_vta_gemm_intrinsic(n)); test_vta_gemm_intrin(n)
+
+# Block Signature:
+#   * iterator variables domain and binding
+#         vi = T.axis.spatial(128, i0 * 2 + i1)
+#         vj = T.axis.spatial(128, j0 * 16 + j1)
+#         vk = T.axis.reduce(128, k0 * 16 + k1)
+#     e.g. vi has spatial domain of size 128 and it is bounded to f(i0, i1)
+#     where f(x, y) = x*2 + y
+#   * producer consumer dependency relation
+#         T.reads(C[vi_o * 2 + vi_i, vj_o * 16 + vj_i],
+#                 A[vi_o*2:vi_o*2 + 2, vk_o * 16 + vk_i])
+#         T.writes(C[vi_o * 2 + vi_i, vj_o * 16 + vj_i])
+#     e.g. A is read (consumed) in the interval of rows from vi_o*2 to vi_o*2+2
+#     and in the column at vk_o * 16 + vk_i
+
 @T.prim_func
-def vta_gemm_desc(
+def vta_gemm_desc1(
         A: T.Buffer((16, 16), "int8"),
-        B: T.Buffer((2, 16), "int8"),
-        C: T.Buffer((2, 16), "int32")
+        B: T.Buffer((16,), "int8"),
+        C: T.Buffer((16,), "int32")
     ) -> None:
     """Calculates the entries of a row vector (C) by doing a dot product of
     a row vector (B) and the rows of a matrix (A). The computation can be
     written as
         c' = b' A'
     in matrix notation or as
-        c_j = b_k a_jk
+        c_i = b_j a_ij
     in Einstein notation.
     """
 
     with T.block("root"):
-        T.reads(C[0:2, 0:16], B[0:2, 0:16], A[0:16, 0:16])
-        T.writes(C[0:2, 0:16])
-        for i, j, k in T.grid(2, 16, 16):
+        T.reads(C[0:16], B[0:16], A[0:16, 0:16])
+        T.writes(C[0:16])
+        for i, j in T.grid(16, 16):
             with T.block("C"):
-                vi, vj, vk = T.axis.remap("SSR", [i, j, k])
-                T.reads(C[vi, vj], B[vi, vk], A[vj, vk])
-                T.writes(C[vi, vj])
-                # with T.init(): C[vi, vj] = 0
-                C[vi, vj] += B[vi, vk].astype("int32") * A[vj, vk].astype("int32")
+                vi, vj = T.axis.remap("SR", [i, j])
+                T.reads(C[vi], B[vj], A[vi, vj])
+                T.writes(C[vi])
+                # with T.init(): C[vi] = 0
+                C[vi] += B[vj].astype("int32") * A[vi, vj].astype("int32")
 
 @T.prim_func
-def vta_gemm_intrin(
+def vta_gemm_intrin1(
         A: T.Buffer((16, 16), "int8"),
-        B: T.Buffer((2, 16), "int8"),
-        C: T.Buffer((2, 16), "int32")
+        B: T.Buffer((16,), "int8"),
+        C: T.Buffer((16,), "int32")
     ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):
-        T.reads(A[0:16, 0:16], B[0:2, 0:16], C[0:2, 0:16])
-        T.writes(C[0:2, 0:16])
+        T.reads(A[0:16, 0:16], B[0:16], C[0:16])
+        T.writes(C[0:16])
         # with T.init(): T.evaluate(T.call_extern("int32", "SomethingInit", C.data))
         T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
 
-tir.TensorIntrin.register("test_vta_gemm_intrin", vta_gemm_desc, vta_gemm_intrin)
+tir.TensorIntrin.register("test_vta_gemm_intrin1", vta_gemm_desc1, vta_gemm_intrin1)
 
 @T.prim_func
 def before(
@@ -251,48 +345,10 @@ def before(
 
 sch = tir.Schedule(before)
 i, j, k = sch.get_loops(sch.get_block("update"))
-i0, i1 = sch.split(i, (64, 2))
-j0, j1 = sch.split(j, (8, 16))
-k0, k1 = sch.split(k, (8, 16))
-sch.reorder(i0, j0, k0, i1, j1, k1)
+# If n == 1 we do not split the i loop
+j0, j1 = sch.split(j, (128//16, 16))
+k0, k1 = sch.split(k, (128//16, 16))
+sch.reorder(i, j0, k0, j1, k1)
 sch.mod.show()
-sch.tensorize(i1, "test_vta_gemm_intrin")
+sch.tensorize(j1, "test_vta_gemm_intrin1")
 sch.mod.show()
-
-@T.prim_func
-def before(
-        X: T.Buffer((16, 16), "int8"),
-        Y: T.Buffer((2, 16), "int8"),
-        Z: T.Buffer((2, 16), "int32"),
-    ) -> None:
-    with T.block("root"):
-        T.reads(Z[0:2, 0:16], Y[0:2, 0:16], X[0:16, 0:16])
-        T.writes(Z[0:2, 0:16])
-        for i, j, k in T.grid(2, 16, 16):
-            with T.block("update"):
-                vi, vj, vk = T.axis.remap("SSR", [i, j, k])
-                T.reads(Z[vi, vj], Y[vi, vk], X[vj, vk])
-                T.writes(Z[vi, vj])
-                # with T.init(): Z[vi, vj] = 0
-                Z[vi, vj] += Y[vi, vk].astype("int32") * X[vj, vk].astype("int32")
-
-sch = tir.Schedule(before)
-i, j, k = sch.get_loops(sch.get_block("update"))
-#i0, i1 = sch.split(i, (16, 1))
-sch.mod.show()
-sch.tensorize(i, "test_vta_gemm_intrin")
-sch.mod.show()
-
-# Block Signature:
-#   * iterator variables domain and binding
-#         vi = T.axis.spatial(128, i0 * 2 + i1)
-#         vj = T.axis.spatial(128, j0 * 16 + j1)
-#         vk = T.axis.reduce(128, k0 * 16 + k1)
-#     e.g. vi has spatial domain of size 128 and it is bounded to f(i0, i1)
-#     where f(x, y) = x*2 + y
-#   * producer consumer dependency relation
-#         T.reads(C[vi_o * 2 + vi_i, vj_o * 16 + vj_i],
-#                 A[vi_o*2:vi_o*2 + 2, vk_o * 16 + vk_i])
-#         T.writes(C[vi_o * 2 + vi_i, vj_o * 16 + vj_i])
-#     e.g. A is read (consumed) in the interval of rows from vi_o*2 to vi_o*2+2
-#     and in the column at vk_o * 16 + vk_i
