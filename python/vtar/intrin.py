@@ -61,18 +61,21 @@ def get_gemm_desc() -> tvm.tir.PrimFunc:
     return gemm_desc
 
 @T.prim_func
-def gemm_desc(local_wgt_buffer: T.Buffer((16, 16), "int8"), local_inp_buffer: T.Buffer((1, 16), "int8"), out: T.Buffer((1, 16), "int32")):
+def gemm_desc(
+        local_wgt_buffer: T.Buffer((16, 16), "int8"),
+        local_inp_buffer: T.Buffer((1, 16), "int8"),
+        out: T.Buffer((1, 16), "int32")
+    ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):
-        T.reads(local_inp_buffer[0:1, 0:16], local_wgt_buffer[0:16, 0:16])
+        T.reads(out[0:1, 0:16], local_inp_buffer[0:1, 0:16], local_wgt_buffer[0:16, 0:16])
         T.writes(out[0:1, 0:16])
         for i, j, k in T.grid(1, 16, 16):
             with T.block("out"):
                 v_i, v_j, v_k = T.axis.remap("SSR", [i, j, k])
-                # T.reads(local_inp_buffer[v_i, v_k], local_wgt_buffer[v_j, v_k])
-                # T.writes(out[v_i, v_j])
-                with T.init():
-                    out[v_i, v_j] = 0
+                T.reads(out[v_i, v_j], local_inp_buffer[v_i, v_k], local_wgt_buffer[v_j, v_k])
+                T.writes(out[v_i, v_j])
+                # with T.init(): out[v_i, v_j] = 0
                 out[v_i, v_j] += T.Cast("int32", local_inp_buffer[v_i, v_k]) \
                     * T.Cast("int32", local_wgt_buffer[v_j, v_k])
 
@@ -99,17 +102,17 @@ def gemm_intrin(
         for i, j, k in T.grid(1, 16, 16):
             with T.block("out"):
                 v_i, v_j, v_k = T.axis.remap("SSR", [i, j, k])
-                T.reads(local_inp_buffer[v_i, v_k], local_wgt_buffer[v_j, v_k])
+                T.reads(out[v_i, v_j], local_inp_buffer[v_i, v_k], local_wgt_buffer[v_j, v_k])
                 T.writes(out[v_i, v_j])
-                with T.init():
-                    T.call_intrin("void", "tir.vta.uop_push",
-                        0, # mode = 0 is GEMM
-                        1, # reset_out = 1 is "reset the accumulator"
-                        out.access_ptr("rw", "int32"), # dst_index
-                        0, # src_index
-                        0, # wgt_index
-                        0, 0, 0 # parameters for ALU (ignored)
-                    )
+                # with T.init():
+                #     T.call_intrin("void", "tir.vta.uop_push",
+                #         0, # mode = 0 is GEMM
+                #         1, # reset_out = 1 is "reset the accumulator"
+                #         out.access_ptr("rw", "int32"), # dst_index
+                #         0, # src_index
+                #         0, # wgt_index
+                #         0, 0, 0 # parameters for ALU (ignored)
+                #     )
                 T.call_intrin("void", "tir.vta.uop_push",
                     0, # mode = 0 is GEMM
                     0, # reset_out = 0 is "do not reset the accumulator"
@@ -238,6 +241,7 @@ def gemm(env, mock=False):
             return (nop, nop, nop)
         return (instr(0), instr(1), instr(2))
 
+    # https://heterocl.csl.cornell.edu/doc/heterocl.tvm.tensor_intrin.html
     # body and reduce_update are identical
     body, reduce_init, reduce_update = intrin_func((inp_layout, wgt_layout), (out_layout,))
     gemm_intrin = tvm.tir.PrimFunc(

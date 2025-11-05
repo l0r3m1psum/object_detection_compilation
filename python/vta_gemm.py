@@ -164,6 +164,55 @@ def g():
     print(C_pack)
 # g()
 
+import tensorize
+
+from tvm import ir
+
+def schedule_like_matmul_tutorial(mod: ir.IRModule) -> ir.IRModule:
+    """This function schedules the computation like the Simple Matrix Multiply
+    tutorial
+    https://tvm.apache.org/docs/v0.8.0/topic/vta/tutorials/matrix_multiply.html
+    but tensorization does not work..."""
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on('gemm')
+    C_block = sch.get_block("C")
+    A_cache = sch.cache_read(C_block, 0, env.acc_scope)
+    B_cache = sch.cache_read(C_block, 1, env.acc_scope)
+    sch.set_scope(C_block, 0, env.acc_scope)
+    I, J, i, j, K, k = sch.get_loops(C_block)
+    sch.compute_at(A_cache, K)
+    sch.compute_at(B_cache, K)
+    sch.decompose_reduction(C_block, K)
+    sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
+    sch.annotate(sch.get_loops(B_cache)[-1], env.dma_copy, True)
+    sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
+    sch.reorder_block_iter_var(C_block, (4, 0, 1, 2, 3, 5))
+    # sch.tensorize(C_block, "vta_gemm_intrin")
+    return sch.mod
+
+def schedule_like_matmul_tutorial2(mod: ir.IRModule) -> ir.IRModule:
+    """This function schedules the computation like the Simple Matrix Multiply
+    tutorial
+    https://tvm.apache.org/docs/v0.8.0/topic/vta/tutorials/matrix_multiply.html
+    but tensorization does not work..."""
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on('gemm')
+    C_block = sch.get_block("C")
+    A_cache = sch.reindex_cache_read(C_block, 0, env.acc_scope, lambda I, J, i, j, K, k: (I, K, i, k))
+    B_cache = sch.reindex_cache_read(C_block, 1, env.acc_scope, lambda I, J, i, j, K, k: (J, K, j, k))
+    sch.mod.show()
+    sch.set_scope(C_block, 0, env.acc_scope)
+    I, J, i, j, K, k = sch.get_loops(C_block)
+    sch.compute_at(A_cache, K)
+    sch.compute_at(B_cache, K)
+    sch.decompose_reduction(C_block, K)
+    sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
+    sch.annotate(sch.get_loops(B_cache)[-1], env.dma_copy, True)
+    sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
+    sch.reorder_block_iter_var(C_block, (4, 0, 1, 2, 3, 5))
+    # sch.tensorize(C_block, "vta_gemm_intrin")
+    return sch.mod
+
 def vta_gemm():
     # A and B originally have shape (O, N) and (M, N) respectively. To use VTA
     # to accelerate the gemm operations we have to reshape them to
@@ -187,28 +236,19 @@ def vta_gemm():
         name="C")
     D = te.compute(out_shape, lambda *i: C(*i).astype(env.inp_dtype), name="D")
 
-    gemm = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "gemm"})
-    Module = tvm.IRModule({"gemm": gemm})
+    # bo = I = batch outer
+    # co = J = channel outer
+    # bi = i = batch inner
+    # ci = j = channel inner
+    # ko = K = reduce outer
+    # ki = k = reduce inner
 
-    s = tvm.tir.Schedule(Module)
-    s.work_on('gemm')
-    s.cache_read(s.get_block("C"), 0, "global")# , env.acc_scope)
-    s.cache_read(s.get_block("C"), 1, "global")# , env.acc_scope)
-    # s.set_scope(s.get_block("C"), 0, env.acc_scope)
-    I, J, i, j, K, k = s.get_loops(s.get_block("C"))
-    s.reorder(K, I, J, i, j, k)
-    # s.decompose_reduction(s.get_block("C"), K)
-    s.tensorize(i, "vta_gemm_intrin")
-    s.mod.show()
-    s.compute_at(s.get_block("A_global"), K) # s.compute_at(s.get_block("A_local.acc_buffer"), K)
-    s.compute_at(s.get_block("B_global"), K) # s.compute_at(s.get_block("B_local.acc_buffer"), K)
-    s.annotate(s.get_loops(s.get_block("A_global"))[-1], env.dma_copy, True) # s.annotate(s.get_loops(s.get_block("A_local.acc_buffer"))[-1], env.dma_copy, True)
-    s.annotate(s.get_loops(s.get_block("B_global"))[-1], env.dma_copy, True) # s.annotate(s.get_loops(s.get_block("B_local.acc_buffer"))[-1], env.dma_copy, True)
-    s.annotate(s.get_loops(s.get_block("D"))[0], env.dma_copy, True)
-    s.mod.show()
-    # K, I, J, i, j, k = s.get_loops(s.get_block("C"))
-    s.mod.show()
-    return s.mod
+    gemm = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "gemm"})
+    mod = tvm.IRModule({"gemm": gemm})
+    mod.show()
+    schedule_like_matmul_tutorial(mod).show()
+
+    return
 
 vta_gemm()
 
