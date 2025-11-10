@@ -191,26 +191,44 @@ def schedule_like_matmul_tutorial(mod: ir.IRModule) -> ir.IRModule:
     return sch.mod
 
 def schedule_like_matmul_tutorial2(mod: ir.IRModule) -> ir.IRModule:
-    """This function schedules the computation like the Simple Matrix Multiply
-    tutorial
-    https://tvm.apache.org/docs/v0.8.0/topic/vta/tutorials/matrix_multiply.html
-    but tensorization does not work..."""
+    """This seem to work with global scopes"""
     sch = tvm.tir.Schedule(mod)
     sch.work_on('gemm')
     C_block = sch.get_block("C")
-    A_cache = sch.reindex_cache_read(C_block, 0, env.acc_scope, lambda I, J, i, j, K, k: (I, K, i, k))
-    B_cache = sch.reindex_cache_read(C_block, 1, env.acc_scope, lambda I, J, i, j, K, k: (J, K, j, k))
-    sch.mod.show()
-    sch.set_scope(C_block, 0, env.acc_scope)
     I, J, i, j, K, k = sch.get_loops(C_block)
+    sch.reorder(K, I, J, i, j, k)
+    A_cache = sch.cache_read(C_block, 0, "global")
+    B_cache = sch.cache_read(C_block, 1, "global")
+    # sch.set_scope(C_block, 0, env.acc_scope)
+    C_init = sch.decompose_reduction(C_block, K)
+    ij = sch.fuse(i, j)
     sch.compute_at(A_cache, K)
     sch.compute_at(B_cache, K)
-    sch.decompose_reduction(C_block, K)
+    sch.tensorize(ij, "test_vta_gemm_intrin1")
+    # sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
+    # sch.annotate(sch.get_loops(B_cache)[-1], env.dma_copy, True)
+    # sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
+    sch.mod['gemm'].show(ir_prefix="IR")
+    return sch.mod
+
+def schedule_like_matmul_tutorial3(mod: ir.IRModule) -> ir.IRModule:
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on('gemm')
+    C_block = sch.get_block("C")
+    I, J, i, j, K, k = sch.get_loops(C_block)
+    sch.reorder(K, I, J, i, j, k)
+    A_cache = sch.cache_read(C_block, 0, env.acc_scope)
+    B_cache = sch.cache_read(C_block, 1, env.acc_scope)
+    sch.set_scope(C_block, 0, env.acc_scope)
+    C_init = sch.decompose_reduction(C_block, K)
+    ij = sch.fuse(i, j)
+    sch.compute_at(A_cache, K)
+    sch.compute_at(B_cache, K)
+    sch.tensorize(ij, "test_vta_gemm_intrin1_scoped")
+    sch.mod['gemm'].show(ir_prefix="IR")
     sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
-    sch.annotate(sch.get_loops(B_cache)[-1], env.dma_copy, True)
+    sch.annotate(sch.get_loops(B_cache)[1], env.dma_copy, True)
     sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
-    sch.reorder_block_iter_var(C_block, (4, 0, 1, 2, 3, 5))
-    # sch.tensorize(C_block, "vta_gemm_intrin")
     return sch.mod
 
 def vta_gemm():
@@ -234,7 +252,7 @@ def vta_gemm():
             axis=[K, k],
         ),
         name="C")
-    D = te.compute(out_shape, lambda *i: C(*i).astype(env.inp_dtype), name="D")
+    D = te.compute(out_shape, lambda I, J, i, j: C(I, J, i, j).astype(env.inp_dtype), name="D")
 
     # bo = I = batch outer
     # co = J = channel outer
@@ -245,12 +263,15 @@ def vta_gemm():
 
     gemm = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "gemm"})
     mod = tvm.IRModule({"gemm": gemm})
-    mod.show()
-    schedule_like_matmul_tutorial(mod).show()
+    mod['gemm'].show(ir_prefix="IR")
+    mod = schedule_like_matmul_tutorial3(mod)
+    mod['gemm'].show(ir_prefix="IR")
 
-    return
+    return mod
 
-vta_gemm()
+mod = vta_gemm()
+mod = vtar.get_vtar_tir_transform()(mod)
+mod.show(syntax_sugar=True)
 
 raise SystemExit(0)
 

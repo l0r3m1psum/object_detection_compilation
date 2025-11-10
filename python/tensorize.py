@@ -352,3 +352,48 @@ sch.reorder(i, j0, k0, j1, k1)
 sch.mod.show()
 sch.tensorize(j1, "test_vta_gemm_intrin1")
 sch.mod.show()
+
+from vtar import get_env
+
+env = get_env()
+
+@T.prim_func
+def vta_gemm_desc1(
+        A: T.Buffer((16, 16), "int8", scope=env.acc_scope),
+        B: T.Buffer((16,), "int8", scope=env.acc_scope),
+        C: T.Buffer((16,), "int32", scope=env.acc_scope)
+    ) -> None:
+    """Calculates the entries of a row vector (C) by doing a dot product of
+    a row vector (B) and the rows of a matrix (A). The computation can be
+    written as
+        c' = b' A'
+    in matrix notation or as
+        c_i = b_j a_ij
+    in Einstein notation.
+    """
+
+    with T.block("root"):
+        T.reads(C[0:16], B[0:16], A[0:16, 0:16])
+        T.writes(C[0:16])
+        for i, j in T.grid(16, 16):
+            with T.block("C"):
+                vi, vj = T.axis.remap("SR", [i, j])
+                T.reads(C[vi], B[vj], A[vi, vj])
+                T.writes(C[vi])
+                # with T.init(): C[vi] = 0
+                C[vi] += B[vj].astype("int32") * A[vi, vj].astype("int32")
+
+@T.prim_func
+def vta_gemm_intrin1(
+        A: T.Buffer((16, 16), "int8", scope=env.acc_scope),
+        B: T.Buffer((16,), "int8", scope=env.acc_scope),
+        C: T.Buffer((16,), "int32", scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    with T.block("root"):
+        T.reads(A[0:16, 0:16], B[0:16], C[0:16])
+        T.writes(C[0:16])
+        # with T.init(): T.evaluate(T.call_extern("int32", "SomethingInit", C.data))
+        T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
+
+tir.TensorIntrin.register("test_vta_gemm_intrin1_scoped", vta_gemm_desc1, vta_gemm_intrin1)

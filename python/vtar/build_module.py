@@ -33,7 +33,7 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.LiftAllocToScopeBegin(),
         transform.LiftAttrScope("coproc_scope"),
         transform.LiftAttrScope("extern_scope"),
-        transform.CoProcSync(), # This inserts the copro_(dep_push|dep_pop|sync)
+        transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
         # transform.InjectDebug,
         transform.InjectALUIntrin(),
         # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
@@ -67,6 +67,12 @@ tvm.ir.register_op_attr("tir.vta.uop_push", "TScriptPrinterName", "tir.vta.uop_p
 tvm.ir.register_op_attr("tir.vta.command_handle", "TGlobalSymbol", "VTATLSCommandHandle")
 tvm.ir.register_op_attr("tir.vta.command_handle", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
 tvm.ir.register_op_attr("tir.vta.command_handle", "TScriptPrinterName", "tir.vta.command_handle")
+
+tvm.ir.register_op_attr("tir.vta.coproc_read_barrier", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
+tvm.ir.register_op_attr("tir.vta.coproc_read_barrier", "TScriptPrinterName", "tir.vta.coproc_read_barrier")
+
+tvm.ir.register_op_attr("tir.vta.coproc_write_barrier", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
+tvm.ir.register_op_attr("tir.vta.coproc_write_barrier", "TScriptPrinterName", "tir.vta.coproc_write_barrier")
 
 # The memory information for the compiler
 @tvm.register_func("tvm.info.mem.%s" % Environment.inp_scope)
