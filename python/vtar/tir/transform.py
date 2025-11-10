@@ -668,3 +668,38 @@ def LiftAllocToScopeBegin() -> tir.transform.PrimFuncPass:
     return tir.transform.prim_func_pass(
         lift_alloc_to_scope_begin, opt_level=0, name="tir.vta.LiftAllocToScopeBegin"
     )
+
+def do_fold_uop_loop(stmt: tir.Stmt) -> tir.Stmt | None:
+    """
+    for I, J in T.grid(N, M):
+        T.call_extern("int32", "SomethingCompute", C_local_acc_buffer, C_local_acc_buffer, C_local_acc_buffer)
+
+    becomes
+
+    T.call_extern("int32", "VTAUopLoopBegin", extent=o, dst_factor=1, src_factor=1, wgt_factor=0)
+    T.call_extern("int32", "VTAUopLoopBegin", extent=m, dst_factor=1, src_factor=1, wgt_factor=0)
+    T.tir.vta.uop_push(mode=1, rst_out=0, dst_idx=0, src_idx=m, wgt_idx=0, opcode=2, use_imm=0, imm=0)
+    T.call_extern("int32", "VTAUopLoopEnd")
+    T.call_extern("int32", "VTAUopLoopEnd")
+    """
+    env = get_env()
+    if (
+        stmt.attr_key == "coproc_uop_scope"
+        and isinstance(stmt.value, tvm.tir.StringImm)
+        and stmt.value.value == env.dev.vta_push_uop.value
+    ):
+        body = stmt.body
+        begins = []
+        ends = []
+        print("yes")
+    return stmt
+
+def fold_uop_loop(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+    return func.with_body(
+        tvm.tir.stmt_functor.ir_transform(func.body, do_fold_uop_loop, None, ["tir.AttrStmt"])
+    )
+
+def FoldUopLoop() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        fold_uop_loop, opt_level=0, name="tir.vta.FoldUopLoop"
+    )

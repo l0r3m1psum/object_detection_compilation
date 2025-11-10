@@ -393,7 +393,10 @@ def vta_gemm_intrin1(
     with T.block("root"):
         T.reads(C[0:16], B[0:16], A[0:16, 0:16])
         T.writes(C[0:16])
+        vta = T.int32()
         # with T.init(): T.evaluate(T.call_extern("int32", "SomethingInit", C.data))
-        T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
+        # with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_scope", 2), \
+        with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_uop_scope", "VTAPushGEMMOp"):
+            T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
 
 tir.TensorIntrin.register("test_vta_gemm_intrin1_scoped", vta_gemm_desc1, vta_gemm_intrin1)

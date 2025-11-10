@@ -46,7 +46,7 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         ########################################################################
         tvm.tir.transform.StorageRewrite(), tvm.ir.transform.PrintIR("After StorageRewrite"),
         tvm.tir.transform.LowerDeviceStorageAccessInfo(), tvm.ir.transform.PrintIR("After LowerDeviceStorageAccessInfo"),
-        # transform.FoldUopLoop(), # TODO
+        transform.FoldUopLoop(),
         # transform.CPUAccessRewrite(), # TODO
     ])
 
