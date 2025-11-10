@@ -391,7 +391,7 @@ def vta_gemm_intrin1(
     ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):
-        T.reads(A[0:16, 0:16], B[0:16], C[0:16])
+        T.reads(C[0:16], B[0:16], A[0:16, 0:16])
         T.writes(C[0:16])
         # with T.init(): T.evaluate(T.call_extern("int32", "SomethingInit", C.data))
         T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
