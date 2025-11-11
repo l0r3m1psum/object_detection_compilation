@@ -60,71 +60,6 @@ def get_gemm_desc() -> tvm.tir.PrimFunc:
 
     return gemm_desc
 
-@T.prim_func
-def gemm_desc(
-        local_wgt_buffer: T.Buffer((16, 16), "int8"),
-        local_inp_buffer: T.Buffer((1, 16), "int8"),
-        out: T.Buffer((1, 16), "int32")
-    ) -> None:
-    T.func_attr({"tir.noalias": T.bool(True)})
-    with T.block("root"):
-        T.reads(out[0:1, 0:16], local_inp_buffer[0:1, 0:16], local_wgt_buffer[0:16, 0:16])
-        T.writes(out[0:1, 0:16])
-        for i, j, k in T.grid(1, 16, 16):
-            with T.block("out"):
-                v_i, v_j, v_k = T.axis.remap("SSR", [i, j, k])
-                T.reads(out[v_i, v_j], local_inp_buffer[v_i, v_k], local_wgt_buffer[v_j, v_k])
-                T.writes(out[v_i, v_j])
-                # with T.init(): out[v_i, v_j] = 0
-                out[v_i, v_j] += T.Cast("int32", local_inp_buffer[v_i, v_k]) \
-                    * T.Cast("int32", local_wgt_buffer[v_j, v_k])
-
-# TODO: this should be created dynamically with something like ir_builder so
-# that the width of the data types and the other parameters can be determined at
-# runtime.
-assert get_env().acc_dtype == "int32"
-assert get_env().wgt_dtype == "int8"
-assert get_env().inp_dtype == "int8"
-assert get_env().dev.get_task_qid(get_env().dev.QID_COMPUTE) == 2
-assert get_env().dev.vta_push_uop == "VTAPushGEMMOp"
-get_env().dev.vta_axis
-@T.prim_func
-def gemm_intrin(
-        local_wgt_buffer: T.Buffer((16, 16), "int8"),
-        local_inp_buffer: T.Buffer((1, 16), "int8"),
-        out: T.Buffer((1, 16), "int32")
-    ) -> None:
-    T.func_attr({"tir.noalias": T.bool(True)})
-    # with T.block("root"):
-    vta = T.int32()
-    with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_scope", 2), \
-        T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_uop_scope", "VTAPushGEMMOp"):
-        for i, j, k in T.grid(1, 16, 16):
-            with T.block("out"):
-                v_i, v_j, v_k = T.axis.remap("SSR", [i, j, k])
-                T.reads(out[v_i, v_j], local_inp_buffer[v_i, v_k], local_wgt_buffer[v_j, v_k])
-                T.writes(out[v_i, v_j])
-                # with T.init():
-                #     T.call_intrin("void", "tir.vta.uop_push",
-                #         0, # mode = 0 is GEMM
-                #         1, # reset_out = 1 is "reset the accumulator"
-                #         out.access_ptr("rw", "int32"), # dst_index
-                #         0, # src_index
-                #         0, # wgt_index
-                #         0, 0, 0 # parameters for ALU (ignored)
-                #     )
-                T.call_intrin("void", "tir.vta.uop_push",
-                    0, # mode = 0 is GEMM
-                    0, # reset_out = 0 is "do not reset the accumulator"
-                    out.access_ptr("rw", "int32"), # dst_index
-                    local_inp_buffer.access_ptr("r", "int32"), # src_index
-                    local_wgt_buffer.access_ptr("r", "int32"), # wgt_index
-                    0, 0, 0 # parameters for ALU (ignored)
-                )
-
-
-tvm.tir.TensorIntrin.register("vta_gemm_intrin", gemm_desc, gemm_intrin)
-
 def gemm(env, mock=False):
     """Matrix-matrix multiply intrinsic
 
@@ -248,11 +183,126 @@ def gemm(env, mock=False):
         (inp_layout, wgt_layout, out_layout,),
         body
     )
-    breakpoint()
+    # breakpoint()
     return None
 
     return te.decl_tensor_intrin(
         out.op, intrin_func, name="GEMM", binds={inp: inp_layout, wgt: wgt_layout, out: out_layout}
     )
 
-# gemm(get_env())
+env = get_env()
+
+# gemm(env)
+
+@T.prim_func
+def gemm_desc(
+        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope),
+        inp: T.Buffer((env.BATCH, env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope),
+        out: T.Buffer((env.BATCH, env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    with T.block("root"):
+        T.reads(out[0:env.BATCH, 0:env.BLOCK_OUT],
+            inp[0:env.BATCH, 0:env.BLOCK_IN],
+            wgt[0:env.BLOCK_OUT, 0:env.BLOCK_IN])
+        T.writes(out[0:env.BATCH, 0:env.BLOCK_OUT])
+        for i, j, k in T.grid(env.BATCH, env.BLOCK_OUT, env.BLOCK_IN):
+            with T.block("out"):
+                vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+                T.reads(out[vi, vj], inp[vi, vk], wgt[vj, vk])
+                T.writes(out[vi, vj])
+                # with T.init(): out[vi, vj] = 0
+                out[vi, vj] += T.Cast("int32", inp[vi, vk]) \
+                    * T.Cast("int32", wgt[vj, vk])
+
+@T.prim_func
+def gemm_desc1(
+        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope),
+        inp: T.Buffer((env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope),
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    with T.block("root"):
+        T.reads(out[0:env.BLOCK_OUT],
+            inp[0:env.BLOCK_IN],
+            wgt[0:env.BLOCK_OUT, 0:env.BLOCK_IN])
+        T.writes(out[0:env.BLOCK_OUT])
+        for j, k in T.grid(env.BLOCK_OUT, env.BLOCK_IN):
+            with T.block("out"):
+                vj, vk = T.axis.remap("SR", [j, k])
+                T.reads(out[vj], inp[vk], wgt[vj, vk])
+                T.writes(out[vj])
+                # with T.init(): out[vj] = 0
+                out[vj] += inp[vk].astype(env.acc_dtype) \
+                    * wgt[vj, vk].astype(env.acc_dtype)
+
+@T.prim_func
+def gemm_intrin(
+        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope),
+        inp: T.Buffer((env.BATCH, env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope),
+        out: T.Buffer((env.BATCH, env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    # with T.block("root"):
+    with T.block("out"):
+        T.reads(out[0:env.BATCH, 0:env.BLOCK_OUT],
+            inp[0:env.BATCH, 0:env.BLOCK_IN],
+            wgt[0:env.BLOCK_OUT, 0:env.BLOCK_IN])
+        T.writes(out[0:env.BATCH, 0:env.BLOCK_OUT])
+        # with T.init():
+        #     T.call_intrin("void", "tir.vta.uop_push",
+        #         0, # mode = 0 is GEMM
+        #         1, # reset_out = 1 is "reset the accumulator"
+        #         out.access_ptr("rw", "int32"), # dst_index
+        #         0, # src_index
+        #         0, # wgt_index
+        #         0, 0, 0 # parameters for ALU (ignored)
+        #     )
+        vta = T.int32()
+        T.attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(env.dev.QID_COMPUTE))
+        T.attr(env.dev.vta_axis, "coproc_uop_scope", env.dev.vta_push_uop)
+        T.call_intrin("void", "tir.vta.uop_push",
+            0, # mode = 0 is GEMM
+            0, # reset_out = 0 is "do not reset the accumulator"
+            out.access_ptr("rw", env.acc_dtype), # dst_index
+            inp.access_ptr("r", env.acc_dtype), # src_index
+            wgt.access_ptr("r", env.acc_dtype), # wgt_index
+            0, 0, 0 # parameters for ALU (ignored)
+        )
+
+@T.prim_func
+def gemm_intrin1(
+        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope),
+        inp: T.Buffer((env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope),
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    with T.block("root"):
+        T.reads(out[0:env.BLOCK_OUT],
+            inp[0:env.BLOCK_IN],
+            wgt[0:env.BLOCK_OUT, 0:env.BLOCK_IN])
+        T.writes(out[0:env.BLOCK_OUT])
+        # with T.init():
+        #     T.call_intrin("void", "tir.vta.uop_push",
+        #         0, # mode = 0 is GEMM
+        #         1, # reset_out = 1 is "reset the accumulator"
+        #         out.access_ptr("rw", "int32"), # dst_index
+        #         0, # src_index
+        #         0, # wgt_index
+        #         0, 0, 0 # parameters for ALU (ignored)
+        #     )
+        vta = T.int32()
+        # T.attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(env.dev.QID_COMPUTE))
+        T.attr(env.dev.vta_axis, "coproc_uop_scope", env.dev.vta_push_uop)
+        T.call_intrin("void", "tir.vta.uop_push",
+            0, # mode = 0 is GEMM
+            0, # reset_out = 0 is "do not reset the accumulator"
+            out.access_ptr("rw", env.acc_dtype), # dst_index
+            inp.access_ptr("r", env.acc_dtype), # src_index
+            wgt.access_ptr("r", env.acc_dtype), # wgt_index
+            0, 0, 0 # parameters for ALU (ignored)
+        )
+
+tvm.tir.TensorIntrin.register("vta_gemm_intrin", gemm_desc, gemm_intrin)
+
+tvm.tir.TensorIntrin.register("vta_gemm_intrin1", gemm_desc1, gemm_intrin1)

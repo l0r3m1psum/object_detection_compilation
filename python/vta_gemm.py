@@ -164,8 +164,6 @@ def g():
     print(C_pack)
 # g()
 
-import tensorize
-
 from tvm import ir
 
 def schedule_like_matmul_tutorial(mod: ir.IRModule) -> ir.IRModule:
@@ -176,8 +174,8 @@ def schedule_like_matmul_tutorial(mod: ir.IRModule) -> ir.IRModule:
     sch = tvm.tir.Schedule(mod)
     sch.work_on('gemm')
     C_block = sch.get_block("C")
-    A_cache = sch.cache_read(C_block, 0, env.acc_scope)
-    B_cache = sch.cache_read(C_block, 1, env.acc_scope)
+    A_cache = sch.cache_read(C_block, 0, env.inp_scope)
+    B_cache = sch.cache_read(C_block, 1, env.wgt_scope)
     sch.set_scope(C_block, 0, env.acc_scope)
     I, J, i, j, K, k = sch.get_loops(C_block)
     sch.compute_at(A_cache, K)
@@ -188,47 +186,6 @@ def schedule_like_matmul_tutorial(mod: ir.IRModule) -> ir.IRModule:
     sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
     sch.reorder_block_iter_var(C_block, (4, 0, 1, 2, 3, 5))
     # sch.tensorize(C_block, "vta_gemm_intrin")
-    return sch.mod
-
-def schedule_like_matmul_tutorial2(mod: ir.IRModule) -> ir.IRModule:
-    """This seem to work with global scopes"""
-    sch = tvm.tir.Schedule(mod)
-    sch.work_on('gemm')
-    C_block = sch.get_block("C")
-    I, J, i, j, K, k = sch.get_loops(C_block)
-    sch.reorder(K, I, J, i, j, k)
-    A_cache = sch.cache_read(C_block, 0, "global")
-    B_cache = sch.cache_read(C_block, 1, "global")
-    # sch.set_scope(C_block, 0, env.acc_scope)
-    C_init = sch.decompose_reduction(C_block, K)
-    ij = sch.fuse(i, j)
-    sch.compute_at(A_cache, K)
-    sch.compute_at(B_cache, K)
-    sch.tensorize(ij, "test_vta_gemm_intrin1")
-    # sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
-    # sch.annotate(sch.get_loops(B_cache)[-1], env.dma_copy, True)
-    # sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
-    sch.mod['gemm'].show(ir_prefix="IR")
-    return sch.mod
-
-def schedule_like_matmul_tutorial3(mod: ir.IRModule) -> ir.IRModule:
-    sch = tvm.tir.Schedule(mod)
-    sch.work_on('gemm')
-    C_block = sch.get_block("C")
-    I, J, i, j, K, k = sch.get_loops(C_block)
-    sch.reorder(K, I, J, i, j, k)
-    A_cache = sch.cache_read(C_block, 0, env.acc_scope)
-    B_cache = sch.cache_read(C_block, 1, env.acc_scope)
-    sch.set_scope(C_block, 0, env.acc_scope)
-    C_init = sch.decompose_reduction(C_block, K)
-    ij = sch.fuse(i, j)
-    sch.compute_at(A_cache, K)
-    sch.compute_at(B_cache, K)
-    sch.tensorize(ij, "test_vta_gemm_intrin1_scoped")
-    sch.mod['gemm'].show(ir_prefix="IR")
-    sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
-    sch.annotate(sch.get_loops(B_cache)[1], env.dma_copy, True)
-    sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
     return sch.mod
 
 def vta_gemm():
@@ -263,92 +220,29 @@ def vta_gemm():
 
     gemm = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "gemm"})
     mod = tvm.IRModule({"gemm": gemm})
-    mod['gemm'].show(ir_prefix="IR")
-    mod = schedule_like_matmul_tutorial3(mod)
-    mod['gemm'].show(ir_prefix="IR")
+    # mod['gemm'].show(ir_prefix="IR")
 
-    return mod
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on('gemm')
+    C_block = sch.get_block("C")
+    I, J, i, j, K, k = sch.get_loops(C_block)
+    sch.reorder(K, I, J, i, j, k)
+    A_cache = sch.cache_read(C_block, 0, env.inp_scope)
+    B_cache = sch.cache_read(C_block, 1, env.wgt_scope)
+    sch.set_scope(C_block, 0, env.acc_scope)
+    C_init = sch.decompose_reduction(C_block, K)
+    ij = sch.fuse(i, j)
+    sch.compute_at(A_cache, K)
+    sch.compute_at(B_cache, K)
+    sch.mod['gemm'].show(ir_prefix="IR")
+    sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
+    sch.annotate(sch.get_loops(B_cache)[1], env.dma_copy, True)
+    sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
+    sch.tensorize(ij, "vta_gemm_intrin1")
+    sch.mod['gemm'].show(ir_prefix="IR")
+
+    return sch.mod
 
 mod = vta_gemm()
 mod = vtar.get_vtar_tir_transform()(mod)
 mod.show(syntax_sugar=True)
-
-raise SystemExit(0)
-
-# Output channel factor m - total 16x16=256 output channels
-m = 16
-# Input channel factor n - total 16x16=256 input channels
-n = 16
-# Batch factor o (we use single batch inference)
-o = 1
-# A placeholder tensor in tiled data format
-A = te.placeholder((o, n, env.BATCH, env.BLOCK_IN), name="A", dtype=env.inp_dtype)
-# B placeholder tensor in tiled data format
-B = te.placeholder((m, n, env.BLOCK_OUT, env.BLOCK_IN), name="B", dtype=env.wgt_dtype)
-# A copy buffer
-A_buf = te.compute((o, n, env.BATCH, env.BLOCK_IN), lambda *i: A(*i), "A_buf")
-# B copy buffer
-B_buf = te.compute((m, n, env.BLOCK_OUT, env.BLOCK_IN), lambda *i: B(*i), "B_buf")
-
-# Outer input feature reduction axis
-ko = te.reduce_axis((0, n), name="ko")
-# Inner input feature reduction axis
-ki = te.reduce_axis((0, env.BLOCK_IN), name="ki")
-# Describe the in-VTA matrix multiplication
-C_buf = te.compute(
-    (o, m, env.BATCH, env.BLOCK_OUT),
-    lambda bo, co, bi, ci: te.sum(
-        A_buf[bo, ko, bi, ki].astype(env.acc_dtype) * B_buf[co, ko, ci, ki].astype(env.acc_dtype),
-        axis=[ko, ki],
-    ),
-    name="C_buf",
-)
-
-# Cast to output type, and send to main memory
-C = te.compute(
-    (o, m, env.BATCH, env.BLOCK_OUT), lambda *i: C_buf(*i).astype(env.inp_dtype), name="C"
-)
-
-# Scheduling the Computation ###################################################
-
-gemm = te.create_prim_func([A, B, C]).with_attr({"global_symbol": "gemm"})
-Module = tvm.IRModule({"gemm": gemm})
-s = tvm.tir.Schedule(Module)
-s.work_on('gemm')
-
-s.mod.show()
-
-s.set_scope(s.get_block("A_buf"), 0, env.inp_scope)
-s.set_scope(s.get_block("B_buf"), 0, env.wgt_scope)
-s.set_scope(s.get_block("C_buf"), 0, env.acc_scope)
-
-s.mod.show()
-
-s.compute_at(s.get_block("A_buf"), s.get_loops(s.get_block("C_buf"))[0])
-s.compute_at(s.get_block("B_buf"), s.get_loops(s.get_block("C_buf"))[0])
-
-s.mod.show()
-
-s.annotate(s.get_loops(s.get_block("C_buf"))[-1], env.dma_copy, True)
-
-if False:
-    s = te.create_schedule(C.op)
-
-    # Set the intermediate tensor's scope to VTA's on-chip buffers
-    s[A_buf].set_scope(env.inp_scope) # env.inp_scope: ro, shape (env.BATCH, env.BLOCK_IN), type env.inp_dtype, contains 2 ^ LOG_INP_BUFF_SIZE matrix elements
-    s[B_buf].set_scope(env.wgt_scope) # env.wgt_scope: ro, shape (env.BLOCK_OUT, env.BLOCK_IN), type env.wgt_dtype, contains 2 ^ LOG_WGT_BUFF_SIZE matrix elements
-    s[C_buf].set_scope(env.acc_scope) # env.acc_scope: rw, shape (env.BATCH, env.BLOCK_OUT), type env.acc_dtype, contains 2 ^ LOG_ACC_BUFF_SIZE matrix elements
-
-    # Move buffer copy into matrix multiply loop
-    s[A_buf].compute_at(s[C_buf], ko)
-    s[B_buf].compute_at(s[C_buf], ko)
-
-    # Tag the buffer copies with the DMA pragma to insert a DMA transfer
-    s[A_buf].pragma(s[A_buf].op.axis[0], env.dma_copy)
-    s[B_buf].pragma(s[B_buf].op.axis[0], env.dma_copy)
-    s[C].pragma(s[C].op.axis[0], env.dma_copy)
-
-    s[C_buf].reorder(
-        ko, s[C_buf].op.axis[0], s[C_buf].op.axis[1], s[C_buf].op.axis[2], s[C_buf].op.axis[3], ki
-    )
-    s[C_buf].tensorize(s[C_buf].op.axis[2], env.gemm)

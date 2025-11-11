@@ -669,6 +669,57 @@ def LiftAllocToScopeBegin() -> tir.transform.PrimFuncPass:
         lift_alloc_to_scope_begin, opt_level=0, name="tir.vta.LiftAllocToScopeBegin"
     )
 
+def _fold_outermost_loop(body):
+    stmt = body
+    if not isinstance(stmt, tvm.tir.For):
+        return None, body, None
+
+    loop_var = stmt.loop_var
+    gemm_offsets = [None, None, None]
+    fail = [False]
+    builtin_uop_push = tvm.ir.Op.get("tir.vta.uop_push")
+
+    def _post_order(op):
+        assert isinstance(op, tvm.tir.Call)
+        base_args = 2
+        if op.op.same_as(builtin_uop_push):
+            args = []
+            args += op.args[:base_args]
+            for i in range(3):
+                m = tvm.arith.detect_linear_equation(op.args[i + base_args], [loop_var])
+                if not m:
+                    fail[0] = True
+                    return op
+                if gemm_offsets[i] is not None:
+                    if not tvm.ir.structural_equal(m[0], gemm_offsets[i]):
+                        fail[0] = True
+                        return op
+                    args.append(m[1])
+                else:
+                    gemm_offsets[i] = m[0]
+                    args.append(m[1])
+            args += op.args[base_args + 3 :]
+            return tvm.tir.call_intrin("int32", builtin_uop_push, *args)
+        if op.op.name not in ("tir.vta.command_handle", "tir.tvm_thread_context"):
+            raise RuntimeError("unexpected op %s" % op)
+        return op
+
+    ret = tvm.tir.stmt_functor.ir_transform(stmt.body, None, _post_order, ["tir.Call"])
+
+    if not fail[0] and all(x is not None for x in gemm_offsets):
+
+        def _visit(op):
+            if op.same_as(loop_var):
+                fail[0] = True
+
+        tvm.tir.stmt_functor.post_order_visit(ret, _visit)
+        if not fail[0]:
+            begin = tvm.tir.call_extern("int32", "VTAUopLoopBegin", stmt.extent, *gemm_offsets)
+            end = tvm.tir.call_extern("int32", "VTAUopLoopEnd")
+            return [begin, ret, end]
+    raise ValueError("Failed to fold the GEMM instructions..")
+
+
 def do_fold_uop_loop(stmt: tir.Stmt) -> tir.Stmt | None:
     """
     for I, J in T.grid(N, M):
@@ -691,7 +742,21 @@ def do_fold_uop_loop(stmt: tir.Stmt) -> tir.Stmt | None:
         body = stmt.body
         begins = []
         ends = []
-        print("yes")
+        try:
+            for _ in range(2):
+                begin, body, end = _fold_outermost_loop(body)
+                if begin is not None:
+                    begins.append(begin)
+                if end is not None:
+                    ends.append(end)
+        except ValueError:
+            pass
+        if body == stmt.body:
+            return stmt
+        ends = list(reversed(ends))
+        body = tvm.tir.stmt_seq(*(begins + [body] + ends))
+        return tvm.tir.AttrStmt(stmt.node, stmt.attr_key, stmt.value, body)
+
     return stmt
 
 def fold_uop_loop(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:

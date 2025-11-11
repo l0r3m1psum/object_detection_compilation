@@ -35,11 +35,10 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.LiftAttrScope("extern_scope"),
         transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
         # transform.InjectDebug,
-        transform.InjectALUIntrin(),
+        transform.InjectALUIntrin(), # TODO: move this below...
         # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
         tvm.tir.transform.ConvertBlocksToOpaque(),
         tvm.tir.transform.CompactBufferAllocation(),
-        tvm.ir.transform.PrintIR("Before LowerMatchBuffer"),
         tvm.tir.transform.LowerMatchBuffer(), # FIXME: disabling MatchBufferLower::AssertBinding is necessary to make this work...
         tvm.tir.transform.LowerOpaqueBlock(),
         tvm.tir.transform.FlattenBuffer(), tvm.ir.transform.PrintIR("After FlattenBuffer"),

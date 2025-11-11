@@ -359,8 +359,8 @@ env = get_env()
 
 @T.prim_func
 def vta_gemm_desc1(
-        A: T.Buffer((16, 16), "int8", scope=env.acc_scope),
-        B: T.Buffer((16,), "int8", scope=env.acc_scope),
+        A: T.Buffer((16, 16), "int8", scope=env.wgt_scope),
+        B: T.Buffer((16,), "int8", scope=env.inp_scope),
         C: T.Buffer((16,), "int32", scope=env.acc_scope)
     ) -> None:
     """Calculates the entries of a row vector (C) by doing a dot product of
@@ -371,6 +371,7 @@ def vta_gemm_desc1(
         c_i = b_j a_ij
     in Einstein notation.
     """
+    T.func_attr({"tir.noalias": T.bool(True)})
 
     with T.block("root"):
         T.reads(C[0:16], B[0:16], A[0:16, 0:16])
@@ -385,8 +386,8 @@ def vta_gemm_desc1(
 
 @T.prim_func
 def vta_gemm_intrin1(
-        A: T.Buffer((16, 16), "int8", scope=env.acc_scope),
-        B: T.Buffer((16,), "int8", scope=env.acc_scope),
+        A: T.Buffer((16, 16), "int8", scope=env.wgt_scope),
+        B: T.Buffer((16,), "int8", scope=env.inp_scope),
         C: T.Buffer((16,), "int32", scope=env.acc_scope)
     ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
@@ -400,3 +401,47 @@ def vta_gemm_intrin1(
             T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
 
 tir.TensorIntrin.register("test_vta_gemm_intrin1_scoped", vta_gemm_desc1, vta_gemm_intrin1)
+
+@T.prim_func
+def vta_gemm_desc(
+        A: T.Buffer((16, 16), "int8", scope=env.wgt_scope),
+        B: T.Buffer((1, 16), "int8", scope=env.inp_scope),
+        C: T.Buffer((1, 16), "int32", scope=env.acc_scope)
+    ) -> None:
+    """Calculates the entries of a row vector (C) by doing a dot product of
+    a row vector (B) and the rows of a matrix (A). The computation can be
+    written as
+        c' = b' A'
+    in matrix notation or as
+        c_i = b_j a_ij
+    in Einstein notation.
+    """
+
+    with T.block("root"):
+        T.reads(C[0:1, 0:16], B[0:1, 0:16], A[0:16, 0:16])
+        T.writes(C[0:1, 0:16])
+        for i, j, k in T.grid(1, 16, 16):
+            with T.block("C"):
+                vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+                T.reads(C[vi, vj], B[vi, vk], A[vj, vk])
+                T.writes(C[vi, vj])
+                # with T.init(): C[vi] = 0
+                C[vi, vj] += B[vi, vk].astype("int32") * A[vj, vk].astype("int32")
+
+@T.prim_func
+def vta_gemm_intrin(
+        A: T.Buffer((16, 16), "int8", scope=env.wgt_scope),
+        B: T.Buffer((1, 16), "int8", scope=env.inp_scope),
+        C: T.Buffer((1, 16), "int32", scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    with T.block("root"):
+        T.reads(C[0:1, 0:16], B[0:1, 0:16], A[0:16, 0:16])
+        T.writes(C[0:1, 0:16])
+        vta = T.int32()
+        # with T.init(): T.evaluate(T.call_extern("int32", "SomethingInit", C.data))
+        # with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_scope", 2), \
+        with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_uop_scope", "VTAPushGEMMOp"):
+            T.evaluate(T.call_extern("int32", "SomethingCompute", A.data, B.data, C.data))
+
+tir.TensorIntrin.register("test_vta_gemm_intrin_scoped", vta_gemm_desc, vta_gemm_intrin)
