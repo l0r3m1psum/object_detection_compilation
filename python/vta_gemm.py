@@ -117,23 +117,16 @@ mod = vta_alu()
 mod = vtar.get_vtar_tir_transform()(mod)
 mod.show(syntax_sugar=True)
 
-# mod = Module
-
-if False:
-    import os
-    rng = numpy.random.default_rng(42)
-    # from tvm import relax
-    # os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
-    ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
-    # TODO: start from an IRModule with a Relax main
-    dev = tvm.device(str(env.target))
-    # vm = relax.VirtualMachine(ex, dev)
-    A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
-    B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
-    C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
-    ex(A, B, C)
-    numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
-    print(C)
+import os
+rng = numpy.random.default_rng(42)
+ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
+dev = tvm.device(str(env.target))
+A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
+ex(A, B, C)
+# numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
+# print(C)
 
 # Computation Declaration ######################################################
 
@@ -239,10 +232,22 @@ def vta_gemm():
     sch.annotate(sch.get_loops(B_cache)[1], env.dma_copy, True)
     sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
     sch.tensorize(ij, "vta_gemm_intrin1")
-    sch.mod['gemm'].show(ir_prefix="IR")
+    I_init, J_init, i_init, j_init = sch.get_loops(C_init)
+    ij_init = sch.fuse(i_init, j_init)
+    sch.tensorize(ij_init, "vta_init_intrin1")
 
     return sch.mod
 
 mod = vta_gemm()
+mod['gemm'].show(ir_prefix="IR")
 mod = vtar.get_vtar_tir_transform()(mod)
-mod.show(syntax_sugar=True)
+mod['gemm'].show(ir_prefix="IR")
+
+ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
+dev = tvm.device(str(env.target))
+A = tvm.nd.array((rng.uniform(size=(1, 16, 1, 16)) * 10).astype("int8"), dev)
+B = tvm.nd.array((rng.uniform(size=(16, 16, 16, 16)) * 10).astype("int8"), dev)
+C = tvm.nd.array(numpy.zeros((1, 16, 1, 16), dtype="int8"), dev)
+ex(A, B, C)
+# numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
+# print(C)

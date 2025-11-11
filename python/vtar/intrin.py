@@ -253,7 +253,7 @@ def gemm_intrin(
         #     T.call_intrin("void", "tir.vta.uop_push",
         #         0, # mode = 0 is GEMM
         #         1, # reset_out = 1 is "reset the accumulator"
-        #         out.access_ptr("rw", "int32"), # dst_index
+        #         out.access_ptr("w", "int32"), # dst_index
         #         0, # src_index
         #         0, # wgt_index
         #         0, 0, 0 # parameters for ALU (ignored)
@@ -286,7 +286,7 @@ def gemm_intrin1(
         #     T.call_intrin("void", "tir.vta.uop_push",
         #         0, # mode = 0 is GEMM
         #         1, # reset_out = 1 is "reset the accumulator"
-        #         out.access_ptr("rw", "int32"), # dst_index
+        #         out.access_ptr("w", "int32"), # dst_index
         #         0, # src_index
         #         0, # wgt_index
         #         0, 0, 0 # parameters for ALU (ignored)
@@ -306,3 +306,37 @@ def gemm_intrin1(
 tvm.tir.TensorIntrin.register("vta_gemm_intrin", gemm_desc, gemm_intrin)
 
 tvm.tir.TensorIntrin.register("vta_gemm_intrin1", gemm_desc1, gemm_intrin1)
+
+@T.prim_func
+def init_desc1(
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    with T.block("root"):
+        T.writes(out[0:env.BLOCK_OUT])
+        for j in T.grid(env.BLOCK_OUT):
+            with T.block("out"):
+                vj = T.axis.remap("S", [j])
+                T.writes(out[vj])
+                out[vj] = 0
+
+@T.prim_func
+def init_intrin1(
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+    ) -> None:
+    T.func_attr({"tir.noalias": T.bool(True)})
+    with T.block("root"):
+        T.writes(out[0:env.BLOCK_OUT])
+        vta = T.int32()
+        # T.attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(env.dev.QID_COMPUTE))
+        T.attr(env.dev.vta_axis, "coproc_uop_scope", env.dev.vta_push_uop)
+        T.call_intrin("void", "tir.vta.uop_push",
+            0, # mode = 0 is GEMM
+            1, # reset_out = 1 is "reset the accumulator"
+            out.access_ptr("w", "int32"), # dst_index
+            0, # src_index
+            0, # wgt_index
+            0, 0, 0 # parameters for ALU (ignored)
+        )
+
+tvm.tir.TensorIntrin.register("vta_init_intrin1", init_desc1, init_intrin1)
