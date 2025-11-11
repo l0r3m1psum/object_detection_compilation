@@ -248,6 +248,9 @@ dev = tvm.device(str(env.target))
 A = tvm.nd.array((rng.uniform(size=(1, 16, 1, 16)) * 10).astype("int8"), dev)
 B = tvm.nd.array((rng.uniform(size=(16, 16, 16, 16)) * 10).astype("int8"), dev)
 C = tvm.nd.array(numpy.zeros((1, 16, 1, 16), dtype="int8"), dev)
+# FIXME: @tir.vta.coproc_dep_push(2, 1, dtype=int32) is missing from init I
+# suspect that the reason is related to coproc_scope attribute missing...
+# FIXME: why can't I put two attributes on the same block???
 ex(A, B, C)
 # numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
 # print(C)
