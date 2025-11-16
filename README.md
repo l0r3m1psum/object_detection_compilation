@@ -33,6 +33,56 @@ e
 
 Relay had a predecessor called [NNVM](https://discuss.tvm.apache.org/t/difference-relay-vs-nnvm/7549#:~:text=NNVM%20was%20the%20precursor%20to%20Relay).
 
+[Halide IRNode](https://halide-lang.org/docs/struct_halide_1_1_internal_1_1_i_r_node.html)
+
+[TVM stmt](https://tvm.apache.org/docs/reference/api/doxygen/stmt_8h.html)
+
+## TIR
+
+```
+BufferStore(tir::Buffer buffer, PrimExpr value, ffi::Array<PrimExpr> indices, ffi::Optional<PrimExpr> predicate) // Leaf
+Evaluate(PrimExpr value) // Leaf
+LetStmt(tir::Var var, PrimExpr value, tir::Stmt body)
+AttrStmt(ffi::Any node, ffi::String attr_key, PrimExpr value, tir::Stmt body)
+AssertStmt(PrimExpr condition, PrimExpr message, tir::Stmt body)
+BufferRealize(tir::Buffer buffer, ffi::Array<Range> bounds, PrimExpr condition, tir::Stmt body)
+Allocate(tir::Var buffer_var, DataType dtype, ffi::Array<PrimExpr> extents, PrimExpr condition, tir::Stmt body, ffi::Map<ffi::String, ffi::Any> annotations)
+AllocateConst(tir::Var buffer_var, DataType dtype, ffi::Array<PrimExpr> extents, ObjectRef data_or_idx, tir::Stmt body, ffi::Map<ffi::String, ffi::Any> annotations)
+DeclBuffer(tir::Buffer, tir::Stmt body)
+SeqStmt(ffi::Array<tir::Stmt> seq)
+IfThenElse(PrimExpr condition, tir::Stmt then_case, ffi::Optional<tir::Stmt> else_case)
+For(tir::Var loop_var, PrimExpr min, PrimExpr extent, ForKind kind, tir::Stmt body, ffi::Map<ffi::String, ffi::Any>annotations)
+While(PrimExpr condition, tir::Stmt body)
+Block(
+  ffi::Array<IterVar> iter_vars,
+  ffi::Array<BufferRegion> reads,
+  ffi::Array<BufferRegion> writes,
+  ffi::String name_hint,
+  tir::Stmt body,
+  ffi::Optional<tir::Stmt> init,
+  ffi::Array<tir::Buffer> alloc_buffers,
+  ffi::Array<MatchBufferRegion> match_buffers,
+  ffi::Map<ffi::String, ffi::Any> annotations
+)
+BlockRealize(ffi::Array<PrimExpr> iter_values, PrimExpr predicate, Block block)
+```
+
+[Loop Transformations](https://www.emmtrix.com/wiki/Loop_Transformations)
+
+```
+https://llvm.org/doxygen/LoopFlatten_8cpp_source.html
+https://www.cs.cornell.edu/courses/cs6120/2020fa/blog/loop-flatten/#implementation
+
+for (int i = 0; i < M; i++)
+  for (int j = 0; j < N; j++)
+    for (int k = 0; k < O; k++)
+      for (int l = 0; l < P; l++)
+        f(a[i*M*N*O + j*N*O + k*O + l]); /* f(a[i][j][k][l]); */
+
+for (int i = 0; i < M*N*O*P; i++) // Assuming no overflow
+  f(a[i]); // Address calculation is much easier
+```
+
 # Resources
 
 ## Compilers
