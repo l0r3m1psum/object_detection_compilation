@@ -124,7 +124,10 @@ A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
 B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
 C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
 ex(A, B, C)
-# numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
+try:
+    numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
+except e:
+    print(e)
 # print(C)
 
 # Computation Declaration ######################################################

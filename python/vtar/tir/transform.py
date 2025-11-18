@@ -74,7 +74,7 @@ def _check_compact(buf: tir.Buffer):
     shape dimensions. If the strides were greater the cumprod than the buffer
     is a slice of a bigger (in number of elements) contigous (or compact) memory
     allocation. According to the documentation in buffer.h if buf.strides is
-    empty the buffer is contigous"""
+    empty the buffer is contigous."""
     ndim = len(buf.shape)
     print(buf.shape[0].dtype)
     size = tir.const(1, buf.shape[0].dtype)
@@ -593,24 +593,6 @@ def InjectDebug(f, *_):
     debug = tir.call_extern("int32", "VTASetDebugMode", env.dev.command_handle, debug_flag)
 
     return f.with_body(tir.stmt_seq(debug, f.body))
-
-from tvm import ir
-
-# TODO: make this behave as any other pass.
-@tvm.tir.transform.prim_func_pass(opt_level=0)
-def InjectDeclBuffer(f, *_):
-    alloc_buffers = f.body.block.alloc_buffers
-    breakpoint()
-    match_buffers = []
-    for alloc_buffer in alloc_buffers:
-        region = [ir.Range(n) for n in alloc_buffer.shape]
-        match_buffers.append(tir.MatchBufferRegion(alloc_buffer, tir.BufferRegion(alloc_buffer, region)))
-    block = f.body.block
-    body = tir.Block(block.iter_vars, block.reads, block.reads, block.name_hint,
-        block.body, block.init, block.alloc_buffers, match_buffers,
-        block.annotations)
-    return f.with_body(body)
-
 
 def do_annotate_alu_coproc_scope(stmt: tir.Stmt) -> tir.Stmt | None:
     env = get_env()
