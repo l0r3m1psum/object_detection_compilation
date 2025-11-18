@@ -126,11 +126,9 @@ C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
 ex(A, B, C)
 try:
     numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
-except e:
+except Exception as e:
     print(e)
 # print(C)
-
-# Computation Declaration ######################################################
 
 def g():
     BATCH, BLOCK_IN, BLOCK_OUT = 2, 2, 2

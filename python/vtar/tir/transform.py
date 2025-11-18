@@ -585,14 +585,17 @@ def InjectALUIntrin() -> tir.transform.PrimFuncPass:
         inject_alu_intin_transform, opt_level=0, name="tir.vta.InjectALUIntrin"
     )
 
-# TODO: make this behave as any other pass.
-@tvm.tir.transform.prim_func_pass(opt_level=0)
-def InjectDebug(f, *_):
+def inject_debug(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
     env = get_env()
     debug_flag = 1
     debug = tir.call_extern("int32", "VTASetDebugMode", env.dev.command_handle, debug_flag)
 
-    return f.with_body(tir.stmt_seq(debug, f.body))
+    return func.with_body(tir.stmt_seq(debug, func.body))
+
+def InjectDebug() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        inject_debug, opt_level=0, name="tir.vta.InjectDebug"
+    )
 
 def do_annotate_alu_coproc_scope(stmt: tir.Stmt) -> tir.Stmt | None:
     env = get_env()

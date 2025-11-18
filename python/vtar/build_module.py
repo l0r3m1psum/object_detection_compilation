@@ -36,7 +36,7 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.InjectCoProcSync(), # NOTE: this was probably just used for development
         transform.ReplaceVTAVar(),
         transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
-        # transform.InjectDebug,
+        transform.InjectDebug(),
         transform.InjectALUIntrin(), # TODO: move this below...
         # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
         tvm.tir.transform.ConvertBlocksToOpaque(),
