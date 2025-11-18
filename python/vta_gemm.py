@@ -110,12 +110,12 @@ def vta_alu():
     s.annotate(s.get_loops(s.get_block("B_local.acc_buffer"))[0], env.dma_copy, True)
     s.annotate(s.get_loops(s.get_block("C"))[0], env.alu, True)
     s.annotate(s.get_loops(s.get_block("D"))[0], env.dma_copy, True)
-    s.mod.show()
     return s.mod
 
 mod = vta_alu()
+# mod.show()
 mod = vtar.get_vtar_tir_transform()(mod)
-mod.show(syntax_sugar=True)
+mod.show()
 
 import os
 rng = numpy.random.default_rng(42)
@@ -213,7 +213,6 @@ def vta_gemm():
 
     gemm = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "gemm"})
     mod = tvm.IRModule({"gemm": gemm})
-    # mod['gemm'].show(ir_prefix="IR")
 
     sch = tvm.tir.Schedule(mod)
     sch.work_on('gemm')
@@ -227,7 +226,6 @@ def vta_gemm():
     ij = sch.fuse(i, j)
     sch.compute_at(A_cache, K)
     sch.compute_at(B_cache, K)
-    sch.mod['gemm'].show(ir_prefix="IR")
     sch.annotate(sch.get_loops(A_cache)[-1], env.dma_copy, True)
     sch.annotate(sch.get_loops(B_cache)[1], env.dma_copy, True)
     sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
@@ -239,7 +237,7 @@ def vta_gemm():
     return sch.mod
 
 mod = vta_gemm()
-mod['gemm'].show(ir_prefix="IR")
+# mod['gemm'].show(ir_prefix="IR")
 mod = vtar.get_vtar_tir_transform()(mod)
 mod['gemm'].show(ir_prefix="IR")
 

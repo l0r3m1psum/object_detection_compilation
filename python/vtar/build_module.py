@@ -33,6 +33,10 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.LiftAllocToScopeBegin(),
         transform.LiftAttrScope("coproc_scope"),
         transform.LiftAttrScope("extern_scope"),
+        transform.InjectCoProcSync(),
+        tvm.ir.transform.PrintIR(),
+        transform.PrintDebug(),
+        transform.ReplaceVTAVar(),
         transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
         # transform.InjectDebug,
         transform.InjectALUIntrin(), # TODO: move this below...
@@ -41,10 +45,10 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         tvm.tir.transform.CompactBufferAllocation(),
         tvm.tir.transform.LowerMatchBuffer(), # FIXME: disabling MatchBufferLower::AssertBinding is necessary to make this work...
         tvm.tir.transform.LowerOpaqueBlock(),
-        tvm.tir.transform.FlattenBuffer(), tvm.ir.transform.PrintIR("After FlattenBuffer"),
+        tvm.tir.transform.FlattenBuffer(),
         ########################################################################
-        tvm.tir.transform.StorageRewrite(), tvm.ir.transform.PrintIR("After StorageRewrite"),
-        tvm.tir.transform.LowerDeviceStorageAccessInfo(), tvm.ir.transform.PrintIR("After LowerDeviceStorageAccessInfo"),
+        tvm.tir.transform.StorageRewrite(),
+        tvm.tir.transform.LowerDeviceStorageAccessInfo(),
         transform.FoldUopLoop(),
         # transform.CPUAccessRewrite(), # TODO
     ])

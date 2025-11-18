@@ -573,17 +573,13 @@ def AnnotateALUCoProcScope() -> tir.transform.PrimFuncPass:
     )
 
 def do_inject_coproc_sync(stmt: tir.Stmt) -> tir.Stmt | None:
-    if _match_pragma(stmt, "coproc_sync"):
+    # if _match_pragma(stmt, "coproc_sync"):
+    if stmt.attr_key == "coproc_sync":
         sync = tir.Call("int32", "tir.vta.coproc_sync", [])
-        print("TODO: if isinstance(stmt.body, tir.SeqStmt) flatten")
-        print("TODO: preserve annotations that are not \"coproc_sync\"")
-        annotations = {}
         body = tir.SeqStmt([stmt.body, tir.Evaluate(sync)])
-        res = tir.Block(stmt.iter_vars, stmt.reads, stmt.writes, stmt.name_hint,
-            body, stmt.init, stmt.alloc_buffers, stmt.match_buffers, annotations)
-        return res
+        return body
 
-    if _match_pragma(stmt, "trim_loop"):
+    if False and _match_pragma(stmt, "trim_loop"):
         op = stmt.body
         if not isinstance(op, tir.For): raise ValueError("Not an instance of tir.For")
         return tvm.tir.For(
@@ -593,7 +589,7 @@ def do_inject_coproc_sync(stmt: tir.Stmt) -> tir.Stmt | None:
 
 def inject_coproc_sync(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
     return func.with_body(
-        tvm.tir.stmt_functor.ir_transform(func.body, None, do_inject_coproc_sync, ["tir.Block"])
+        tvm.tir.stmt_functor.ir_transform(func.body, None, do_inject_coproc_sync, ["tir.AttrStmt"])
     )
 
 # TODO: implement this using tir.PyStmtExprMutator
@@ -767,4 +763,116 @@ def fold_uop_loop(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassCo
 def FoldUopLoop() -> tir.transform.PrimFuncPass:
     return tir.transform.prim_func_pass(
         fold_uop_loop, opt_level=0, name="tir.vta.FoldUopLoop"
+    )
+
+"""
+BufferStore(tir::Buffer buffer, PrimExpr value, ffi::Array<PrimExpr> indices, ffi::Optional<PrimExpr> predicate) // Leaf
+Evaluate(PrimExpr value) // Leaf
+LetStmt(tir::Var var, PrimExpr value, tir::Stmt body)
+AttrStmt(ffi::Any node, ffi::String attr_key, PrimExpr value, tir::Stmt body)
+AssertStmt(PrimExpr condition, PrimExpr message, tir::Stmt body)
+BufferRealize(tir::Buffer buffer, ffi::Array<Range> bounds, PrimExpr condition, tir::Stmt body)
+Allocate(tir::Var buffer_var, DataType dtype, ffi::Array<PrimExpr> extents, PrimExpr condition, tir::Stmt body, ffi::Map<ffi::String, ffi::Any> annotations)
+AllocateConst(tir::Var buffer_var, DataType dtype, ffi::Array<PrimExpr> extents, ObjectRef data_or_idx, tir::Stmt body, ffi::Map<ffi::String, ffi::Any> annotations)
+DeclBuffer(tir::Buffer, tir::Stmt body)
+SeqStmt(ffi::Array<tir::Stmt> seq)
+IfThenElse(PrimExpr condition, tir::Stmt then_case, ffi::Optional<tir::Stmt> else_case)
+For(tir::Var loop_var, PrimExpr min, PrimExpr extent, ForKind kind, tir::Stmt body, ffi::Map<ffi::String, ffi::Any>annotations)
+While(PrimExpr condition, tir::Stmt body)
+Block(
+  ffi::Array<IterVar> iter_vars,
+  ffi::Array<BufferRegion> reads,
+  ffi::Array<BufferRegion> writes,
+  ffi::String name_hint,
+  tir::Stmt body,
+  ffi::Optional<tir::Stmt> init,
+  ffi::Array<tir::Buffer> alloc_buffers,
+  ffi::Array<MatchBufferRegion> match_buffers,
+  ffi::Map<ffi::String, ffi::Any> annotations
+)
+BlockRealize(ffi::Array<PrimExpr> iter_values, PrimExpr predicate, Block block)
+
+"""
+def visit(stmt, pattern: str):
+    if isinstance(stmt, tir.Stmt):
+        print(pattern + str(type(stmt)), end=' ')
+        bodies = []
+
+        if isinstance(stmt, tir.BufferStore):
+            pass
+        elif isinstance(stmt, tir.Evaluate):
+            # print(stmt.value, end='')
+            pass
+        elif isinstance(stmt, tir.LetStmt):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.AttrStmt):
+            bodies.append(stmt.body)
+            print(hash(stmt.node), stmt.node, stmt.attr_key, stmt.value, end='')
+        elif isinstance(stmt, tir.AssertStmt):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.BufferRealize):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.Allocate):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.AllocateConst):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.DeclBuffer):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.SeqStmt):
+            bodies.extend(stmt.seq)
+        elif isinstance(stmt, tir.IfThenElse):
+            bodies.append(stmt.then_case)
+            if stmt.else_case:
+                bodies.append(else_case)
+        elif isinstance(stmt, tir.For):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.While):
+            bodies.append(stmt.body)
+        elif isinstance(stmt, tir.Block):
+            bodies.append(stmt.body)
+            print(stmt.name_hint, end='')
+        elif isinstance(stmt, tir.BlockRealize):
+            bodies.append(stmt.block)
+        else:
+            assert False
+
+        if isinstance(stmt, tir.SeqStmt):
+            pattern += "| "
+        else:
+            pattern += "  "
+
+        print()
+        for body in bodies:
+            visit(body, pattern)
+
+def print_debug(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+    visit(func.body, "")
+    return func
+
+def PrintDebug() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        print_debug, opt_level=0, name="tir.vta.PrintDebug"
+    )
+
+# For some reason the one in DevContext.vta_axis is created multiple times,
+# hence it hashes to different values and tir.transform.CoProcSync does not like
+# it.
+vta_axis = tvm.te.thread_axis("vta")
+
+def do_replace_vta_var(stmt: tir.Stmt) -> tir.Stmt | None:
+    res = stmt
+    node = stmt.node
+    if isinstance(node, tir.IterVar) and node.var.name == "vta":
+        attr_stmt = tir.AttrStmt(vta_axis, stmt.attr_key, stmt.value, stmt.body)
+        res = attr_stmt
+    return res
+
+def replace_vta_var(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+    return func.with_body(
+        tvm.tir.stmt_functor.ir_transform(func.body, None, do_replace_vta_var, ["tir.AttrStmt"])
+    )
+
+def ReplaceVTAVar() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        replace_vta_var, opt_level=0, name="tir.vta.ReplaceVtaVar"
     )

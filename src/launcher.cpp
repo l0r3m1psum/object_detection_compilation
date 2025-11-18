@@ -1027,6 +1027,22 @@ operator<<(std::ostream& os, const std::vector<int64_t>& vec) {
   return os;
 }
 
+#if 0
+/* TODO: can this be templated also on the container? */
+template <typename T>
+std::ostream&
+operator<<(std::ostream& os, const std::vector<T>& vec) {
+  os << '{';
+  for (std::vector<T>::const_iterator itr = vec.cbegin(); itr != vec.cend(); ++itr) {
+    if (itr != vec.cbegin()) os << ", ";
+    os << *itr;
+  }
+  os << '}';
+  return os;
+}
+#endif
+
+
 // tvm::runtime::LoadVMModule seems to be brocken (for some MSVC bug?) so here
 // there is a reimplementation.
 static tvm::runtime::Module
