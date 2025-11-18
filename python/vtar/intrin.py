@@ -326,7 +326,6 @@ def init_intrin1(
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):
         T.writes(out[0:env.BLOCK_OUT])
-        # vta = T.int32()
         T.attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(env.dev.QID_COMPUTE))
         T.attr(env.dev.vta_axis, "coproc_uop_scope", env.dev.vta_push_uop)
         T.call_intrin("void", "tir.vta.uop_push",

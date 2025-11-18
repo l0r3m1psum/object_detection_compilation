@@ -113,11 +113,10 @@ def vta_alu():
     return s.mod
 
 mod = vta_alu()
-# mod.show()
+mod.show()
 mod = vtar.get_vtar_tir_transform()(mod)
 mod.show()
 
-import os
 rng = numpy.random.default_rng(42)
 ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
 dev = tvm.device(str(env.target))

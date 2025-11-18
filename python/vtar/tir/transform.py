@@ -42,11 +42,12 @@ def _match_pragma(stmt, key):
 
 
 """
+NOTE: this may be wrong...
 Let a[I][J][K][L] be an array
 BaseAddress + ( (i * I * J * K) +
                 (j * J * K) +
                 (k * K) +
-                (l) )
+                (l * 1) )
             * ElementSize
 \sum_i index_i * \prod_{j=i}^{4-1} dim_j
 """
@@ -60,30 +61,42 @@ def prod(iterable, /, start=1):
         res *= element
     return res
 
+def get_strides(buf: tir.Buffer) -> List[tir.PrimExpr]:
+    if buf.strides:
+        res = buf.strides
+    else:
+        start = tir.IntImm("int32", 1)
+        res = [prod(buf.shape[i+1:], start=start) for i in range(len(buf.shape))]
+    return res
+
 def _check_compact(buf: tir.Buffer):
     """By compact they mean that the strides are exactly the cumprod of the
     shape dimensions. If the strides were greater the cumprod than the buffer
     is a slice of a bigger (in number of elements) contigous (or compact) memory
-    allocation."""
+    allocation. According to the documentation in buffer.h if buf.strides is
+    empty the buffer is contigous"""
     ndim = len(buf.shape)
+    print(buf.shape[0].dtype)
     size = tir.const(1, buf.shape[0].dtype)
-    if buf.strides:
-        for i in reversed(range(ndim)):
-            if not utils.equal_const_int(size - buf.strides[i], 0):
-                raise RuntimeError(
-                    "Cannot prove compact: shape=%s, strides=%s" % (buf.shape, buf.strides)
-                )
-            size = size * buf.shape[i]
+    strides = get_strides(buf)
+    for i in reversed(range(ndim)):
+        if not utils.equal_const_int(size - strides[i], 0):
+            raise RuntimeError(
+                "Cannot prove compact: shape=%s, strides=%s" % (buf.shape, strides)
+            )
+        size = size * buf.shape[i]
 
 def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List[int], List[int]]:
+    """
+    scope: only used for error reporting
+    """
     ndim = len(buf.shape)
+    buf_strides = get_strides(buf)
     x_size = 1
     base = 0
     for i in range(1, ndim + 1):
-        if buf.strides:
-            if not utils.equal_const_int(buf.strides[ndim - i] - x_size, 0):
-                raise RuntimeError("scope %s needs to have block=%d" % (scope, elem_block))
-        # NOTE(Diego) I guess that this still expects for the buffer to have the shape information
+        if not utils.equal_const_int(buf_strides[ndim - i] - x_size, 0):
+            raise RuntimeError("scope %s needs to have block=%d" % (scope, elem_block))
         x_size = x_size * buf.shape[ndim - i]
         if utils.equal_const_int(x_size - elem_block, 0):
             base = i + 1
@@ -95,23 +108,23 @@ def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List
     shape = [elem_block]
     strides = [1]
 
-    if base < ndim + 1 and not utils.equal_const_int(buf.strides[ndim - base], elem_block):
+    if base < ndim + 1 and not utils.equal_const_int(buf_strides[ndim - base], elem_block):
         shape.append(1)
         strides.append(elem_block)
 
     analyzer = tvm.arith.Analyzer()
     while base < ndim + 1:
         x_size = 1
-        x_stride = buf.strides[ndim - base]
+        x_stride = buf_strides[ndim - base]
         next_base = base
         if not utils.equal_const_int(tir.indexmod(x_stride, elem_block), 0):
             raise RuntimeError(
                 "scope %s need to have block=%d, shape=%s, strides=%s"
-                % (scope, elem_block, buf.shape, buf.strides)
+                % (scope, elem_block, buf.shape, buf_strides)
             )
         for i in range(base, ndim + 1):
             k = ndim - i
-            if not utils.equal_const_int(x_size * x_stride - buf.strides[k], 0):
+            if not utils.equal_const_int(x_size * x_stride - buf_strides[k], 0):
                 break
             x_size = x_size * buf.shape[k]
             next_base = i + 1
@@ -125,10 +138,18 @@ def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List
     return shape, strides
 
 def _get_2d_pattern(buf: tir.Buffer, elem_width: int, elem_bytes: int, dtype: str, scope: str, allow_fold: bool) -> Tuple[int, int, int, int]:
-    elem_block = elem_bytes * 8 // elem_width
+    """
+    elem_width: use only to calculate elem_block = (OUT|ACC|INP|WGT)_WIDTH i.e. int8 or int32
+    elem_bytes: use only to calculate elem_block = (OUT|ACC|INP|WGT)_ELEM_BYTES i.e. number of bytes in the matrix (OUT|ACC|INP|WGT)
+    dtype: can be ignored
+    scope: is used just for error reporting
+    allow_fold: is false only when performing a load with padding
+    """
+    elem_bits = elem_bytes * 8
+    elem_block = elem_bits // elem_width # number of element in a matrix (OUT|ACC|INP|WGT)
     shape, strides = buf.shape, buf.strides
 
-    breakpoint()
+    # breakpoint()
     if not utils.equal_const_int(tir.indexmod(buf.elem_offset, elem_block), 0):
         raise RuntimeError("scope %s need to have block=%d" % (scope, elem_block))
 
@@ -226,6 +247,13 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
 
     T.call_extern("int32", "VTALoadBuffer2D",
     src_dram_addr=A_2, src_offset=0, x_size=m, y_size=o, x_stride=m, pad=(0, 0, 0, 0), dst_sram_index=0, 3)
+
+    An if expression with a condition based on an index is padding in TIR
+
+    for i in range(140):
+        with T.block("block"):
+            vi = T.axis.remap("S", [i])
+            y[vi] = T.if_then_else(vi >= 6 and vi < 134, x[vi - 6], 0, dtype="int32")
     """
     env = get_env()
 
@@ -239,13 +267,56 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
             extents.append(innermost_loop_body.extent)
             innermost_loop_body = innermost_loop_body.body
 
-        src = innermost_loop_body.block.reads[0].buffer
-        dst = innermost_loop_body.block.writes[0].buffer
-        value = innermost_loop_body.block.body.value
+        reads = innermost_loop_body.block.reads
+        writes = innermost_loop_body.block.writes
+        if len(reads) != 1:
+            raise ValueError("Can only load from one buffer at the time not %s" % reads)
+        if len(writes) != 1:
+            raise ValueError("Can only write to one buffer at the time not %s" % writes)
+        src = reads[0].buffer
+        dst = writes[0].buffer
+        expr = innermost_loop_body.block.body.value
 
-        if isinstance(value, tir.BufferLoad):
-            if src.scope() != "global":
-                raise ValueError("VTA can only perform DMA load form global DRAM")
+        if  isinstance(expr, tir.IfThenElse):
+            raise ValueError("Padding not yet supported by the compiler")
+        else:
+            pad_before = []
+            pad_after = []
+            pad_value = 0
+
+        if dst.scope() == "global": # Store
+            if pad_before or pad_after:
+                raise RuntimeError("Do not support copy into DRAM with pad")
+            if src.scope() == env.acc_scope:
+                elem_width = env.OUT_WIDTH
+                elem_bytes = env.OUT_ELEM_BYTES
+                mem_type = env.dev.MEM_ID_OUT
+                data_type = "int%d" % env.OUT_WIDTH
+                task_qid = env.dev.QID_STORE_OUT
+            else:
+                raise RuntimeError("Do not support copy %s->dram" % (src.scope()))
+            _check_compact(src)
+            x_size, y_size, x_stride, offset = _get_2d_pattern(
+                dst, elem_width, elem_bytes, data_type, src.scope(), allow_fold=True
+            )
+            irb = tvm.tir.ir_builder.create()
+            irb.scope_attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(task_qid))
+            irb.emit(
+                tvm.tir.call_extern(
+                    "int32",
+                    "VTAStoreBuffer2D",
+                    env.dev.command_handle,
+                    src.access_ptr("r", "int32"),
+                    mem_type,
+                    dst.data,
+                    offset,
+                    x_size,
+                    y_size,
+                    x_stride,
+                )
+            )
+            return irb.get()
+        elif src.scope() == "global": # Load
             if dst.scope() == env.acc_scope:
                 elem_width = env.ACC_WIDTH
                 elem_bytes = env.ACC_ELEM_BYTES
@@ -266,15 +337,49 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                 task_qid = env.dev.QID_LOAD_WGT
             else:
                 raise RuntimeError("Do not support copy dram->%s" % (dst.scope()))
+            # collect pad statistics
+            if pad_before:
+                assert pad_after
+                ndim = len(pad_before)
+                if ndim <= 2 or ndim > 5:
+                    raise ValueError("Limitation of 2D pad load forbid ndim=%d" % ndim)
+                if ndim == 5:
+                    # This case occurs when batch size N > 1
+                    y_pad_before = pad_before[1]
+                    x_pad_before = pad_before[2]
+                    y_pad_after = pad_after[1]
+                    x_pad_after = pad_after[2]
+                    for dim in range(3, ndim):
+                        if not utils.equal_const_int(pad_before[dim], 0):
+                            raise ValueError("Do not support pad on the innermost block")
+                        if not utils.equal_const_int(pad_after[dim], 0):
+                            raise ValueError("Do not support pad on the innermost block")
+                else:
+                    y_pad_before = pad_before[0]
+                    x_pad_before = pad_before[1]
+                    y_pad_after = pad_after[0]
+                    x_pad_after = pad_after[1]
+                    for dim in range(2, ndim):
+                        if not utils.equal_const_int(pad_before[dim], 0):
+                            raise ValueError("Do not support pad on the innermost block")
+                        if not utils.equal_const_int(pad_after[dim], 0):
+                            raise ValueError("Do not support pad on the innermost block")
+                allow_fold = False
+            else:
+                x_pad_before = 0
+                y_pad_before = 0
+                x_pad_after = 0
+                y_pad_after = 0
+                allow_fold = True
 
-            x_pad_before = 0
-            y_pad_before = 0
-            x_pad_after = 0
-            y_pad_after = 0
+            _check_compact(dst)
+            x_size, y_size, x_stride, offset = _get_2d_pattern(
+                src, elem_width, elem_bytes, data_type, dst.scope(), allow_fold=allow_fold
+            )
 
             if data_type != src.dtype:
                 if not (data_type == "int%d" % env.ACC_WIDTH and src.dtype == "int%d" % env.INP_WIDTH):
-                    raise ValueError("asdkjfn")
+                    raise ValueError("Bad data types for load")
                 mem_type = env.dev.MEM_ID_ACC_8BIT
 
             irb = tvm.tir.ir_builder.create()
@@ -285,8 +390,6 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
             # overwrites the first.
             irb.scope_attr(env.dev.vta_axis, "extern_scope", True)
 
-            o, m, BATCH, BLOCK_OUT = src.shape
-            offset, x_size, y_size, x_stride = 0, m, o, m
             irb.emit(
                 tvm.tir.call_extern(
                     "int32",
@@ -301,49 +404,14 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                     y_pad_before,
                     x_pad_after,
                     y_pad_after,
-                    dst.access_ptr(tir.Buffer.WRITE, "int32"),
+                    dst.access_ptr("w", "int32"),
                     mem_type,
                 )
             )
             return irb.get()
-        elif isinstance(value, tir.Cast): # Store
-            if str(value.dtype) != env.inp_dtype:
-                raise ValueError("VTA can only perform stores from %s to casted to %s" % (env.acc_dtype, env.inp_dtype))
-            if dst.scope() != "global":
-                raise ValueError("VTA can only perform DMA store to global DRAM")
-            if src.scope() != env.acc_scope:
-                raise ValueError("Do not support copy %s->dram" % src.scope())
-            elem_width = env.OUT_WIDTH
-            elem_bytes = env.OUT_ELEM_BYTES
-            mem_type = env.dev.MEM_ID_OUT
-            data_type = "int%d" % env.OUT_WIDTH
-            task_qid = env.dev.QID_STORE_OUT
 
-            o, m, BATCH, BLOCK_OUT = dst.shape
-            offset, x_size, y_size, x_stride = 0, m, o, m
-            irb = tvm.tir.ir_builder.create()
-            irb.scope_attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(task_qid))
-            irb.emit(
-                tvm.tir.call_extern(
-                    "int32",
-                    "VTAStoreBuffer2D",
-                    env.dev.command_handle,
-                    src.access_ptr(tir.Buffer.READ, "int32"),
-                    mem_type,
-                    dst.data,
-                    # FIXME: this numbers are just place holders...
-                    offset,
-                    x_size,
-                    y_size,
-                    x_stride,
-                )
-            )
-            return irb.get()
-        elif isinstance(value, tir.BufferStore):
-            raise ValueError("VTA can't do straight stores it can only do cast store.")
         else:
-            raise ValueError("Unsupported value %s" % type(value))
-        print("found dma_copy")
+            raise RuntimeError("Do not support copy %s->%s" % (src.scope(), dst.scope()))
     return None
 
 # The original code used this function which searched for the dma_copy pragma.
