@@ -718,8 +718,9 @@ def _fold_outermost_loop(body):
 
 def do_fold_uop_loop(stmt: tir.Stmt) -> tir.Stmt | None:
     """
-    for I, J in T.grid(N, M):
-        T.call_extern("int32", "SomethingCompute", C_local_acc_buffer, C_local_acc_buffer, C_local_acc_buffer)
+    with T.attr(T.iter_var(vta, None, "ThreadIndex", "vta"), "coproc_uop_scope", "VTAPushGEMMOp"):
+        for I, J in T.grid(N, M):
+            T.call_extern("int32", "SomethingCompute", C_local_acc_buffer, C_local_acc_buffer, C_local_acc_buffer)
 
     becomes
 
@@ -757,7 +758,7 @@ def do_fold_uop_loop(stmt: tir.Stmt) -> tir.Stmt | None:
 
 def fold_uop_loop(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
     return func.with_body(
-        tvm.tir.stmt_functor.ir_transform(func.body, do_fold_uop_loop, None, ["tir.AttrStmt"])
+        tvm.tir.stmt_functor.ir_transform(func.body, None, do_fold_uop_loop, ["tir.AttrStmt"])
     )
 
 def FoldUopLoop() -> tir.transform.PrimFuncPass:

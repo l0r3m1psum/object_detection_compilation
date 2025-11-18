@@ -34,8 +34,6 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.LiftAttrScope("coproc_scope"),
         transform.LiftAttrScope("extern_scope"),
         transform.InjectCoProcSync(),
-        tvm.ir.transform.PrintIR(),
-        transform.PrintDebug(),
         transform.ReplaceVTAVar(),
         transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
         # transform.InjectDebug,
