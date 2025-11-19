@@ -106,11 +106,14 @@ def vta_alu():
     s.cache_read(s.get_block("C"), 0, env.acc_scope)
     s.cache_read(s.get_block("C"), 1, env.acc_scope)
     s.set_scope(s.get_block("C"), 0, env.acc_scope)
+    s.mod.show()
     s.annotate(s.get_loops(s.get_block("A_local.acc_buffer"))[0], env.dma_copy, True)
     s.annotate(s.get_loops(s.get_block("B_local.acc_buffer"))[0], env.dma_copy, True)
     s.annotate(s.get_loops(s.get_block("C"))[0], env.alu, True)
     s.annotate(s.get_loops(s.get_block("D"))[0], env.dma_copy, True)
-    return s.mod
+
+    mod = vtar.tir.transform.ReplaceVarOcurrence("C_local.acc_buffer", "A_local.acc_buffer")(s.mod)
+    return mod
 
 mod = vta_alu()
 mod.show()

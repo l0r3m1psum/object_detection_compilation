@@ -25,6 +25,7 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
     # Some documentation for old transformations is still available here
     # https://mlc.ai/docs/reference/api/tir/transform.html
     return tvm.transform.Sequential([
+        transform.PrintDebug(),
         # vtar.tir.transform.InjectConv2DTransposeSkip(), # TODO
         transform.InjectDMAIntrin(),
         # transform.InjectSkipCopy(), # TODO: Just for debug
@@ -37,18 +38,22 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.ReplaceVTAVar(),
         transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
         transform.InjectDebug(),
-        transform.InjectALUIntrin(), # TODO: move this below...
         # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
+        tvm.tir.transform.PlanAndUpdateBufferAllocationLocation(),
         tvm.tir.transform.ConvertBlocksToOpaque(),
         tvm.tir.transform.CompactBufferAllocation(),
-        tvm.tir.transform.LowerMatchBuffer(), # FIXME: disabling MatchBufferLower::AssertBinding is necessary to make this work...
-        tvm.tir.transform.LowerOpaqueBlock(),
+        tvm.tir.transform.LowerMatchBuffer(),
+        tvm.tir.transform.Simplify(),
+        tvm.tir.transform.LowerOpaqueBlock(), # This together with ConvertBlocksToOpaque removes Block and BlockRealize nodes.
         tvm.tir.transform.FlattenBuffer(),
         ########################################################################
         tvm.tir.transform.StorageRewrite(),
+        # tvm.ir.transform.PrintIR(),
+        transform.InjectALUIntrin(),
         tvm.tir.transform.LowerDeviceStorageAccessInfo(),
         transform.FoldUopLoop(),
         # transform.CPUAccessRewrite(), # TODO
+        # TODO: forse tvm.tir.transform.MakePackedAPI() è l'ultima funzione che manca per rendela una TIR pipeline completa.
     ])
 
 

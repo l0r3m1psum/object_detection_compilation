@@ -76,7 +76,6 @@ def _check_compact(buf: tir.Buffer):
     allocation. According to the documentation in buffer.h if buf.strides is
     empty the buffer is contigous."""
     ndim = len(buf.shape)
-    print(buf.shape[0].dtype)
     size = tir.const(1, buf.shape[0].dtype)
     strides = get_strides(buf)
     for i in reversed(range(ndim)):
@@ -466,15 +465,19 @@ def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
             extents.append(innermost_loop_body.extent)
             innermost_loop_body = innermost_loop_body.body
 
-        # dst_var[*dst_idx] = value
-        # where values is lhs op rhs
-        # and dst_index is dst_idx = T.axis.remap("SSS", indices)
-        S = 0
-        if not all([iter_var.iter_type == S for iter_var in innermost_loop_body.block.iter_vars]):
-            raise ValueError("Axis should be all spatially remapped")
-        dst_var: tir.Var = innermost_loop_body.block.body.buffer.data
-        dst_idx = innermost_loop_body.block.body.indices
-        value = innermost_loop_body.block.body.value
+        if isinstance(innermost_loop_body, (tir.BlockRealize, tir.Block)):
+            raise ValueError("This pass expects to be executed after "
+                "tir.transform.LowerOpaqueBlock after all block information has"
+                " been removed.")
+
+        if len(innermost_loop_body.indices) != 1:
+            raise ValueError("This pass expects to be executed after "
+                "tir.transform.FlattenBuffer after all indices have been to a "
+                "single affine one.")
+
+        dst_var: tir.Var = innermost_loop_body.buffer.data
+        dst_idx: ir.PrimExpr = innermost_loop_body.indices[0]
+        value = innermost_loop_body.value
 
         if isinstance(value, tir.expr.BinaryOpExpr):
             lhs = value.a
@@ -509,7 +512,60 @@ def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                 % (type(value), str(value), str(stmt))
             )
 
-        dst_coeff = extents
+        # Derive array index coefficients
+        dst_coeff = tvm.arith.detect_linear_equation(dst_idx, indices)
+        assert len(dst_coeff) == len(indices) + 1
+        # dst_idx = i1 * 16 + i3
+        # indices = [i0, i1, i3]
+        # dst_coeff = [0, 16, 1, 0] (the last zero is the "bias" of the affine transformation)
+        # i0*0 + i1*16 + 1*i3 + 0
+
+        use_imm = False
+        imm_val = None
+        # Assert checks that the computation is being done in place i.e.
+        # A = A + 1
+        # because VTA has only one big buffer. Something like
+        # A[v_i0, v_i1, v_i2, v_i3] = A[v_i0, v_i1, v_i2, v_i3] + B[v_i0, v_i1, v_i2, v_i3]
+        # after tir.transform.StorageRewrite becomes
+        # B[1024 + (i1 * 16 + i3)] = B[1024 + (i1 * 16 + i3)] + B_1[i1 * 16 + i3]
+        # where everything has been unified one big B buffer. Indices are sill
+        # used to distinguish between where the different buffers are now stored
+        # in the big unified one.
+        if isinstance(rhs, tvm.tir.IntImm):
+            assert lhs.buffer.data.same_as(dst_var)
+            src_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
+            use_imm = True
+            imm_val = rhs
+        if isinstance(lhs, tvm.tir.IntImm):
+            assert rhs.buffer.data.same_as(dst_var)
+            src_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
+            use_imm = True
+            imm_val = lhs
+        if imm_val is None:
+            imm_val = 0
+            breakpoint()
+            assert lhs.buffer.data.same_as(dst_var) and rhs.buffer.data.same_as(dst_var)
+            src_lhs_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
+            src_rhs_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
+            # Determine which side has the same coefficients
+            lhs_equal = True
+            rhs_equal = True
+            for i, coef in enumerate(dst_coeff):
+                if not tvm.ir.structural_equal(coef, src_lhs_coeff[i]):
+                    lhs_equal = False
+                if not tvm.ir.structural_equal(coef, src_rhs_coeff[i]):
+                    rhs_equal = False
+            # Make sure at least one of the source is identical to the
+            # destination (in-place computation)
+            assert lhs_equal or rhs_equal
+            # Assign the source coefficients
+            if lhs_equal:
+                src_coeff = src_rhs_coeff
+            else:
+                src_coeff = src_lhs_coeff
+
+        breakpoint()
+
         # Check if lhs/rhs is immediate
         imm_val = None
         if isinstance(rhs, tvm.tir.IntImm):
@@ -929,4 +985,100 @@ def replace_vta_var(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.Pass
 def ReplaceVTAVar() -> tir.transform.PrimFuncPass:
     return tir.transform.prim_func_pass(
         replace_vta_var, opt_level=0, name="tir.vta.ReplaceVtaVar"
+    )
+
+################################################################################
+
+def get_buffer_by_name(func, name):
+    """
+    Finds the buffer object instance in the IR matching the given name.
+    We need the exact object to perform identity checks (same_as).
+    """
+    found = []
+    def visit(op):
+        if isinstance(op, tir.Block):
+            for buf in op.alloc_buffers:
+                if buf.name == name:
+                    found.append(buf)
+
+    tir.stmt_functor.post_order_visit(func.body, visit)
+    if not found:
+        raise ValueError(f"Buffer {name} not found.")
+    return found[0]
+
+
+def replace_buffer_in_func(func, old_buf, new_buf):
+
+    def replace_region(buffer_region):
+        if buffer_region.buffer.same_as(old_buf):
+            return tir.BufferRegion(new_buf, buffer_region.region)
+        return buffer_region
+
+    def post_order_transform(op):
+        if isinstance(op, tir.BufferLoad):
+            if op.buffer.same_as(old_buf):
+                return tir.BufferLoad(new_buf, op.indices)
+        elif isinstance(op, tir.BufferStore):
+            if op.buffer.same_as(old_buf):
+                return tir.BufferStore(new_buf, op.value, op.indices)
+        elif isinstance(op, tir.Block):
+            new_allocs = [b for b in op.alloc_buffers if not b.same_as(old_buf)]
+
+            new_reads = [replace_region(r) for r in op.reads]
+            new_writes = [replace_region(w) for w in op.writes]
+
+            new_match_buffers = []
+            for mb in op.match_buffers:
+                source = mb.source
+                if source.buffer.same_as(old_buf):
+                    source = tir.BufferRegion(new_buf, source.region)
+                new_match_buffers.append(tir.MatchBufferRegion(mb.buffer, source))
+
+            return tir.Block(
+                op.iter_vars,
+                new_reads,
+                new_writes,
+                op.name_hint,
+                op.body, # The body is already transformed by ir_transform recursion
+                op.init,
+                new_allocs,
+                new_match_buffers,
+                op.annotations
+            )
+
+        return op
+
+    new_body = tir.stmt_functor.ir_transform(func.body, None, post_order_transform, None)
+
+    return func.with_body(new_body)
+
+def ReplaceVarOcurrence(from_name: str, to_name: str) -> tir.transform.PrimFuncPass:
+    def do_replace_var_occurrence(stmt: tir.Stmt) -> tir.Stmt | None:
+        if stmt.buffer.name == from_name:
+            return tir.stmt_functor.substitute(
+                stmt,
+                {stmt.buffer.data: tir.Var('A_local.acc_buffer', tvm.ir.PointerType(tvm.ir.Type('int32')))}
+            )
+            breakpoint()
+        # TODO: visitare buffer.value per trovare variabili
+        return stmt
+        res = stmt
+        node = stmt.node
+        if isinstance(node, tir.IterVar) and node.var.name == "vta":
+            attr_stmt = tir.AttrStmt(vta_axis, stmt.attr_key, stmt.value, stmt.body)
+            res = attr_stmt
+        return res
+
+
+    def replace_var_occurrence(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+        buf_c = get_buffer_by_name(func, "C_local.acc_buffer")
+        buf_a = get_buffer_by_name(func, "A_local.acc_buffer")
+        new_func = replace_buffer_in_func(func, buf_c, buf_a)
+        return new_func
+        return func.with_body(
+            tvm.tir.stmt_functor.ir_transform(func.body, None, do_replace_var_occurrence, ["tir.BufferStore"])
+        )
+
+    return tir.transform.prim_func_pass(
+        replace_var_occurrence, opt_level=0, name="tir.vta.ReplaceVarOcurrence"
     )
