@@ -111,7 +111,9 @@ def vta_alu():
     s.annotate(s.get_loops(s.get_block("C"))[0], env.alu, True)
     s.annotate(s.get_loops(s.get_block("D"))[0], env.dma_copy, True)
 
-    mod = vtar.tir.transform.ReplaceVarOcurrence("C_local.acc_buffer", "A_local.acc_buffer")(s.mod)
+    mod = s.mod
+    # This optimization is done automatically by tir.transform.StorageRewrite
+    # mod = vtar.tir.transform.ReplaceVarOcurrence("C_local.acc_buffer", "A_local.acc_buffer")(mod)
     return mod
 
 mod = vta_alu()
@@ -236,15 +238,26 @@ def vta_gemm():
     return sch.mod
 
 mod = vta_gemm()
-# mod['gemm'].show(ir_prefix="IR")
+mod['gemm'].show(ir_prefix="IR")
 mod = vtar.get_vtar_tir_transform()(mod)
 mod['gemm'].show(ir_prefix="IR")
 
 ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
 dev = tvm.device(str(env.target))
-A = tvm.nd.array((rng.uniform(size=(1, 16, 1, 16)) * 10).astype("int8"), dev)
-B = tvm.nd.array((rng.uniform(size=(16, 16, 16, 16)) * 10).astype("int8"), dev)
-C = tvm.nd.array(numpy.zeros((1, 16, 1, 16), dtype="int8"), dev)
+
+O, N, M = 1, 256, 256
+o, n, m = O//env.BATCH, N//env.BLOCK_IN, M//env.BLOCK_OUT
+A_orig = rng.integers(-128, 128, (O, N)).astype(env.inp_dtype)
+B_orig = rng.integers(-128, 128, (M, N)).astype(env.wgt_dtype)
+C_orig = (A_orig.astype(env.acc_dtype) @ B_orig.T.astype(env.acc_dtype)).astype(env.out_dtype)
+A_pack = A_orig.reshape(o, env.BATCH, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
+B_pack = B_orig.reshape(m, env.BLOCK_OUT, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
+C_pack = C_orig.reshape(o, env.BATCH, m, env.BLOCK_OUT).transpose((0, 2, 1, 3))
+
+A = tvm.nd.array(A_pack, dev)
+B = tvm.nd.array(B_pack, dev)
+C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dtype)+69, dev)
 ex(A, B, C)
-numpy.testing.assert_equal(C.numpy(), numpy.einsum("IKik,JKjk->IJij", A.numpy(), B.numpy()))
-# print(C)
+numpy.testing.assert_equal(C.numpy(), C_pack)
+# print(A, C)
+# print(correct)

@@ -212,8 +212,8 @@ def gemm_desc(
                 T.reads(out[vi, vj], inp[vi, vk], wgt[vj, vk])
                 T.writes(out[vi, vj])
                 # with T.init(): out[vi, vj] = 0
-                out[vi, vj] += T.Cast("int32", inp[vi, vk]) \
-                    * T.Cast("int32", wgt[vj, vk])
+                out[vi, vj] += inp[vi, vk].astype(env.acc_dtype) \
+                    * wgt[vj, vk].astype(env.acc_dtype)
 
 @T.prim_func
 def gemm_desc1(
@@ -250,7 +250,7 @@ def gemm_intrin(
             wgt[0:env.BLOCK_OUT, 0:env.BLOCK_IN])
         T.writes(out[0:env.BATCH, 0:env.BLOCK_OUT])
         # with T.init():
-        #     T.call_intrin("void", "tir.vta.uop_push",
+        #     T.call_intrin("int32", "tir.vta.uop_push",
         #         0, # mode = 0 is GEMM
         #         1, # reset_out = 1 is "reset the accumulator"
         #         out.access_ptr("w", "int32"), # dst_index
@@ -261,7 +261,7 @@ def gemm_intrin(
         vta = T.int32()
         T.attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(env.dev.QID_COMPUTE))
         T.attr(env.dev.vta_axis, "coproc_uop_scope", env.dev.vta_push_uop)
-        T.call_intrin("void", "tir.vta.uop_push",
+        T.call_intrin("int32", "tir.vta.uop_push",
             0, # mode = 0 is GEMM
             0, # reset_out = 0 is "do not reset the accumulator"
             out.access_ptr("rw", env.acc_dtype), # dst_index
@@ -283,7 +283,7 @@ def gemm_intrin1(
             wgt[0:env.BLOCK_OUT, 0:env.BLOCK_IN])
         T.writes(out[0:env.BLOCK_OUT])
         # with T.init():
-        #     T.call_intrin("void", "tir.vta.uop_push",
+        #     T.call_intrin("int32", "tir.vta.uop_push",
         #         0, # mode = 0 is GEMM
         #         1, # reset_out = 1 is "reset the accumulator"
         #         out.access_ptr("w", "int32"), # dst_index
@@ -293,7 +293,7 @@ def gemm_intrin1(
         #     )
         T.attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(env.dev.QID_COMPUTE))
         T.attr(env.dev.vta_axis, "coproc_uop_scope", env.dev.vta_push_uop)
-        T.call_intrin("void", "tir.vta.uop_push",
+        T.call_intrin("int32", "tir.vta.uop_push",
             0, # mode = 0 is GEMM
             0, # reset_out = 0 is "do not reset the accumulator"
             out.access_ptr("rw", env.acc_dtype), # dst_index
@@ -328,7 +328,7 @@ def init_intrin1(
         T.writes(out[0:env.BLOCK_OUT])
         T.attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(env.dev.QID_COMPUTE))
         T.attr(env.dev.vta_axis, "coproc_uop_scope", env.dev.vta_push_uop)
-        T.call_intrin("void", "tir.vta.uop_push",
+        T.call_intrin("int32", "tir.vta.uop_push",
             0, # mode = 0 is GEMM
             1, # reset_out = 1 is "reset the accumulator"
             out.access_ptr("w", "int32"), # dst_index
