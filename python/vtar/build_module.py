@@ -25,10 +25,9 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
     # Some documentation for old transformations is still available here
     # https://mlc.ai/docs/reference/api/tir/transform.html
     return tvm.transform.Sequential([
-        transform.PrintDebug(),
-        # vtar.tir.transform.InjectConv2DTransposeSkip(), # TODO
+        # transform.InjectConv2DTransposeSkip(), # TODO
         transform.InjectDMAIntrin(),
-        # transform.InjectSkipCopy(), # TODO: Just for debug
+        # transform.InjectSkipCopy(), # TODO: Just for debug, requires adding remove nop transform tvm.tir.transform.RemoveNoOp(),
         transform.AnnotateALUCoProcScope(),
         transform.LiftAttrScope("coproc_uop_scope"),
         transform.LiftAllocToScopeBegin(),
@@ -42,13 +41,12 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         tvm.tir.transform.PlanAndUpdateBufferAllocationLocation(),
         tvm.tir.transform.ConvertBlocksToOpaque(),
         tvm.tir.transform.CompactBufferAllocation(),
-        tvm.tir.transform.LowerMatchBuffer(),
+        tvm.tir.transform.LowerMatchBuffer(), # FIXME
         tvm.tir.transform.Simplify(),
         tvm.tir.transform.LowerOpaqueBlock(), # This together with ConvertBlocksToOpaque removes Block and BlockRealize nodes.
         tvm.tir.transform.FlattenBuffer(),
         ########################################################################
         tvm.tir.transform.StorageRewrite(),
-        # tvm.ir.transform.PrintIR(),
         transform.InjectALUIntrin(),
         tvm.tir.transform.LowerDeviceStorageAccessInfo(),
         transform.FoldUopLoop(),

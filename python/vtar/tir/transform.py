@@ -427,6 +427,44 @@ def InjectDMAIntrin() -> tir.transform.PrimFuncPass:
         inject_dma_intin_transform, opt_level=0, name="tir.vta.InjectDMAIntrin"
     )
 
+def _flatten_loop(
+        analyzer: tvm.arith.Analyzer,
+        src_coeff: List[tir.IntImm],
+        dst_coeff: List[tir.IntImm],
+        extents: List[tir.IntImm]
+    ) -> Tuple[List[tir.IntImm], List[tir.IntImm], List[tir.IntImm]]:
+
+    rev_src_coeff = [src_coeff.pop()]
+    rev_dst_coeff = [dst_coeff.pop()]
+    rev_extents = []
+
+    vsrc = src_coeff.pop()
+    vdst = dst_coeff.pop()
+    vext = extents.pop()
+    while src_coeff:
+        next_src = src_coeff.pop()
+        next_dst = dst_coeff.pop()
+        next_ext = extents.pop()
+
+        if analyzer.can_prove_equal(next_src, vsrc * vext) \
+            and analyzer.can_prove_equal(next_dst, vdst * vext):
+            vext = analyzer.simplify(vext * next_ext)
+        else:
+            rev_src_coeff.append(vsrc)
+            rev_dst_coeff.append(vdst)
+            rev_extents.append(vext)
+            vsrc = next_src
+            vdst = next_dst
+            vext = next_ext
+    rev_src_coeff.append(vsrc)
+    rev_dst_coeff.append(vdst)
+    rev_extents.append(vext)
+    rev_src_coeff.reverse()
+    rev_dst_coeff.reverse()
+    rev_extents.reverse()
+
+    return rev_src_coeff, rev_dst_coeff, rev_extents
+
 def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
     """
     This function tries to match for a computation like this
@@ -520,6 +558,7 @@ def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
         # dst_coeff = [0, 16, 1, 0] (the last zero is the "bias" of the affine transformation)
         # i0*0 + i1*16 + 1*i3 + 0
 
+        # Check if lhs/rhs is immediate
         use_imm = False
         imm_val = None
         # Assert checks that the computation is being done in place i.e.
@@ -527,24 +566,26 @@ def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
         # because VTA has only one big buffer. Something like
         # A[v_i0, v_i1, v_i2, v_i3] = A[v_i0, v_i1, v_i2, v_i3] + B[v_i0, v_i1, v_i2, v_i3]
         # after tir.transform.StorageRewrite becomes
-        # B[1024 + (i1 * 16 + i3)] = B[1024 + (i1 * 16 + i3)] + B_1[i1 * 16 + i3]
+        # B[1024 + (i1 * 16 + i3)] = B[1024 + (i1 * 16 + i3)] + B[i1 * 16 + i3]
         # where everything has been unified one big B buffer. Indices are sill
         # used to distinguish between where the different buffers are now stored
         # in the big unified one.
         if isinstance(rhs, tvm.tir.IntImm):
-            assert lhs.buffer.data.same_as(dst_var)
+            if not lhs.buffer.data.same_as(dst_var):
+                raise ValueError("All operations mus be done inplace from the VTA SRAM")
             src_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
             use_imm = True
             imm_val = rhs
         if isinstance(lhs, tvm.tir.IntImm):
-            assert rhs.buffer.data.same_as(dst_var)
+            if not rhs.buffer.data.same_as(dst_var):
+                raise ValueError("All operations mus be done inplace from the VTA SRAM")
             src_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
             use_imm = True
             imm_val = lhs
         if imm_val is None:
             imm_val = 0
-            breakpoint()
-            assert lhs.buffer.data.same_as(dst_var) and rhs.buffer.data.same_as(dst_var)
+            if not (lhs.buffer.data.same_as(dst_var) and rhs.buffer.data.same_as(dst_var)):
+                raise ValueError("All operations mus be done inplace from the VTA SRAM")
             src_lhs_coeff = tvm.arith.detect_linear_equation(lhs.indices[0], indices)
             src_rhs_coeff = tvm.arith.detect_linear_equation(rhs.indices[0], indices)
             # Determine which side has the same coefficients
@@ -564,71 +605,75 @@ def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
             else:
                 src_coeff = src_lhs_coeff
 
-        breakpoint()
+        # Ensure that we have the proper tensor dimensions in the
+        # innermost loop (pattern match)
+        src_coeff = list(src_coeff)
+        dst_coeff = list(dst_coeff)
+        extents = list(extents)
+        assert len(src_coeff) > 1
+        assert len(dst_coeff) > 1
+        assert len(extents) != 0
+        tvm.ir.assert_structural_equal(
+            analyzer.simplify(tir.indexmod(src_coeff[-1], env.BATCH * env.BLOCK_OUT)), T.int32(0)
+        )
+        tvm.ir.assert_structural_equal(
+            analyzer.simplify(tir.indexmod(dst_coeff[-1], env.BATCH * env.BLOCK_OUT)), T.int32(0)
+        )
+        tvm.ir.assert_structural_equal(src_coeff[-2], T.int32(1))
+        tvm.ir.assert_structural_equal(dst_coeff[-2], T.int32(1))
+        if env.BATCH > 1:
+            assert len(src_coeff) > 2
+            assert len(dst_coeff) > 2
+            assert len(extents) > 1
+            tvm.ir.assert_structural_equal(src_coeff[-3], T.int32(env.BLOCK_OUT))
+            tvm.ir.assert_structural_equal(dst_coeff[-3], T.int32(env.BLOCK_OUT))
 
-        # Check if lhs/rhs is immediate
-        imm_val = None
-        if isinstance(rhs, tvm.tir.IntImm):
-            src_coeff = lhs.indices
-            imm_val = rhs
-        if isinstance(lhs, tvm.tir.IntImm):
-            src_coeff = rhs.indices
-            imm_val = lhs
-        if imm_val is None:
-            imm_val = 0
-            src_lhs_coeff = lhs.indices
-            src_rhs_coeff = rhs.indices
-
-            lhs_equal = True
-            rhs_equal = True
-            for i, coef in enumerate(dst_idx):
-                if not tvm.ir.structural_equal(coef, src_lhs_coeff[i]):
-                    lhs_equal = False
-                if not tvm.ir.structural_equal(coef, src_rhs_coeff[i]):
-                    rhs_equal = False
-
-            if not (lhs_equal and rhs_equal):
-                raise ValueError("lhs and rhs must have the same indices")
-            # NOTE(Diego): the original implementation seems like it did
-            # something more general
-            src_coeff = src_rhs_coeff
-        src_coeff = extents
-
-        # At this point is either lhs op rhs or lhs op imm
-
-        if len(extents) == 4:
-            src_coeff = [prod(extents[0:-1]), prod(extents[1:-1]), prod(extents[2:-1]), prod(extents[3:-1])]
-            src_coeff = list(reversed(src_coeff))
-            dst_coeff = src_coeff
-            remove_last_two = slice(0, -2, 1)
-            extents = extents[remove_last_two]
-            irb = tvm.tir.ir_builder.create()
-            for i, extent in enumerate(extents):
-                if extent != 1:
-                    irb.emit(tvm.tir.call_extern("int32", "VTAUopLoopBegin", extent, dst_coeff[i], src_coeff[i], 0))
-            irb.emit(
-                tvm.tir.call_intrin(
-                    "int32",
-                    "tir.vta.uop_push",
-                    1, # alu mode
-                    0, # do not reset accumulator
-                    dst_coeff[-1], # dst_index # FIXME: this is wrong!
-                    src_coeff[-1], # src_index
-                    0,             # wgt_index
-                    alu_opcode,
-                    int(bool(imm_val)),
-                    imm_val,
-                )
-            )
-            for extent in extents:
-                if extent != 1:
-                    irb.emit(tvm.tir.call_extern("int32", "VTAUopLoopEnd"))
-            res = irb.get()
+        # Apply tensorization of the loop coefficients
+        src_offset = src_coeff[-1]
+        dst_offset = dst_coeff[-1]
+        if env.BATCH == 1:
+            src_coeff = src_coeff[:-2]
+            dst_coeff = dst_coeff[:-2]
+            extents = extents[:-1]
         else:
-            raise ValueError("Only quadruply nested loops")
+            src_coeff = src_coeff[:-3]
+            dst_coeff = dst_coeff[:-3]
+            extents = extents[:-2]
+        src_coeff.append(src_offset)
+        dst_coeff.append(dst_offset)
+        src_coeff = [analyzer.simplify(c // (env.BATCH * env.BLOCK_OUT)) for c in src_coeff]
+        dst_coeff = [analyzer.simplify(c // (env.BATCH * env.BLOCK_OUT)) for c in dst_coeff]
 
-        # ExceptionGroup("The optimization could not be performed because...", execs)
-    return res
+        # Flatten the outer loops
+        if extents:
+            src_coeff, dst_coeff, extents = _flatten_loop(analyzer, src_coeff, dst_coeff, extents)
+
+        # Insert ALU micro-ops
+        irb = tvm.tir.ir_builder.create()
+        for idx, extent in enumerate(extents):
+            irb.emit(
+                tvm.tir.call_extern("int32", "VTAUopLoopBegin", extent, dst_coeff[idx], src_coeff[idx], 0)
+            )
+        irb.emit(
+            tvm.tir.call_intrin(
+                "int32",
+                "tir.vta.uop_push",
+                1, # alu mode
+                0, # do not reset accumulator
+                dst_coeff[-1], # dst_index
+                src_coeff[-1], # src_index
+                0,             # wgt_index
+                alu_opcode,
+                int(use_imm),
+                imm_val,
+            )
+        )
+        for extent in extents:
+            irb.emit(tvm.tir.call_extern("int32", "VTAUopLoopEnd"))
+        return irb.get()
+
+    # ExceptionGroup("The optimization could not be performed because...", execs)
+    return stmt
 
 def inject_alu_intin_transform(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
     return func.with_body(
