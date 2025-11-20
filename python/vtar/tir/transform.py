@@ -148,7 +148,6 @@ def _get_2d_pattern(buf: tir.Buffer, elem_width: int, elem_bytes: int, dtype: st
     elem_block = elem_bits // elem_width # number of element in a matrix (OUT|ACC|INP|WGT)
     shape, strides = buf.shape, buf.strides
 
-    # breakpoint()
     if not utils.equal_const_int(tir.indexmod(buf.elem_offset, elem_block), 0):
         raise RuntimeError("scope %s need to have block=%d" % (scope, elem_block))
 
@@ -391,8 +390,7 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
 
             irb.emit(
                 tvm.tir.call_extern(
-                    "int32",
-                    "VTALoadBuffer2D",
+                    "int32", "VTALoadBuffer2D",
                     env.dev.command_handle,
                     src.data,
                     offset,
@@ -831,11 +829,12 @@ def _fold_outermost_loop(body):
 
     def _post_order(op):
         assert isinstance(op, tvm.tir.Call)
+        # uop_push(mode, reset_out, dst_index, src_index, wgt_index, opcode, use_imm, imm_val)
         base_args = 2
         if op.op.same_as(builtin_uop_push):
             args = []
-            args += op.args[:base_args]
-            for i in range(3):
+            args += op.args[:base_args] # Saves mode and reset_out
+            for i in range(3): # Checks dst, src and wgt for index calculation
                 m = tvm.arith.detect_linear_equation(op.args[i + base_args], [loop_var])
                 if not m:
                     fail[0] = True
@@ -848,13 +847,13 @@ def _fold_outermost_loop(body):
                 else:
                     gemm_offsets[i] = m[0]
                     args.append(m[1])
-            args += op.args[base_args + 3 :]
+            args += op.args[base_args + 3 :] # Saves the alu parameters
             return tvm.tir.call_intrin("int32", builtin_uop_push, *args)
         if op.op.name not in ("tir.vta.command_handle", "tir.tvm_thread_context"):
             raise RuntimeError("unexpected op %s" % op)
         return op
 
-    ret = tvm.tir.stmt_functor.ir_transform(stmt.body, None, _post_order, ["tir.Call"])
+    ret = tvm.tir.stmt_functor.ir_transform(stmt.body, _post_order, None, ["tir.Call"])
 
     if not fail[0] and all(x is not None for x in gemm_offsets):
 
@@ -1126,4 +1125,100 @@ def ReplaceVarOcurrence(from_name: str, to_name: str) -> tir.transform.PrimFuncP
 
     return tir.transform.prim_func_pass(
         replace_var_occurrence, opt_level=0, name="tir.vta.ReplaceVarOcurrence"
+    )
+
+# TODO: check what this does...
+def CPUAccessRewrite():
+    """Detect CPU access to VTA buffer and get address correctly.
+
+    VTA's buffer is an opaque handle that do not
+    correspond to address in CPU.
+    This pass detect CPU access and rewrite to use pointer
+    returned VTABufferCPUPtr for CPU access.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The pass
+    """
+
+    def _ftransform(f, mod, ctx):
+        env = get_env()
+
+        var_remap = {}
+        buf_remap = {}
+
+        def find_var_remap(old_var):
+            if old_var in var_remap:
+                return var_remap[old_var]
+
+            new_var = tvm.tir.Var(old_var.name + "_ptr", dtype=old_var.type_annotation)
+            var_remap[old_var] = new_var
+            return new_var
+
+        def find_buf_remap(old_buf):
+            if old_buf in buf_remap:
+                return buf_remap[old_buf]
+
+            new_var = find_var_remap(old_buf.data)
+            new_buf = tvm.tir.decl_buffer(
+                shape=old_buf.shape,
+                dtype=old_buf.dtype,
+                data=new_var,
+                strides=old_buf.strides,
+                elem_offset=old_buf.elem_offset,
+                scope=old_buf.scope,
+                data_alignment=old_buf.data_alignment,
+                offset_factor=old_buf.offset_factor,
+                buffer_type="auto_broadcast" if (old_buf.buffer_type == 2) else "",
+                axis_separators=old_buf.axis_separators,
+            )
+            buf_remap[old_buf] = new_buf
+            return new_buf
+
+        def _post_order(op):
+            if isinstance(op, tvm.tir.Allocate):
+                buffer_var = op.buffer_var
+                if buffer_var not in var_remap:
+                    return None
+                new_var = var_remap[buffer_var]
+                let_stmt = tvm.tir.LetStmt(
+                    new_var,
+                    tvm.tir.call_extern(
+                        "handle", "VTABufferCPUPtr", env.dev.command_handle, buffer_var
+                    ),
+                    op.body,
+                )
+                alloc = tvm.tir.Allocate(buffer_var, op.dtype, op.extents, op.condition, let_stmt)
+                del var_remap[buffer_var]
+                bufs_to_delete = [
+                    old_buf for old_buf in buf_remap if old_buf.data.same_as(buffer_var)
+                ]
+                for buf in bufs_to_delete:
+                    del buf_remap[buf]
+                return alloc
+
+            if isinstance(op, tvm.tir.BufferLoad):
+                return tvm.tir.BufferLoad(find_buf_remap(op.buffer), op.indices)
+
+            if isinstance(op, tvm.tir.BufferStore):
+                return tvm.tir.BufferStore(find_buf_remap(op.buffer), op.value, op.indices)
+
+            raise RuntimeError("not reached")
+
+        stmt_in = f.body
+        stmt = tvm.tir.stmt_functor.ir_transform(
+            stmt_in, None, _post_order, ["tir.Allocate", "tir.BufferLoad", "tir.BufferStore"]
+        )
+
+        for old_var, new_var in var_remap.items():
+            stmt = tvm.tir.LetStmt(
+                new_var,
+                tvm.tir.call_extern("handle", "VTABufferCPUPtr", env.dev.command_handle, old_var),
+                stmt,
+            )
+        return f.with_body(stmt)
+
+    return tvm.tir.transform.prim_func_pass(
+        _ftransform, opt_level=0, name="tir.vta.CPUAccessRewrite"
     )

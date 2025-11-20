@@ -259,5 +259,4 @@ B = tvm.nd.array(B_pack, dev)
 C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dtype)+69, dev)
 ex(A, B, C)
 numpy.testing.assert_equal(C.numpy(), C_pack)
-# print(A, C)
-# print(correct)
+# https://tvm.hyper.ai/docs/0.12.0/topic/vta/tutorials/mat_mul

@@ -217,9 +217,9 @@ def gemm_desc(
 
 @T.prim_func
 def gemm_desc1(
-        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope),
-        inp: T.Buffer((env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope),
-        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope, offset_factor=1),
+        inp: T.Buffer((env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope, offset_factor=1),
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope, offset_factor=1)
     ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):
@@ -272,9 +272,9 @@ def gemm_intrin(
 
 @T.prim_func
 def gemm_intrin1(
-        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope),
-        inp: T.Buffer((env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope),
-        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+        wgt: T.Buffer((env.BLOCK_OUT, env.BLOCK_IN), env.wgt_dtype, scope=env.wgt_scope, offset_factor=1),
+        inp: T.Buffer((env.BLOCK_IN), env.inp_dtype, scope=env.inp_scope, offset_factor=1),
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope, offset_factor=1)
     ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):
@@ -308,7 +308,7 @@ tvm.tir.TensorIntrin.register("vta_gemm_intrin1", gemm_desc1, gemm_intrin1)
 
 @T.prim_func
 def init_desc1(
-        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope, offset_factor=1)
     ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):
@@ -321,7 +321,7 @@ def init_desc1(
 
 @T.prim_func
 def init_intrin1(
-        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope)
+        out: T.Buffer((env.BLOCK_OUT), env.acc_dtype, scope=env.acc_scope, offset_factor=1)
     ) -> None:
     T.func_attr({"tir.noalias": T.bool(True)})
     with T.block("root"):

@@ -41,16 +41,16 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         tvm.tir.transform.PlanAndUpdateBufferAllocationLocation(),
         tvm.tir.transform.ConvertBlocksToOpaque(),
         tvm.tir.transform.CompactBufferAllocation(),
-        tvm.tir.transform.LowerMatchBuffer(), # FIXME
+        tvm.tir.transform.LowerMatchBuffer(),
         tvm.tir.transform.Simplify(),
         tvm.tir.transform.LowerOpaqueBlock(), # This together with ConvertBlocksToOpaque removes Block and BlockRealize nodes.
         tvm.tir.transform.FlattenBuffer(),
         ########################################################################
         tvm.tir.transform.StorageRewrite(),
         transform.InjectALUIntrin(),
-        tvm.tir.transform.LowerDeviceStorageAccessInfo(),
         transform.FoldUopLoop(),
-        # transform.CPUAccessRewrite(), # TODO
+        tvm.tir.transform.LowerDeviceStorageAccessInfo(),
+        transform.CPUAccessRewrite(), # TODO
         # TODO: forse tvm.tir.transform.MakePackedAPI() è l'ultima funzione che manca per rendela una TIR pipeline completa.
     ])
 
