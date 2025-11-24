@@ -10,6 +10,8 @@ import vtar
 
 env = vtar.get_env()
 
+print(env.TARGET)
+
 assert env.BATCH == 1
 assert env.BLOCK_IN == 16
 assert env.BLOCK_OUT == 16
@@ -130,6 +132,20 @@ C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
 ex(A, B, C)
 numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
 # print(C)
+
+if False:
+    from tvm import rpc
+    host = "192.168.137.48"
+    port = 9091
+    remote = rpc.connect(host, port)
+    ex.export_library("build/alu.tar")
+    remote.upload("build/alu.tar")
+    func = remote.load_module("alu.tar")
+    dev = remote.ext_dev(0)
+    A = tvm.nd.empty((1, 64, 1, 16), "int32", dev)
+    B = tvm.nd.empty((1, 64, 1, 16), "int32", dev)
+    C = tvm.nd.empty((1, 64, 1, 16), "int8", dev)
+    func(A, B, C)
 
 def g():
     BATCH, BLOCK_IN, BLOCK_OUT = 2, 2, 2
@@ -260,3 +276,18 @@ C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dty
 ex(A, B, C)
 numpy.testing.assert_equal(C.numpy(), C_pack)
 # https://tvm.hyper.ai/docs/0.12.0/topic/vta/tutorials/mat_mul
+
+# FIXME: how do I put data in the NDArrays???
+# TODO: export one and load from another file
+if False
+    ex.export_library("build/gemm.tar")
+    remote.upload("build/gemm.tar")
+    func = remote.load_module("gemm.tar")
+    dev = remote.ext_dev(0)
+    A = tvm.nd.empty((1, 16, 1, 16), "int8", dev)
+    B = tvm.nd.empty((16, 16, 16, 16), "int8", dev)
+    C = tvm.nd.empty((1, 16, 1, 16), "int8", dev).copyfrom(numpy.zeros((1, 16, 1, 16), dtype='int8'))
+    # tmp, tmp_shape = tvm.nd.numpyasarray(numpy.zeros((1, 16, 1, 16), dtype='int8'))
+    # breakpoint()
+    # tmp.copyto(C)
+    func(A, B, C)
