@@ -61,6 +61,7 @@ pycparser-2.22-py3-none-any.whl
 # TODO: add cython wheel
 
 ssh xilinx@192.168.2.99
+sudo python3 -c "from pynq import Bitstream; bitstream_path = "1x16_i8w8a32_15_15_18_17.bit"; bitstream = Bitstream(bitstream_path); bitstream.download()"
 . cpython-3.8/tvm_runtime/bin/activate
 cd tvm/
 # sudo -E ./apps/vta_rpc/start_rpc_server.sh
