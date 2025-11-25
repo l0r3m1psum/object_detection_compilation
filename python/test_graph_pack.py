@@ -111,6 +111,44 @@ tvm.ir.assert_structural_equal(
 	Reshape
 )
 
+from tvm import dlight as dl
+from tvm import ir
+
+@I.ir_module
+class ALUOperations:
+	@R.function
+	def main(
+		x: R.Tensor((1, 64, 1, 16), dtype="int32"),
+		y: R.Tensor((1, 64, 1, 16), dtype="int32"),
+	):
+		with R.dataflow():
+			# TODO: x + y * x
+			lv = (x + y).astype("int8")
+			gv = lv
+			R.output(gv)
+		return gv
+
+mod = ALUOperations
+almost_end2end_pipeline = ir.transform.Sequential([
+	# TODO: integer only quantization
+	# vtar.relax.transform.GraphPack(),
+	# relax.transform.CanonicalizeBindings(), # removes redundant assignments
+	relax.get_pipeline('vtar_zero'),
+	############################################################################
+	tir.transform.ForceNarrowIndexToInt32(),
+	dl.ApplyDefaultSchedule(
+		vtar.dlight.ALU(),
+	),
+	vtar.get_vtar_tir_transform(),
+])
+
+env = vtar.get_env()
+target = tvm.target.Target(env.target, host=env.target_host)
+with target:
+	mod = almost_end2end_pipeline(mod)
+ex = tvm.compile(mod, target=target)
+raise SystemExit(0)
+
 import numpy
 from vtar.relax.transform import _get_shape
 
