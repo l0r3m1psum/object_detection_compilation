@@ -120,11 +120,9 @@ def vta_alu():
 
 mod = vta_alu()
 mod.show()
-mod = vtar.get_vtar_tir_transform()(mod)
-mod.show()
 
 rng = numpy.random.default_rng(42)
-ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
+ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host), vtar.get_vtar_tir_transform())
 dev = tvm.device(str(env.target))
 A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
 B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
@@ -255,10 +253,8 @@ def vta_gemm():
 
 mod = vta_gemm()
 mod['gemm'].show(ir_prefix="IR")
-mod = vtar.get_vtar_tir_transform()(mod)
-mod['gemm'].show(ir_prefix="IR")
 
-ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host))
+ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host), vtar.get_vtar_tir_transform())
 dev = tvm.device(str(env.target))
 
 O, N, M = 1, 256, 256

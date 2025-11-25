@@ -51,7 +51,8 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         tvm.tir.transform.LowerDeviceStorageAccessInfo(),
         transform.FoldUopLoop(),
         transform.CPUAccessRewrite(), # TODO
-        # tvm.tir.transform.MakePackedAPI(), #  è l'ultima funzione che manca per rendela una TIR pipeline completa?
+        tvm.tir.transform.AnnotateEntryFunc(),
+        tvm.tir.transform.MakePackedAPI(),
     ])
 
 
