@@ -889,6 +889,7 @@ def do_fold_uop_loop(stmt: tir.Stmt) -> tir.Stmt | None:
         and isinstance(stmt.value, tvm.tir.StringImm)
         and stmt.value.value == env.dev.vta_push_uop.value
     ):
+        breakpoint()
         body = stmt.body
         begins = []
         ends = []
