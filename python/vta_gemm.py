@@ -272,14 +272,14 @@ C_pack = C_orig.reshape(o, env.BATCH, m, env.BLOCK_OUT).transpose((0, 2, 1, 3))
 
 A = tvm.nd.array(A_pack, dev)
 B = tvm.nd.array(B_pack, dev)
-C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dtype)+69, dev)
+C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dtype), dev)
 ex(A, B, C)
 numpy.testing.assert_equal(C.numpy(), C_pack)
 # https://tvm.hyper.ai/docs/0.12.0/topic/vta/tutorials/mat_mul
 
 # FIXME: how do I put data in the NDArrays???
 # TODO: export one and load from another file
-if False
+if False:
     ex.export_library("build/gemm.tar")
     remote.upload("build/gemm.tar")
     func = remote.load_module("gemm.tar")
