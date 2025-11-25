@@ -279,7 +279,7 @@ numpy.testing.assert_equal(C.numpy(), C_pack)
 
 # FIXME: how do I put data in the NDArrays???
 # TODO: export one and load from another file
-if False
+if False:
     ex.export_library("build/gemm.tar")
     remote.upload("build/gemm.tar")
     func = remote.load_module("gemm.tar")
