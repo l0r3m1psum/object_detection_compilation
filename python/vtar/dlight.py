@@ -92,8 +92,6 @@ class ALU(VTAScheduleRule):
         if not is_store(sch, block_infos[-1]):
             return None
 
-        sch.mod.show()
-
         if len(block_infos) < 2:
             return None
 
@@ -112,5 +110,5 @@ class ALU(VTAScheduleRule):
             intermediate_alu_block = block_info.block_rv
             sch.set_scope(intermediate_alu_block, 0, env.acc_scope)
             sch.annotate(sch.get_loops(intermediate_alu_block)[0], env.alu, True)
-        sch.mod.show()
+
         return sch
