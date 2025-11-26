@@ -123,8 +123,12 @@ class ALUOperations:
 	):
 		with R.dataflow():
 			# TODO: x + y * x
-			lv = (x + y).astype("int8")
-			gv = lv
+			lv = x + y
+			lv1 = R.right_shift(lv, R.const(8)) # 8 == env.INP_WIDTH
+			lv2 = R.maximum(lv1, R.const(0)) # ReLU
+			lv3 = R.minimum(lv2, R.const((1 << (8 - 1)) - 1)) # INT8_MAX
+			lv4 = lv3.astype("int8")
+			gv = lv4
 			R.output(gv)
 		return gv
 
@@ -146,6 +150,7 @@ env = vtar.get_env()
 target = tvm.target.Target(env.target, host=env.target_host)
 with target:
 	mod = almost_end2end_pipeline(mod)
+mod.show()
 ex = tvm.compile(mod, target=target)
 raise SystemExit(0)
 

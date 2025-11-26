@@ -463,6 +463,8 @@ def _flatten_loop(
 
     return rev_src_coeff, rev_dst_coeff, rev_extents
 
+from .util import get_alu_op
+
 def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
     """
     This function tries to match for a computation like this
@@ -515,38 +517,8 @@ def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
         dst_idx: ir.PrimExpr = innermost_loop_body.indices[0]
         value = innermost_loop_body.value
 
-        if isinstance(value, tir.expr.BinaryOpExpr):
-            lhs = value.a
-            rhs = value.b
-            if   isinstance(value, tir.Add): alu_opcode = env.dev.ALU_OPCODE_ADD
-            elif isinstance(value, tir.Sub): alu_opcode = env.dev.ALU_OPCODE_SUB
-            elif isinstance(value, tir.Mul): alu_opcode = env.dev.ALU_OPCODE_MUL
-            elif isinstance(value, tir.Min): alu_opcode = env.dev.ALU_OPCODE_MIN
-            elif isinstance(value, tir.Max): alu_opcode = env.dev.ALU_OPCODE_MAX
-            else:
-                raise RuntimeError("Binary op not supported %s" % value.op.name)
-        elif isinstance(value, tir.Call):
-            if value.op.name == "tir.shift_left":
-                alu_opcode = env.dev.ALU_OPCODE_SHR
-                lhs = value.args[0]
-                rhs = analyzer.simplify(-value.args[1])
-            elif value.op.name == "tir.shift_right":
-                alu_opcode = env.dev.ALU_OPCODE_SHR
-                lhs = value.args[0]
-                rhs = value.args[1]
-            else:
-                raise RuntimeError(
-                    "Function call not recognized %s" % (value.op.name)
-                )
-        elif isinstance(value, tir.BufferLoad):
-            alu_opcode = env.dev.ALU_OPCODE_SHR
-            lhs = value
-            rhs = tvm.tir.const(0, "int32")
-        else:
-            raise RuntimeError(
-                "Expression not recognized %s, %s, %s"
-                % (type(value), str(value), str(stmt))
-            )
+        alu_opcode, lhs, rhs, error = get_alu_op(env, analyzer, value)
+        if error: raise error
 
         # Derive array index coefficients
         dst_coeff = tvm.arith.detect_linear_equation(dst_idx, indices)
