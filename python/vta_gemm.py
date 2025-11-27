@@ -322,9 +322,9 @@ def h():
 
     acc_buff = numpy.zeros((ω, μ, BATCH, BLOCK_OUT))
     res = numpy.zeros_like(C_pack)
-    for a, b in grid(o//ω, m//(μ//2)):
-        bos = slice((o//ω)*a, (o//ω)*(a+1)) # batch outer slice
-        cos = slice((μ//2)*b, (μ//2)*(b+1)) # channel outer slice
+    for boo, coo in grid(o//ω, m//(μ//2)):
+        bos = slice((o//ω)*boo, (o//ω)*(boo+1)) # batch outer slice
+        cos = slice((μ//2)*coo, (μ//2)*(coo+1)) # channel outer slice
         acc_buff[:, :μ//2, :, :] = A_pack[bos, cos, :, :] # Load
         acc_buff[:, μ//2:, :, :] = B_pack[bos, cos, :, :] # Load
         acc_buff[:, :μ//2, :, :] += acc_buff[:, μ//2:, :, :] # ALU
