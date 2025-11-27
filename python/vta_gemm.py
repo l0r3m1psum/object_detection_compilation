@@ -10,7 +10,7 @@ import vtar
 
 env = vtar.get_env()
 
-print(env.TARGET)
+assert env.TARGET == "sim"
 
 assert env.BATCH == 1
 assert env.BLOCK_IN == 16
@@ -19,6 +19,11 @@ assert env.BLOCK_OUT == 16
 assert env.inp_dtype == "int8"
 assert env.wgt_dtype == "int8"
 assert env.acc_dtype == "int32"
+
+rng = numpy.random.default_rng(42)
+
+target = tvm.target.Target(env.target, host=env.target_host)
+dev = tvm.device(str(env.target))
 
 if False:
     # This works only in tvm 0.21
@@ -101,29 +106,29 @@ def vta_alu():
     # s.cache_write(s.get_block("D"), 0, env.acc_scope)
 
     alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
-    Module = tvm.IRModule({"alu": alu})
+    mod = tvm.IRModule({"alu": alu})
 
-    s = tvm.tir.Schedule(Module)
-    s.work_on('alu')
-    s.cache_read(s.get_block("C"), 0, env.acc_scope)
-    s.cache_read(s.get_block("C"), 1, env.acc_scope)
-    s.set_scope(s.get_block("C"), 0, env.acc_scope)
-    s.annotate(s.get_loops(s.get_block("A_local.acc_buffer"))[0], env.dma_copy, True)
-    s.annotate(s.get_loops(s.get_block("B_local.acc_buffer"))[0], env.dma_copy, True)
-    s.annotate(s.get_loops(s.get_block("C"))[0], env.alu, True)
-    s.annotate(s.get_loops(s.get_block("D"))[0], env.dma_copy, True)
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on('alu')
 
-    mod = s.mod
+    C_block = sch.get_block("C")
+    A_cache = sch.cache_read(C_block, 0, env.acc_scope)
+    B_cache = sch.cache_read(C_block, 1, env.acc_scope)
+    sch.set_scope(C_block, 0, env.acc_scope)
+    sch.annotate(sch.get_loops(A_cache)[0], env.dma_copy, True)
+    sch.annotate(sch.get_loops(B_cache)[0], env.dma_copy, True)
+    sch.annotate(sch.get_loops(C_block)[0], env.alu, True)
+    sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
+
+    mod = sch.mod
     # This optimization is done automatically by tir.transform.StorageRewrite
     # mod = vtar.tir.transform.ReplaceVarOcurrence("C_local.acc_buffer", "A_local.acc_buffer")(mod)
     return mod
 
 mod = vta_alu()
-mod.show()
+mod['alu'].show()
 
-rng = numpy.random.default_rng(42)
-ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host), vtar.get_vtar_tir_transform())
-dev = tvm.device(str(env.target))
+ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
 A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
 B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
 C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
@@ -254,9 +259,6 @@ def vta_gemm():
 mod = vta_gemm()
 mod['gemm'].show(ir_prefix="IR")
 
-ex = tvm.tir.build(mod, tvm.target.Target(env.target, host=env.target_host), vtar.get_vtar_tir_transform())
-dev = tvm.device(str(env.target))
-
 O, N, M = 1, 256, 256
 o, n, m = O//env.BATCH, N//env.BLOCK_IN, M//env.BLOCK_OUT
 A_orig = rng.integers(-128, 128, (O, N)).astype(env.inp_dtype)
@@ -266,6 +268,7 @@ A_pack = A_orig.reshape(o, env.BATCH, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
 B_pack = B_orig.reshape(m, env.BLOCK_OUT, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
 C_pack = C_orig.reshape(o, env.BATCH, m, env.BLOCK_OUT).transpose((0, 2, 1, 3))
 
+ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
 A = tvm.nd.array(A_pack, dev)
 B = tvm.nd.array(B_pack, dev)
 C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dtype), dev)
@@ -287,3 +290,99 @@ if False:
     # breakpoint()
     # tmp.copyto(C)
     func(A, B, C)
+
+def h():
+    # FIXME: this explanation is wrong.
+
+    # Say we configure VTA to have ACC_BUFF_SIZE//32 == 1024, we cannot store
+    # two 1x1024 matrices in its memory to add them together hence we have to
+    # perform the computation piecewise slitting the two matrices in blocks of
+    # suitable size. In general if ACC_BUFF_SIZE//32 == ω*μ*BATCH*BLOCK_OUT to
+    # perform (o/ω) * (m/μ) ALU operations loading two tensors of shape
+    # (ω, μ/2, BATCH, BLOCK_OUT) at the time.
+
+    BATCH, BLOCK_OUT = 1, 16
+    O, M = 1, 1024
+    o, m = O//BATCH, M//BLOCK_OUT
+    ω, μ = 1, 64
+
+    A_orig = numpy.arange(O*M).reshape((O, M)).astype("int32")
+    B_orig = numpy.arange(O*M).reshape((O, M)).astype("int32")
+    C_orig = (A_orig+B_orig).astype("int8")
+
+    A_pack = A_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+    B_pack = B_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+    C_pack = C_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+
+    import itertools
+    def grid(*ns):
+        for i in itertools.product(*(range(n) for n in ns)):
+            print(i)
+        return itertools.product(*(range(n) for n in ns))
+
+    acc_buff = numpy.zeros((ω, μ, BATCH, BLOCK_OUT))
+    res = numpy.zeros_like(C_pack)
+    for a, b in grid(o//ω, m//(μ//2)):
+        bos = slice((o//ω)*a, (o//ω)*(a+1)) # batch outer slice
+        cos = slice((μ//2)*b, (μ//2)*(b+1)) # channel outer slice
+        acc_buff[:, :μ//2, :, :] = A_pack[bos, cos, :, :] # Load
+        acc_buff[:, μ//2:, :, :] = B_pack[bos, cos, :, :] # Load
+        acc_buff[:, :μ//2, :, :] += acc_buff[:, μ//2:, :, :] # ALU
+        res[bos, cos, :, :] = acc_buff[:, :μ//2, :, :].astype('int8') # Store
+    numpy.testing.assert_equal(res, C_pack)
+h()
+
+def vta_alu_blocked():
+    O, M = 1, 1024
+    o, m = O//env.BATCH, M//env.BLOCK_OUT
+    shape = (o, m, env.BATCH, env.BLOCK_OUT)
+    ω, μ = 1, 64
+
+    A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
+    B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
+    C = te.compute(shape, lambda bo, co, bi, ci: A(bo, co, bi, ci) + B(bo, co, bi, ci), "C")
+    D = te.compute(shape, lambda bo, co, bi, ci: C(bo, co, bi, ci).astype(env.out_dtype), "D")
+
+    alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
+    mod = tvm.IRModule({"alu": alu})
+
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on('alu')
+
+    # Loop names:
+    #   bo: batch_outer    |  boo: batch_outer_outer
+    #   co: channel_outer  |  coo: channel_outer_outer
+    #   bi: batch_inner    |  boi: batch_outer_inner
+    #   ci: channel_inner  |  coi: channel_outer_inner
+
+    C_block = sch.get_block("C")
+    bo, co, bi, ci = sch.get_loops(C_block)
+    boo, boi = sch.split(bo, (1, 1//1))
+    coo, coi = sch.split(co, (2, 64//2))
+    sch.reorder(boo, coo, boi, coi, bi, ci)
+    D_block = sch.get_block("D")
+    bo_, co_, bi_, ci_ = sch.get_loops(D_block)
+    boo_, boi_ = sch.split(bo_, (1, 1//1))
+    coo_, coi_ = sch.split(co_, (2, 64//2))
+    sch.reorder(boo_, coo_, boi_, coi_, bi_, ci_)
+    A_cache = sch.cache_read(C_block, 0, env.acc_scope)
+    B_cache = sch.cache_read(C_block, 1, env.acc_scope)
+    sch.compute_at(A_cache, coo, preserve_unit_loops=True)
+    sch.compute_at(B_cache, coo, preserve_unit_loops=True)
+    sch.merge(coo, coo_)
+    sch.set_scope(C_block, 0, env.acc_scope)
+    sch.annotate(sch.get_loops(A_cache)[2], env.dma_copy, True)
+    sch.annotate(sch.get_loops(B_cache)[2], env.dma_copy, True)
+    sch.annotate(sch.get_loops(C_block)[2], env.alu, True)
+    sch.annotate(sch.get_loops(D_block)[2], env.dma_copy, True)
+    return sch.mod
+
+mod = vta_alu_blocked()
+mod['alu'].show()
+
+ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
+A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
+ex(A, B, C)
+numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
