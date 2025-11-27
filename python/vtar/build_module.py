@@ -52,6 +52,7 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.FoldUopLoop(),
         transform.CPUAccessRewrite(), # TODO
         tvm.tir.transform.AnnotateEntryFunc(),
+        tvm.ir.transform.PrintIR(),
         tvm.tir.transform.MakePackedAPI(),
     ])
 
