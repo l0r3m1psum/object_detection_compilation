@@ -58,7 +58,7 @@ cffi-1.17.1-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
 cloudpickle-1.1.1-py2.py3-none-any.whl
 numpy-1.19.0-cp38-cp38-manylinux2014_aarch64.whl
 pycparser-2.22-py3-none-any.whl
-# TODO: add cython wheel
+cython-3.1.6-cp38-cp38-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
 
 ssh xilinx@192.168.2.99
 sudo python3 -c "from pynq import Bitstream; bitstream_path = '1x16_i8w8a32_15_15_18_17.bit'; bitstream = Bitstream(bitstream_path); bitstream.download()"
@@ -67,4 +67,60 @@ cd tvm/
 # sudo -E ./apps/vta_rpc/start_rpc_server.sh
 cd python # Since sudo -E ignores PYTHONPATH
 sudo -E python -m tvm.exec.rpc_server --load-lib=libvta.so
+```
+
+Instructions for cross-compiling code for the VTA
+```
+# This must happen before importing vtar in this way the vtar.Environment
+# object is initialized for cross-compilaiton.
+shutil.copy("submodules/tvm-vta/config/zcu104_sample.json",
+    "submodules/tvm-vta/config/vta_config.json")
+import vtar
+shutil.copy("submodules/tvm-vta/config/fsim_sample.json",
+    "submodules/tvm-vta/config/vta_config.json")
+
+env = vtar.get_env()
+target = tvm.target.Target(env.target, host=env.target_host)
+ex = tir.build(mod, target, vtar.get_vtar_tir_transform())
+ex.export_library("build/gemm.tar")
+```
+
+Intructions for running code on the VTA on the ZCU104 with Pynq image
+```
+# Get Pynq from https://github.com/Xilinx/PYNQ/releases/tag/v2.5
+curl -O "https://files.pythonhosted.org/packages/53/93/7e547ab4105969cc8c93b38a667b82a835dd2cc78f3a7dad6130cfd41e1d/cffi-1.17.1-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+curl -O "https://files.pythonhosted.org/packages/24/fb/4f92f8c0f40a0d728b4f3d5ec5ff84353e705d8ff5e3e447620ea98b06bd/cloudpickle-1.1.1-py2.py3-none-any.whl"
+curl -O "https://files.pythonhosted.org/packages/5e/af/c5c302d5ddaadb1875552d4eb109925f1e818832d5f5b31663069d2c4dba/numpy-1.19.0-cp38-cp38-manylinux2014_aarch64.whl"
+curl -O "https://files.pythonhosted.org/packages/13/a3/a812df4e2dd5696d1f351d58b8fe16a405b234ad2886a0dab9183fb78109/pycparser-2.22-py3-none-any.whl"
+curl -O "https://files.pythonhosted.org/packages/0a/04/50bcc8c74bbc35c6f4b92c03bee9e930bb1685b019bb89d700b5642e2598/cython-3.1.6-cp38-cp38-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl"
+
+# Download the cpyhton3.8 zip form GitHub
+# Download the tvm0.20 zip from Github together with its dependencies
+# Download the tvm0.18 zip from Github together with its dependencies (this still contains libvta)
+# Upload the bitstream to the Pynq
+# Upload the exported library
+
+ssh xilinx@192.168.137.48
+sudo python3 -c "import pynq; pynq.Bitstream('1x16_i8w8a32_15_15_18_17.bit').download()"
+# build cpython
+# create and activate a virtual environment
+# install the wheels
+# build tvm0.18 runtime with "-frtti" and configuring the driver for zcu104 (https://tvm.hyper.ai/docs/0.12.0/topic/vta/install)
+# copy libvta.so in tvm0.20/python/tvm
+# build tvm0.20 runtime (https://tvm.apache.org/docs/how_to/tutorials/cross_compilation_and_rpc.html)
+cd tvm0.20/python # So that tvm can be imported without modifing the PYTHONPATH
+```
+Run this with sudo -E
+```
+import tvm # Must be imported before loading libvta
+import ctypes
+import numpy
+libvta = ctypes.CDLL("./libvta.so", ctypes.RTLD_GLOBAL)
+# ref = tvm.get_global_func("device_api.ext_dev")()
+func = tvm.runtime.load_module("../../alu.tar")
+dev = tvm.ext_dev(0)
+A = tvm.nd.array(numpy.ones((1, 64, 1, 16), dtype='int32'), dev)
+B = tvm.nd.array(numpy.ones((1, 64, 1, 16), dtype='int32'), dev)
+C = tvm.nd.empty((1, 64, 1, 16), 'int8', dev)
+func(A, B, C)
 ```

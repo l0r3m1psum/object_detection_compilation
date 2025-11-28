@@ -34,7 +34,12 @@ call "%vspath%\VC\Auxiliary\Build\vcvarsall.bat" x64 || exit /b 1
 
 set "PYTHONUSERBASE=%installdir%\AppData\Roaming\Python"
 
+REM Needed by vtar.Environment
+REM The bitsream should be inside "zcu104\0_0_1\1x16_i8w8a32_15_15_18_17.bit"
 set "VTA_HW_PATH=%cd%\submodules\tvm-vta"
+REM Needed by vtar.bitstream.get_bitstream_path
+set "VTA_CACHE_PATH=%installdir%\Programs\bitstreams"
+set "HOME=workaround_for_get_bitstream_path"
 
 where /q python
 if %ERRORLEVEL% equ 0 (
