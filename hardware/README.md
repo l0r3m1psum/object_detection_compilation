@@ -116,7 +116,7 @@ import tvm # Must be imported before loading libvta
 import ctypes
 import numpy
 libvta = ctypes.CDLL("./libvta.so", ctypes.RTLD_GLOBAL)
-# ref = tvm.get_global_func("device_api.ext_dev")()
+# ref = tvm.get_global_func("device_api.ext_dev")() # This sets the global ext_dev pointer
 func = tvm.runtime.load_module("../../alu.tar")
 dev = tvm.ext_dev(0)
 A = tvm.nd.array(numpy.ones((1, 64, 1, 16), dtype='int32'), dev)
