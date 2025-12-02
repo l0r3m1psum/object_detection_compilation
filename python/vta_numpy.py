@@ -1,3 +1,5 @@
+"""VTA operations performed with NumPy for documentation and understanding
+purposes."""
 import itertools
 
 import numpy
@@ -9,6 +11,86 @@ def prod(iterable, /, start=1):
     for element in iterable:
         res *= element
     return res
+
+def f():
+    BATCH, BLOCK_OUT = 3, 2
+    O, M = 3, 4
+    o, m = O//BATCH, M//BLOCK_OUT
+
+    A_orig = numpy.arange(O*M).reshape((O, M)).astype("int8")
+    B_orig = numpy.arange(O*M).reshape((O, M)).astype("int8")
+
+    A_pack = A_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+    B_pack = B_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+
+    print("Tensorization/matricization is vectorization applied also to the "
+        "batch dimension.")
+    print(A_orig)
+    print(A_pack)
+f()
+
+
+def g():
+    BATCH, BLOCK_IN, BLOCK_OUT = 2, 2, 2
+    O, N, M = 4, 8, 6
+    o, n, m = O//BATCH, N//BLOCK_IN, M//BLOCK_OUT
+
+    A_orig = numpy.arange(O*N).reshape((O, N))
+    B_orig = numpy.arange(M*N).reshape((M, N))
+
+    A_pack = A_orig.reshape(o, BATCH, n, BLOCK_IN).transpose((0, 2, 1, 3))
+    B_pack = B_orig.reshape(m, BLOCK_OUT, n, BLOCK_IN).transpose((0, 2, 1, 3))
+
+    C_orig = numpy.einsum("ik,jk->ij", A_orig, B_orig) # A_orig @ B_orig.T
+    C_pack = numpy.einsum("IKik,JKjk->IJij", A_pack, B_pack)
+
+    # Here we are essentially doing block matrix multiplication where if
+    # normally one would write matrix multiplication in Einstein notation as
+    # IJ = IK*KJ in this case it becomes becomes IJij = IKik*KJkj where IJ are
+    # meta-rows and meta-columns indices.
+
+    print(A_orig)
+    print(A_pack)
+    print(B_orig)
+    print(B_pack)
+    print(C_orig)
+    print(C_pack)
+g()
+
+def h():
+    # FIXME: this explanation is wrong.
+
+    # Say we configure VTA to have ACC_BUFF_SIZE//32 == 1024, we cannot store
+    # two 1x1024 matrices in its memory to add them together hence we have to
+    # perform the computation piecewise slitting the two matrices in blocks of
+    # suitable size. In general if ACC_BUFF_SIZE//32 == ω*μ*BATCH*BLOCK_OUT to
+    # perform (o/ω) * (m/μ) ALU operations loading two tensors of shape
+    # (ω, μ/2, BATCH, BLOCK_OUT) at the time.
+
+    BATCH, BLOCK_OUT = 1, 16
+    O, M = 1, 1024
+    o, m = O//BATCH, M//BLOCK_OUT
+    ω, μ = 1, 64
+
+    A_orig = numpy.arange(O*M).reshape((O, M)).astype("int32")
+    B_orig = numpy.arange(O*M).reshape((O, M)).astype("int32")
+    C_orig = (A_orig+B_orig).astype("int8")
+
+    A_pack = A_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+    B_pack = B_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+    C_pack = C_orig.reshape(o, BATCH, m, BLOCK_OUT).transpose((0, 2, 1, 3))
+
+    acc_buff = numpy.zeros((ω, μ, BATCH, BLOCK_OUT))
+    res = numpy.zeros_like(C_pack)
+    for boo, coo in grid(o//ω, m//(μ//2)):
+        bos = slice((o//ω)*boo, (o//ω)*(boo+1)) # batch outer slice
+        cos = slice((μ//2)*coo, (μ//2)*(coo+1)) # channel outer slice
+        acc_buff[:, :μ//2, :, :] = A_pack[bos, cos, :, :] # Load
+        acc_buff[:, μ//2:, :, :] = B_pack[bos, cos, :, :] # Load
+        acc_buff[:, :μ//2, :, :] += acc_buff[:, μ//2:, :, :] # ALU
+        res[bos, cos, :, :] = acc_buff[:, :μ//2, :, :].astype('int8') # Store
+    numpy.testing.assert_equal(res, C_pack)
+h()
 
 def load2d(
         src_dram_addr: numpy.ndarray, src_elem_offset: int, x_size: int, y_size: int, x_stride: int,
