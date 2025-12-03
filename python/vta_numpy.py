@@ -92,6 +92,7 @@ def h():
     numpy.testing.assert_equal(res, C_pack)
 h()
 
+# FIXME: VTA loads by multiple of 16, hence x_size = 1 loads 16 scalars...
 def load2d(
         src_dram_addr: numpy.ndarray, src_elem_offset: int, x_size: int, y_size: int, x_stride: int,
         x_pad_before: int, y_pad_before: int, x_pad_after: int, y_pad_after: int,
@@ -126,7 +127,8 @@ def store2d(
     ) -> None:
     pass
 
-A = numpy.arange(100*100, dtype='int32').reshape((100, 100))
+shape = (100, 100)
+A = numpy.arange(prod(shape), dtype='int32').reshape(shape)
 
 res = load2d(
     A,

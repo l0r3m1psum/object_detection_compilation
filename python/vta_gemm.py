@@ -2,7 +2,7 @@
 # https://tvm.apache.org/docs/v0.8.0/topic/vta/tutorials/optimize/matrix_multiply_opt.html
 
 import tvm
-from tvm import te
+from tvm import te, tir
 import ctypes
 vta_fsim = ctypes.CDLL("vta_fsim")
 import numpy
@@ -66,6 +66,31 @@ if False:
     print(my_func)
     print(collector.block_iter_maps)
 
+def test_blocked_load_store():
+    shape = (8, 8, 16, 16)
+    A = te.placeholder(shape, env.wgt_dtype, "A")
+    B = te.compute(shape, lambda bo, co, bi, ci: A(bo, co, bi, ci).astype(env.out_dtype), "B")
+    f = te.create_prim_func((A, B))
+
+    sch = tir.Schedule(f)
+    block = sch.get_block("B")
+    bo, co, bi, ci = sch.get_loops(block)
+    boo, boi = sch.split(bo, (2, 4))
+    coo, coi = sch.split(co, (2, 4))
+    sch.reorder(boo, coo, boi, coi, bi, ci)
+    cache = sch.cache_read(block, 0, env.acc_scope)
+    sch.compute_at(cache, coo)
+    sch.annotate(sch.get_loops(cache)[2], env.dma_copy, 0)
+    sch.annotate(sch.get_loops(block)[2], env.dma_copy, 0)
+
+    mod = sch.mod
+    ex = tir.build(mod, target, vtar.get_vtar_tir_transform())
+    A = tvm.nd.array((rng.uniform(size=shape)*10).astype(env.wgt_dtype), dev)
+    B = tvm.nd.array(numpy.zeros(shape, dtype=env.out_dtype), dev)
+    ex(A, B)
+    numpy.testing.assert_equal(B.numpy(), A.numpy().astype(env.out_dtype))
+test_blocked_load_store()
+
 def vta_alu():
     # A and B originally have shape (O, M). To use VTA to accelerate the alu
     # (element-wise) operations we have to reshape them to
@@ -81,7 +106,7 @@ def vta_alu():
     A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
     B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
     C = te.compute(shape, lambda *i: A(*i) + B(*i), "C")
-    D = te.compute(shape, lambda *i: C(*i).astype(env.inp_dtype), "D")
+    D = te.compute(shape, lambda *i: C(*i).astype(env.out_dtype), "D")
     # Since TVM Schedule.reverse_compute_inline cannot breakup block reads more
     # than one buffer we have to do the split at the TE level instead of
     # scheduling with:
