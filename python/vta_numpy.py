@@ -98,7 +98,25 @@ def load2d(
         x_pad_before: int, y_pad_before: int, x_pad_after: int, y_pad_after: int,
         dst_sram_index: int, dst_memory_type: int
     ) -> numpy.ndarray:
-    """VTALoadBuffer2D"""
+    """VTALoadBuffer2D
+    A word (or elem_block) is BATCHxBLOCK_IN, BLOCK_OUTxBLOCK_IN or
+    BLOCK_OUTxBLOCLK_IN based on dst_memory_type. The dtype is int8 or int32
+    based on dst_memory_type.
+
+    src_dram_addr: a pointer aligned to the dtype
+    src_elem_offset: the number of words to offest from src_dram_addr
+    x_size: the number of words to load in columns
+    y_size: the number of words to load in rows
+    x_stride: the number of words to skip to reach the next row
+    x_pad_before: the amounts of 0 words to put before x
+    y_pad_before: the amounts of 0 words to put before y
+    x_pad_after: the amounts of 0 words to put after x
+    y_pad_after: the amounts of 0 words to put after y
+    dst_sram_index: number of words to offset in the SRAM
+    dst_memory_type
+    """
+
+    # FIXME: operations below are wrong based on a previous interpretation
     sram_shape = (x_pad_before + x_size + x_pad_after, y_pad_before + y_size + y_pad_after)
     sram_len = sram_shape[0] * sram_shape[1]
     # vta/hw_spec_const.h
