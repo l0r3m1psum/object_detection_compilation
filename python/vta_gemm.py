@@ -67,16 +67,17 @@ if False:
     print(collector.block_iter_maps)
 
 def test_blocked_load_store():
-    shape = (8, 8, 16, 16)
-    A = te.placeholder(shape, env.wgt_dtype, "A")
+    BATCH, BLOCK_OUT = 1, 16
+    shape = (16, 16, BATCH, BLOCK_OUT)
+    A = te.placeholder(shape, env.acc_dtype, "A")
     B = te.compute(shape, lambda bo, co, bi, ci: A(bo, co, bi, ci).astype(env.out_dtype), "B")
     f = te.create_prim_func((A, B))
 
     sch = tir.Schedule(f)
     block = sch.get_block("B")
     bo, co, bi, ci = sch.get_loops(block)
-    boo, boi = sch.split(bo, (2, 4))
-    coo, coi = sch.split(co, (2, 4))
+    boo, boi = sch.split(bo, (None, 4))
+    coo, coi = sch.split(co, (None, 4))
     sch.reorder(boo, coo, boi, coi, bi, ci)
     cache = sch.cache_read(block, 0, env.acc_scope)
     sch.compute_at(cache, coo)
@@ -84,8 +85,9 @@ def test_blocked_load_store():
     sch.annotate(sch.get_loops(block)[2], env.dma_copy, 0)
 
     mod = sch.mod
+    mod.show()
     ex = tir.build(mod, target, vtar.get_vtar_tir_transform())
-    A = tvm.nd.array((rng.uniform(size=shape)*10).astype(env.wgt_dtype), dev)
+    A = tvm.nd.array((rng.uniform(size=shape)*10).astype(env.acc_dtype), dev)
     B = tvm.nd.array(numpy.zeros(shape, dtype=env.out_dtype), dev)
     ex(A, B)
     numpy.testing.assert_equal(B.numpy(), A.numpy().astype(env.out_dtype))

@@ -25,8 +25,14 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
     # Some documentation for old transformations is still available here
     # https://mlc.ai/docs/reference/api/tir/transform.html
     return tvm.transform.Sequential([
+        # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
+        tvm.tir.transform.PlanAndUpdateBufferAllocationLocation(),
+        tvm.tir.transform.ConvertBlocksToOpaque(),
+        tvm.tir.transform.CompactBufferAllocation(),
+        tvm.tir.transform.Simplify(),
+        ########################################################################
         # transform.InjectConv2DTransposeSkip(), # TODO
-        transform.InjectDMAIntrin(),
+        transform.InjectDMAIntrin3(),
         # transform.InjectSkipCopy(), # TODO: Just for debug, requires adding remove nop transform tvm.tir.transform.RemoveNoOp(),
         transform.AnnotateALUCoProcScope(),
         transform.LiftAttrScope("coproc_uop_scope"),
@@ -38,9 +44,6 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
         transform.InjectDebug(),
         # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
-        tvm.tir.transform.PlanAndUpdateBufferAllocationLocation(),
-        tvm.tir.transform.ConvertBlocksToOpaque(),
-        tvm.tir.transform.CompactBufferAllocation(),
         tvm.tir.transform.LowerMatchBuffer(),
         tvm.tir.transform.Simplify(),
         tvm.tir.transform.LowerOpaqueBlock(), # This together with ConvertBlocksToOpaque removes Block and BlockRealize nodes.

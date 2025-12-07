@@ -54,27 +54,14 @@ BaseAddress + ( (i * I * J * K) +
 
 from tvm import tir, ir
 from typing import List, Tuple
-
-def prod(iterable, /, start=1):
-    res = start
-    for element in iterable:
-        res *= element
-    return res
-
-def get_strides(buf: tir.Buffer) -> List[tir.PrimExpr]:
-    if buf.strides:
-        res = buf.strides
-    else:
-        start = tir.IntImm("int32", 1)
-        res = [prod(buf.shape[i+1:], start=start) for i in range(len(buf.shape))]
-    return res
+from .util import get_strides
 
 def _check_compact(buf: tir.Buffer):
     """By compact they mean that the strides are exactly the cumprod of the
     shape dimensions. If the strides were greater the cumprod than the buffer
-    is a slice of a bigger (in number of elements) contigous (or compact) memory
+    is a slice of a bigger (in number of elements) contiguous (or compact) memory
     allocation. According to the documentation in buffer.h if buf.strides is
-    empty the buffer is contigous."""
+    empty the buffer is contiguous."""
     ndim = len(buf.shape)
     size = tir.const(1, buf.shape[0].dtype)
     strides = get_strides(buf)
@@ -93,6 +80,16 @@ def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List
     buf_strides = get_strides(buf)
     x_size = 1
     base = 0
+    # NOTE(Diego): this loops does the same thing as _check_compact and also
+    # finds the "base" of the buffer based on the elem_block. The error message
+    # makes no sense. The "base" is where the strides have accumulated enough
+    # size to make an elem_block i.e. the inp matrix has size 1x16 hence if the
+    # input buffer has shape (1, 16, 1, 16) with stride (256,  16,  16,   1) its
+    # base is 2; the wgt matrix has size 16x16 hence if the input buffer has
+    # shape (16, 16, 16, 16) with stride (4096, 256, 16, 1) its base is 3.
+    # Consides also the buffer with shape (1, 16, 1, 4, 4), strides
+    # (256, 16, 16, 4, 1) and elem_block 16, its base is 3.
+    # strides[-base] == elem_block
     for i in range(1, ndim + 1):
         if not utils.equal_const_int(buf_strides[ndim - i] - x_size, 0):
             raise RuntimeError("scope %s needs to have block=%d" % (scope, elem_block))
@@ -107,6 +104,8 @@ def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List
     shape = [elem_block]
     strides = [1]
 
+
+    # ???
     if base < ndim + 1 and not utils.equal_const_int(buf_strides[ndim - base], elem_block):
         shape.append(1)
         strides.append(elem_block)
@@ -146,7 +145,7 @@ def _get_2d_pattern(buf: tir.Buffer, elem_width: int, elem_bytes: int, dtype: st
     """
     elem_bits = elem_bytes * 8
     elem_block = elem_bits // elem_width # number of element in a matrix (OUT|ACC|INP|WGT)
-    shape, strides = buf.shape, buf.strides
+    shape, strides = buf.shape, get_strides(buf)
 
     if not utils.equal_const_int(tir.indexmod(buf.elem_offset, elem_block), 0):
         raise RuntimeError("scope %s need to have block=%d" % (scope, elem_block))
@@ -265,15 +264,23 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
             extents.append(innermost_loop_body.extent)
             innermost_loop_body = innermost_loop_body.body
 
+        if not isinstance(innermost_loop_body, tir.BlockRealize):
+            raise ValueError("This pass expects to be executed before LowerOpaqueBlock")
+
         reads = innermost_loop_body.block.reads
         writes = innermost_loop_body.block.writes
         if len(reads) != 1:
             raise ValueError("Can only load from one buffer at the time not %s" % reads)
         if len(writes) != 1:
             raise ValueError("Can only write to one buffer at the time not %s" % writes)
-        src = reads[0].buffer
-        dst = writes[0].buffer
-        expr = innermost_loop_body.block.body.value
+
+        store: tir.BufferStore = innermost_loop_body.block.body
+
+        if not isinstance(store, tir.BufferStore):
+            raise ValueError("the body is not a BufferStore")
+
+        dst: tir.Buffer = store.buffer
+        expr = store.value
 
         if  isinstance(expr, tir.IfThenElse):
             raise ValueError("Padding not yet supported by the compiler")
@@ -281,6 +288,28 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
             pad_before = []
             pad_after = []
             pad_value = 0
+
+        load: tir.BufferStore
+        if isinstance(expr, tir.Cast):
+            load = expr.value
+        elif isinstance(expr, tir.BufferLoad):
+            load = expr
+        else:
+            raise ValueError()
+        src: tir.Buffer = load.buffer
+
+        store_flat_index = sum(i*s for i, s in zip(store.indices, get_strides(store.buffer)))
+        load_flat_index = sum(i*s for i, s in zip(load.indices, get_strides(load.buffer)))
+        store_strides = tvm.arith.detect_linear_equation(store_flat_index, indices)
+        load_strides = tvm.arith.detect_linear_equation(load_flat_index, indices)
+        loop_var_size = len(indices)
+        print(store_strides, loop_var_size)
+        dst.elem_offset = store_strides[loop_var_size]
+        src.elem_offset = load_strides[loop_var_size]
+        # if len(dst.shape) != len(indices): raise ValueError("%s %s" % (dst.shape, indices))
+        # if list(dst.shape) != extents: raise ValueError("%s %s" % (dst.shape, extents))
+
+        innermost_loop_body.iter_values
 
         ########################################################################
 
@@ -306,13 +335,8 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                     "int32",
                     "VTAStoreBuffer2D",
                     env.dev.command_handle,
-                    src.access_ptr("r", "int32"),
-                    mem_type,
-                    dst.data,
-                    offset,
-                    x_size,
-                    y_size,
-                    x_stride,
+                    src.access_ptr("r", "int32"), mem_type,
+                    dst.data, offset, x_size, y_size, x_stride,
                 )
             )
             return irb.get()
@@ -394,17 +418,9 @@ def do_inject_dma_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
                 tvm.tir.call_extern(
                     "int32", "VTALoadBuffer2D",
                     env.dev.command_handle,
-                    src.data,
-                    offset,
-                    x_size,
-                    y_size,
-                    x_stride,
-                    x_pad_before,
-                    y_pad_before,
-                    x_pad_after,
-                    y_pad_after,
-                    dst.access_ptr("w", "int32"),
-                    mem_type,
+                    src.data, offset, x_size, y_size, x_stride,
+                    x_pad_before, y_pad_before, x_pad_after, y_pad_after,
+                    dst.access_ptr("w", "int32"), mem_type,
                 )
             )
             return irb.get()
@@ -439,6 +455,7 @@ def InjectDMAIntrin2():
     idxm = tvm.tir.indexmod
 
     def _check_compact(buf):
+        return True
         ndim = len(buf.shape)
         size = tvm.tir.const(1, buf.shape[0].dtype)
         for i in reversed(range(ndim)):
@@ -709,6 +726,223 @@ def InjectDMAIntrin2():
 
     return _ffi_api.InjectCopyIntrin("dma_copy", _inject_copy)
 
+def my_get_2d_pattern(
+        sram_buf, dram_buf, dram_buf_indices, loop_indices, loop_extents
+    ) -> Tuple[tir.PrimExpr, tir.PrimExpr, tir.PrimExpr, tir.PrimExpr]:
+    # loop_indices = [ax0, ax1, ax2, ax3]
+    # dram_buf_indices = [bo_0 * 4 + ax0, co_0 * 4 + ax1, ax2, ax3]
+    if dram_buf_indices[0] != 0:
+        batch_outer_coeff = arith.detect_linear_equation(dram_buf_indices[0], loop_indices)
+        batch_outer_stride = batch_outer_coeff[0]
+        # if any(batch_outer_coeff[1:4]): raise ValueError()
+        batch_outer_offset = batch_outer_coeff[-1]
+
+        if dram_buf_indices[1] != 0:
+            chann_outer_coeff = arith.detect_linear_equation(dram_buf_indices[1], loop_indices)
+            chann_outer_stride = chann_outer_coeff[1]
+            # if any(chann_outer_coeff[0:1] + chann_outer_coeff[2:4]): raise ValueError()
+            chann_outer_offset = chann_outer_coeff[-1]
+        else:
+            chann_outer_stride = 1
+            chann_outer_offset = 0
+    else:
+        if dram_buf_indices[1] != 0:
+            batch_outer_coeff = arith.detect_linear_equation(dram_buf_indices[1], loop_indices)
+            batch_outer_stride = batch_outer_coeff[1]
+            # if any(batch_outer_coeff[1:4]): raise ValueError()
+            batch_outer_offset = batch_outer_coeff[-1]
+        else:
+            batch_outer_stride = 1
+            batch_outer_offset = 0
+
+        chann_outer_stride = 1
+        chann_outer_offset = 0
+
+
+    if chann_outer_stride != 1 and chann_outer_stride != 0:
+        breakpoint()
+        raise ValueError()
+
+    y_size = sram_buf.shape[0]
+    x_size = sram_buf.shape[1]
+    x_stride = dram_buf.shape[1] * batch_outer_stride
+    offset = dram_buf.shape[0] * batch_outer_offset + chann_outer_offset
+
+    return x_size, y_size, x_stride, offset
+
+from tvm import arith
+
+# The visit is done in post-order i.e. bottom up
+# returning None leaves the state unchanged
+def do_inject_dma_intin3(stmt: tir.Stmt) -> tir.Stmt | None:
+    if "dma_copy" not in stmt.annotations:
+        return None
+
+    innermost_loop_body = stmt
+    # This two list should be the ones in `for indices in T.grid(*extents)`
+    loop_indices: List[tir.IntImm] = []
+    loop_extents: List[tir.Var] = []
+    while isinstance(innermost_loop_body, tir.For):
+        loop_indices.append(innermost_loop_body.loop_var)
+        loop_extents.append(innermost_loop_body.extent)
+        innermost_loop_body = innermost_loop_body.body
+    loop_depth = len(loop_indices)
+
+    if not isinstance(innermost_loop_body, tir.BlockRealize):
+        raise ValueError("This pass expects to be executed before LowerOpaqueBlock")
+
+    block = innermost_loop_body.block
+    # if "dma_copy" not in block.annotations: return None
+    store: tir.BufferStore = block.body
+    dst = store.buffer
+
+    value: tir.PrimExpr = store.value
+    load: tir.BufferLoad
+    if isinstance(value, tir.BufferLoad):
+        load = value
+    elif isinstance(value, tir.Cast):
+        load = value.value
+        assert dst.dtype == value.dtype, "Ill-typed cast, type-checking has not been performed?"
+    elif isinstance(value, tir.IfThenElse):
+        raise ValueError("Padding is not supported")
+    pad_before = (0,)*len(dst.shape)
+    pad_after = (0,)*len(dst.shape)
+    pad_value = 0
+    src = load.buffer
+
+    # Up to this point is what tir.transform.InjectCopyIntrin used to do
+
+    if not (1 <= loop_depth <= 4) or len(dst.shape) != 4 or len(src.shape) != 4:
+        return None
+
+    import vtar
+    env = vtar.get_env()
+
+    if dst.scope() == "global": # Store
+        if any(pad_before) or any(pad_after):
+            raise RuntimeError("Do not support copy into DRAM with pad")
+        if src.scope() == env.acc_scope:
+            elem_width = env.OUT_WIDTH
+            elem_bytes = env.OUT_ELEM_BYTES
+            mem_type = env.dev.MEM_ID_OUT
+            data_type = "int%d" % env.OUT_WIDTH
+            task_qid = env.dev.QID_STORE_OUT
+        else:
+            raise RuntimeError("Do not support copy %s->dram" % (src.scope()))
+
+        x_size, y_size, x_stride, offset = my_get_2d_pattern(load.buffer, store.buffer, store.indices, loop_indices, loop_extents)
+
+        irb = tir.ir_builder.create()
+        irb.scope_attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(task_qid))
+        irb.emit(
+            tir.call_extern(
+                "int32",
+                "VTAStoreBuffer2D",
+                env.dev.command_handle,
+                src.access_ptr("r", "int32"), mem_type,
+                dst.data, offset, x_size, y_size, x_stride,
+            )
+        )
+        return irb.get()
+    elif src.scope() == "global": # Load
+        if dst.scope() == env.acc_scope:
+            elem_width = env.ACC_WIDTH
+            elem_bytes = env.ACC_ELEM_BYTES
+            mem_type = env.dev.MEM_ID_ACC
+            data_type = "int%d" % env.ACC_WIDTH
+            task_qid = env.dev.QID_LOAD_OUT
+        elif dst.scope() == env.inp_scope:
+            elem_width = env.INP_WIDTH
+            elem_bytes = env.INP_ELEM_BYTES
+            mem_type = env.dev.MEM_ID_INP
+            data_type = "int%d" % env.INP_WIDTH
+            task_qid = env.dev.QID_LOAD_INP
+        elif dst.scope() == env.wgt_scope:
+            elem_width = env.WGT_WIDTH
+            elem_bytes = env.WGT_ELEM_BYTES
+            mem_type = env.dev.MEM_ID_WGT
+            data_type = "int%d" % env.WGT_WIDTH
+            task_qid = env.dev.QID_LOAD_WGT
+        else:
+            raise RuntimeError("Do not support copy dram->%s" % (dst.scope()))
+        # collect pad statistics
+        if any(pad_before):
+            assert pad_after
+            ndim = len(pad_before)
+            if ndim <= 2 or ndim > 5:
+                raise ValueError("Limitation of 2D pad load forbid ndim=%d" % ndim)
+            if ndim == 5:
+                # This case occurs when batch size N > 1
+                y_pad_before = pad_before[1]
+                x_pad_before = pad_before[2]
+                y_pad_after = pad_after[1]
+                x_pad_after = pad_after[2]
+                for dim in range(3, ndim):
+                    if not utils.equal_const_int(pad_before[dim], 0):
+                        raise ValueError("Do not support pad on the innermost block")
+                    if not utils.equal_const_int(pad_after[dim], 0):
+                        raise ValueError("Do not support pad on the innermost block")
+            else:
+                y_pad_before = pad_before[0]
+                x_pad_before = pad_before[1]
+                y_pad_after = pad_after[0]
+                x_pad_after = pad_after[1]
+                for dim in range(2, ndim):
+                    if not utils.equal_const_int(pad_before[dim], 0):
+                        raise ValueError("Do not support pad on the innermost block")
+                    if not utils.equal_const_int(pad_after[dim], 0):
+                        raise ValueError("Do not support pad on the innermost block")
+            allow_fold = False
+        else:
+            x_pad_before = 0
+            y_pad_before = 0
+            x_pad_after = 0
+            y_pad_after = 0
+            allow_fold = True
+
+        x_size, y_size, x_stride, offset = my_get_2d_pattern(store.buffer, load.buffer, load.indices, loop_indices, loop_extents)
+
+        if data_type != src.dtype:
+            if not (data_type == "int%d" % env.ACC_WIDTH and src.dtype == "int%d" % env.INP_WIDTH):
+                raise ValueError("Bad data types for load")
+            mem_type = env.dev.MEM_ID_ACC_8BIT
+
+        irb = tir.ir_builder.create()
+        irb.scope_attr(env.dev.vta_axis, "coproc_scope", env.dev.get_task_qid(task_qid))
+        # This is needed because otherwise the InplaceOpVerifier of the
+        # StorageRewtire transform wrongly determines that the load
+        # operation can be performed in-place i.e. the second load
+        # overwrites the first.
+        irb.scope_attr(env.dev.vta_axis, "extern_scope", True)
+
+        irb.emit(
+            tir.call_extern(
+                "int32", "VTALoadBuffer2D",
+                env.dev.command_handle,
+                src.data, offset, x_size, y_size, x_stride,
+                x_pad_before, y_pad_before, x_pad_after, y_pad_after,
+                dst.access_ptr("w", "int32"), mem_type,
+            )
+        )
+        return irb.get()
+    else:
+        raise RuntimeError("Do not support copy %s->%s" % (src.scope(), dst.scope()))
+
+    breakpoint()
+    print(loop_indices, loop_extents, dst, src)
+
+    return stmt
+
+def inject_dma_intin3(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+    return func.with_body(
+        tir.stmt_functor.ir_transform(func.body, None, do_inject_dma_intin3, ["tir.For"])
+    )
+
+# TODO: implement this using tir.PyStmtExprMutator
+def InjectDMAIntrin3() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        inject_dma_intin3, opt_level=0, name="tir.vta.InjectDMAIntrin3"
+    )
 
 def _flatten_loop(
         analyzer: tvm.arith.Analyzer,
@@ -1251,7 +1485,7 @@ def visit(stmt, pattern: str):
             bodies.append(stmt.body)
         elif isinstance(stmt, tir.Block):
             bodies.append(stmt.body)
-            print(stmt.name_hint, end='')
+            print(stmt.alloc_buffers, stmt.match_buffers, end='')
         elif isinstance(stmt, tir.BlockRealize):
             bodies.append(stmt.block)
         else:
@@ -1296,6 +1530,122 @@ def replace_vta_var(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.Pass
 def ReplaceVTAVar() -> tir.transform.PrimFuncPass:
     return tir.transform.prim_func_pass(
         replace_vta_var, opt_level=0, name="tir.vta.ReplaceVtaVar"
+    )
+
+def add_strides_pass(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+    """
+    A transformation pass that adds symbolic strides to all buffers
+    in the PrimFunc using ir_transform.
+    """
+
+    # 1. Create a mapping from Old Buffer -> New Strided Buffer
+    buf_remap = {}
+    new_buffer_map = {}
+
+    # We iterate over the function's buffer_map (inputs/outputs)
+    for param, buf in func.buffer_map.items():
+        # Generate symbolic strides: stride_BufferName_0, stride_BufferName_1, etc.
+        # You could also calculate specific math (e.g., contiguous) here if preferred.
+        strides = [
+            tir.Var(f"s_{buf.name}_{i}", buf.shape[i].dtype)
+            for i in range(len(buf.shape))
+        ]
+
+        # Create a new buffer identical to the old one but with explicit strides
+        new_buf = tir.decl_buffer(
+            buf.shape,
+            buf.dtype,
+            buf.name,
+            buf.data,
+            get_strides(buf),
+            buf.elem_offset,
+            buf.scope,
+            buf.data_alignment,
+            buf.offset_factor
+        )
+
+        buf_remap[buf] = new_buf
+        new_buffer_map[param] = new_buf
+
+    # 2. Define a helper to mutate Expressions (BufferLoad)
+    # ir_transform only visits Stmts, so we need this to go deeper.
+    def visit_expr(expr):
+        if isinstance(expr, tir.BufferLoad):
+            # Remap the buffer if it's in our map
+            new_buf = buf_remap.get(expr.buffer, expr.buffer)
+            # Recursively visit indices
+            new_indices = [visit_expr(idx) for idx in expr.indices]
+            return tir.BufferLoad(new_buf, new_indices)
+
+        # Boilerplate recursion for common Ops (Add, Sub, etc.)
+        # In a production pass, you should use StmtExprMutator to catch all cases.
+        if isinstance(expr, tir.Add):
+            return tir.Add(visit_expr(expr.a), visit_expr(expr.b))
+        if isinstance(expr, tir.Sub):
+            return tir.Sub(visit_expr(expr.a), visit_expr(expr.b))
+        if isinstance(expr, tir.Mul):
+            return tir.Mul(visit_expr(expr.a), visit_expr(expr.b))
+        if isinstance(expr, tir.Cast):
+            return tir.Cast(expr.dtype, visit_expr(expr.value))
+
+        # Return the expression unchanged if no specific rule applies
+        return expr
+
+    # 3. Define the callback for ir_transform (Statements)
+    def postorder_transform(stmt):
+        # Case A: BufferStore - Update buffer and visit value/indices
+        if isinstance(stmt, tir.BufferStore):
+            new_buf = buf_remap.get(stmt.buffer, stmt.buffer)
+            new_value = visit_expr(stmt.value)
+            new_indices = [visit_expr(idx) for idx in stmt.indices]
+            return tir.BufferStore(new_buf, new_value, new_indices)
+
+        # Case B: Block - Update reads, writes, allocs, and match_buffers
+        if isinstance(stmt, tir.Block):
+            # Helper to update BufferRegions (used in reads/writes)
+            def update_regions(regions):
+                new_regions = []
+                for r in regions:
+                    nb = buf_remap.get(r.buffer, r.buffer)
+                    # Regions also contain ranges with exprs (min, extent)
+                    new_regions.append(tir.BufferRegion(nb, r.region))
+                return new_regions
+
+            new_reads = update_regions(stmt.reads)
+            new_writes = update_regions(stmt.writes)
+
+            # match_buffers and alloc_buffers also need checking in complex cases
+            # We recreate the block with updated attributes
+            return tir.Block(
+                stmt.iter_vars,
+                new_reads,
+                new_writes,
+                stmt.name_hint,
+                stmt.body,
+                stmt.init,
+                stmt.alloc_buffers,
+                stmt.match_buffers,
+                stmt.annotations
+            )
+
+        return None # Return None means "no change" for other statements
+
+    # 4. Apply the transform
+    # We pass None for preorder, and our function for postorder
+    new_body = tir.stmt_functor.ir_transform(
+        func.body,
+        None,
+        postorder_transform,
+        ["tir.BufferStore", "tir.Block"]
+    )
+
+    return tir.PrimFunc(func.params, new_body, func.ret_type, new_buffer_map, func.attrs)
+    # 5. Return a new PrimFunc with the new body and new buffer_map
+    return func.with_body(new_body, buffer_map=new_buffer_map)
+
+def AddStrideToBuffers() -> tir.transform.PrimFuncPass:
+    return tir.transform.prim_func_pass(
+        add_strides_pass, opt_level=0, name="tir.vta.AddStrideToBuffers"
     )
 
 ################################################################################

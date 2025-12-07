@@ -1,8 +1,22 @@
-from typing import Tuple
+from typing import Tuple, List
 
 import tvm
 from tvm import tir
 from ..environment import Environment
+
+def prod(iterable, /, start=1):
+    res = start
+    for element in iterable:
+        res *= element
+    return res
+
+def get_strides(buf: tir.Buffer) -> List[tir.PrimExpr]:
+    if buf.strides:
+        res = buf.strides
+    else:
+        start = tir.IntImm("int32", 1)
+        res = [prod(buf.shape[i+1:], start=start) for i in range(len(buf.shape))]
+    return res
 
 def get_alu_op(
 		env: Environment, analyzer: tvm.arith.Analyzer, value: tir.PrimExpr
