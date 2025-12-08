@@ -731,42 +731,75 @@ def my_get_2d_pattern(
     ) -> Tuple[tir.PrimExpr, tir.PrimExpr, tir.PrimExpr, tir.PrimExpr]:
     # loop_indices = [ax0, ax1, ax2, ax3]
     # dram_buf_indices = [bo_0 * 4 + ax0, co_0 * 4 + ax1, ax2, ax3]
+
+    # The number of loop indices can vary based on the kind of copy that it is
+    # being performed. For the DMA we only care about the indices in the first
+    # two dimensions of the DRAM buffer, since the first two either are used for
+    # VTA's input word (BATCH x BLOCK_IN), weight word (BLOCK_IN x BLOCK_OUT)
+    # or accumulator word (BATCH x BLOCK_OUT). Hence the last two indices must
+    # be contiguous i.e. no stride and can't be have an offset.
+    len_loop_indices = len(loop_indices)
+    v0, v1, v2, v3 = dram_buf_indices
+    # The last index must always be used to load/store a word... This is not strictly
+    # necessary since if we permute the loop order we always load/store the same data
+    # but this transformation expects the data to be produced by a known
+    # schedule.
+    if not loop_indices[-1].same_as(v3):
+        raise ValueError()
+    # If there is one loop index we must be copying a single VTA word kind and
+    # the indexing must be dram_buf[0, 0, 0, ax0] (either input or
+    # accumulator with BATCH == 1)
+    assert get_env().BATCH == 1
+    if len_loop_indices == 1:
+        loop_indices = []
+    # When we have two indices we can either load/store a single VTA word of a certain
+    # kind or N words of a certain kind. Indexing must be either
+    # dram_buf[0, 0, ax1, ax0], dram_buf[0, ax1, 0, ax0] or
+    # dram_buf[ax1, 0, 0, ax0]
+    elif len_loop_indices == 2:
+        if loop_indices[0].same_as(v2):
+            loop_indices = []
+        else:
+            loop_indices = loop_indices[0:1]
+    # When we have three indices we can either load/store N VTA words of a
+    # certain kind or NxM words of a certain kind.
+    elif len_loop_indices == 3:
+        if loop_indices[1].same_as(v2):
+            loop_indices = loop_indices[0:1]
+        else:
+            loop_indices = loop_indices[0:2]
+    elif len_loop_indices == 4:
+        loop_indices = loop_indices[0:2]
+    else:
+        raise ValueError()
+    assert len(loop_indices) <= 2
+
     if dram_buf_indices[0] != 0:
         batch_outer_coeff = arith.detect_linear_equation(dram_buf_indices[0], loop_indices)
         batch_outer_stride = batch_outer_coeff[0]
         # if any(batch_outer_coeff[1:4]): raise ValueError()
         batch_outer_offset = batch_outer_coeff[-1]
-
-        if dram_buf_indices[1] != 0:
-            chann_outer_coeff = arith.detect_linear_equation(dram_buf_indices[1], loop_indices)
-            chann_outer_stride = chann_outer_coeff[1]
-            # if any(chann_outer_coeff[0:1] + chann_outer_coeff[2:4]): raise ValueError()
-            chann_outer_offset = chann_outer_coeff[-1]
-        else:
-            chann_outer_stride = 1
-            chann_outer_offset = 0
     else:
-        if dram_buf_indices[1] != 0:
-            batch_outer_coeff = arith.detect_linear_equation(dram_buf_indices[1], loop_indices)
-            batch_outer_stride = batch_outer_coeff[1]
-            # if any(batch_outer_coeff[1:4]): raise ValueError()
-            batch_outer_offset = batch_outer_coeff[-1]
-        else:
-            batch_outer_stride = 1
-            batch_outer_offset = 0
+        batch_outer_stride = 1
+        batch_outer_offset = 0
 
+    if dram_buf_indices[1] != 0:
+        chann_outer_coeff = arith.detect_linear_equation(dram_buf_indices[1], loop_indices)
+        assert len(chann_outer_coeff) == len(loop_indices) + 1
+        chann_outer_stride = chann_outer_coeff[-2] if len(chann_outer_coeff) > 1 else 0
+        # if any(chann_outer_coeff[0:1] + chann_outer_coeff[2:4]): raise ValueError()
+        chann_outer_offset = chann_outer_coeff[-1]
+    else:
         chann_outer_stride = 1
         chann_outer_offset = 0
 
-
     if chann_outer_stride != 1 and chann_outer_stride != 0:
-        breakpoint()
         raise ValueError()
 
-    y_size = sram_buf.shape[0]
-    x_size = sram_buf.shape[1]
+    y_size = sram_buf.shape[0] # rows
+    x_size = sram_buf.shape[1] # cols
     x_stride = dram_buf.shape[1] * batch_outer_stride
-    offset = dram_buf.shape[0] * batch_outer_offset + chann_outer_offset
+    offset = dram_buf.shape[1] * batch_outer_offset + chann_outer_offset
 
     return x_size, y_size, x_stride, offset
 
