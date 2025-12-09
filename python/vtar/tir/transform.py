@@ -777,7 +777,6 @@ def my_get_2d_pattern(
     if dram_buf_indices[0] != 0:
         batch_outer_coeff = arith.detect_linear_equation(dram_buf_indices[0], loop_indices)
         batch_outer_stride = batch_outer_coeff[0]
-        # if any(batch_outer_coeff[1:4]): raise ValueError()
         batch_outer_offset = batch_outer_coeff[-1]
     else:
         batch_outer_stride = 1
@@ -786,8 +785,10 @@ def my_get_2d_pattern(
     if dram_buf_indices[1] != 0:
         chann_outer_coeff = arith.detect_linear_equation(dram_buf_indices[1], loop_indices)
         assert len(chann_outer_coeff) == len(loop_indices) + 1
+        # Here we use index -2 because index -1 is always the bias of the
+        # "linear" equation (hence the offset) and if loop_indices has length
+        # either 1 or 2 we always care about the stride of the last variable.
         chann_outer_stride = chann_outer_coeff[-2] if len(chann_outer_coeff) > 1 else 0
-        # if any(chann_outer_coeff[0:1] + chann_outer_coeff[2:4]): raise ValueError()
         chann_outer_offset = chann_outer_coeff[-1]
     else:
         chann_outer_stride = 1
