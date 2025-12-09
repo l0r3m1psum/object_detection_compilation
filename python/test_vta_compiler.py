@@ -124,6 +124,7 @@ def test_simple_vta_gemm():
     sch.work_on('gemm')
     C_block = sch.get_block("C")
     I, J, i, j, K, k = sch.get_loops(C_block)
+    # K, I, J order is the outer product formulation of matrix multiplication.
     sch.reorder(K, I, J, i, j, k)
     A_cache = sch.cache_read(C_block, 0, env.inp_scope)
     B_cache = sch.cache_read(C_block, 1, env.wgt_scope)
@@ -274,6 +275,7 @@ def test_blocked_vta_gemm():
     sch.reverse_compute_at(sch.get_block("res_min"), boo)
     sch.reverse_compute_at(sch.get_block("res"), boo)
 
+    # gemm_init = sch.decompose_reduction(gemm_block, boo)
     sch.mod["main"].show()
 
 
