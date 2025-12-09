@@ -227,7 +227,6 @@ def test_blocked_vta_gemm():
     data_shape = (blocked_batch_size, blocked_in_chann, env.BATCH, env.BLOCK_IN)
     weight_shape = (blocked_out_chann, blocked_in_chann, env.BLOCK_OUT, env.BLOCK_IN)
     output_shape = (blocked_batch_size, blocked_out_chann, env.BATCH, env.BLOCK_OUT)
-    print(data_shape, weight_shape, output_shape, sep='\n')
 
     ro = te.reduce_axis((0, blocked_in_chann), "ro")  # reduction outer
     ri = te.reduce_axis((0, env.BLOCK_IN), "ri") # reduction inner
@@ -253,22 +252,27 @@ def test_blocked_vta_gemm():
 
     gemm = te.create_prim_func([data, weight, res]).with_attr({"global_symbol": "gemm"})
 
-    sch = tir.Schedule(gemm)
-    sch.mod["main"].show()
-    gemm_block = sch.get_block("res_gemm")
-    data_cache = sch.cache_read(gemm_block, 0, env.inp_scope)
-    weight_cache = sch.cache_read(gemm_block, 0, env.wgt_scope)
-
     batch_block = 1 // env.BATCH
     input_block = 256 // env.BLOCK_IN
     output_block = 256 // env.BLOCK_OUT
+
+    sch = tir.Schedule(gemm)
+    gemm_block = sch.get_block("res_gemm")
 
     bo, co, bi, ci, ro, ri = sch.get_loops(gemm_block)
     boo, boi = sch.split(bo, (None, batch_block))
     coo, coi = sch.split(co, (None, output_block))
     roo, roi = sch.split(ro, (None, input_block))
-    # TODO: find correct order
-    # sch.reorder(roo, boo, coo, boi, coi, roi, bi, ci, ri)
+    sch.reorder(roo, boo, coo, roi, boi, coi, bi, ci, ri)
+
+    data_cache = sch.cache_read(gemm_block, 0, env.inp_scope)
+    weight_cache = sch.cache_read(gemm_block, 1, env.wgt_scope)
+    sch.compute_at(data_cache, coo)
+    sch.compute_at(weight_cache, coo)
+    sch.reverse_compute_at(sch.get_block("res_shr"), boo)
+    sch.reverse_compute_at(sch.get_block("res_max"), boo)
+    sch.reverse_compute_at(sch.get_block("res_min"), boo)
+    sch.reverse_compute_at(sch.get_block("res"), boo)
 
     sch.mod["main"].show()
 
