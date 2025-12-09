@@ -37,6 +37,8 @@ Relay had a predecessor called [NNVM](https://discuss.tvm.apache.org/t/differenc
 
 [TVM stmt](https://tvm.apache.org/docs/reference/api/doxygen/stmt_8h.html)
 
+[Hyper AI's mirror of the old VTA documentation](https://tvm.hyper.ai/docs/0.12.0/topic/vta)
+
 ## TIR
 
 ```
