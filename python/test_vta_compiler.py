@@ -60,11 +60,6 @@ def test_simple_vta_alu():
     B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
     C = te.compute(shape, lambda *i: A(*i) + B(*i), "C")
     D = te.compute(shape, lambda *i: C(*i).astype(env.out_dtype), "D")
-    # Since TVM Schedule.reverse_compute_inline cannot breakup block reads more
-    # than one buffer we have to do the split at the TE level instead of
-    # scheduling with:
-    # s.reverse_compute_inline(s.get_block("D"))
-    # s.cache_write(s.get_block("D"), 0, env.acc_scope)
 
     alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
     mod = tvm.IRModule({"alu": alu})
@@ -213,6 +208,70 @@ def test_blocked_vta_alu():
     C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
     ex(A, B, C)
     numpy.testing.assert_equal(C.numpy(), A.numpy() + B.numpy())
+
+# python python/test_vta_compiler.py -s -k test_blocked_vta_gemm
+def test_blocked_vta_gemm():
+    # NOTE: this is a gemv
+    batch_size = 1
+    in_chann = 1024
+    out_chann = 1024
+    assert batch_size % env.BATCH == 0
+    assert in_chann % env.BLOCK_IN == 0
+    assert out_chann % env.BLOCK_OUT == 0
+    blocked_batch_size = batch_size // env.BATCH
+    blocked_in_chann = in_chann // env.BLOCK_IN
+    blocked_out_chann = out_chann // env.BLOCK_OUT
+
+    # data is a "big vector" and we want to multiply it with weight which is a
+    # "big matrix"
+    data_shape = (blocked_batch_size, blocked_in_chann, env.BATCH, env.BLOCK_IN)
+    weight_shape = (blocked_out_chann, blocked_in_chann, env.BLOCK_OUT, env.BLOCK_IN)
+    output_shape = (blocked_batch_size, blocked_out_chann, env.BATCH, env.BLOCK_OUT)
+    print(data_shape, weight_shape, output_shape, sep='\n')
+
+    ro = te.reduce_axis((0, blocked_in_chann), "ro")  # reduction outer
+    ri = te.reduce_axis((0, env.BLOCK_IN), "ri") # reduction inner
+
+    data = te.placeholder(data_shape, env.inp_dtype, "data")
+    weight = te.placeholder(weight_shape, env.wgt_dtype, "weight")
+
+    res_gemm = te.compute(
+        output_shape,
+        lambda bo, co, bi, ci: te.sum(
+            data[bo, ro, bi, ri].astype(env.acc_dtype)
+            * weight[co, ro, ci, ri].astype(env.acc_dtype),
+            axis=[ro, ri],
+        ),
+        name="res_gemm",
+    )
+
+    inp_max = (1 << (env.INP_WIDTH - 1)) - 1
+    res_shr = te.compute(output_shape, lambda bo, co, bi, ci: res_gemm(bo, co, bi, ci) >> env.INP_WIDTH, "res_shr")
+    res_max = te.compute(output_shape, lambda bo, co, bi, ci: te.max(res_shr(bo, co, bi, ci), 0), "res_max")
+    res_min = te.compute(output_shape, lambda bo, co, bi, ci: te.min(res_max(bo, co, bi, ci), inp_max), "res_min")
+    res = te.compute(output_shape, lambda bo, co, bi, ci: res_min(bo, co, bi, ci).astype(env.inp_dtype), "res")
+
+    gemm = te.create_prim_func([data, weight, res]).with_attr({"global_symbol": "gemm"})
+
+    sch = tir.Schedule(gemm)
+    sch.mod["main"].show()
+    gemm_block = sch.get_block("res_gemm")
+    data_cache = sch.cache_read(gemm_block, 0, env.inp_scope)
+    weight_cache = sch.cache_read(gemm_block, 0, env.wgt_scope)
+
+    batch_block = 1 // env.BATCH
+    input_block = 256 // env.BLOCK_IN
+    output_block = 256 // env.BLOCK_OUT
+
+    bo, co, bi, ci, ro, ri = sch.get_loops(gemm_block)
+    boo, boi = sch.split(bo, (None, batch_block))
+    coo, coi = sch.split(co, (None, output_block))
+    roo, roi = sch.split(ro, (None, input_block))
+    # TODO: find correct order
+    # sch.reorder(roo, boo, coo, boi, coi, roi, bi, ci, ri)
+
+    sch.mod["main"].show()
+
 
 # Relax tests ##################################################################
 
