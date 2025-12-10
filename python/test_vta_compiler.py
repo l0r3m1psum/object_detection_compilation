@@ -259,6 +259,10 @@ def test_blocked_vta_gemm():
 
     sch = tir.Schedule(gemm)
     gemm_block = sch.get_block("res_gemm")
+    res_shr_block = sch.get_block("res_shr")
+    res_max_block = sch.get_block("res_max")
+    res_min_block = sch.get_block("res_min")
+    res_block = sch.get_block("res")
 
     bo, co, bi, ci, ro, ri = sch.get_loops(gemm_block)
     boo, boi = sch.split(bo, (None, batch_block))
@@ -269,14 +273,62 @@ def test_blocked_vta_gemm():
     data_cache = sch.cache_read(gemm_block, 0, env.inp_scope)
     weight_cache = sch.cache_read(gemm_block, 1, env.wgt_scope)
     gemm_init = sch.decompose_reduction(gemm_block, roo)
-    sch.compute_at(data_cache, coo)
-    sch.compute_at(weight_cache, coo)
-    sch.reverse_compute_at(sch.get_block("res_shr"), boo)
-    sch.reverse_compute_at(sch.get_block("res_max"), boo)
-    sch.reverse_compute_at(sch.get_block("res_min"), boo)
-    sch.reverse_compute_at(sch.get_block("res"), boo)
+    sch.compute_at(data_cache, roo)
+    sch.compute_at(weight_cache, roo)
 
-    sch.mod["main"].show()
+    sch.reverse_compute_at(res_shr_block, coo)
+    sch.reverse_compute_at(res_max_block, coo)
+    sch.reverse_compute_at(res_min_block, coo)
+    sch.reverse_compute_at(res_block, coo)
+
+    sch.set_scope(res_shr_block, 0, env.acc_scope)
+    sch.set_scope(res_max_block, 0, env.acc_scope)
+    sch.set_scope(res_min_block, 0, env.acc_scope)
+
+    sch.annotate(sch.get_loops(res_shr_block)[-2], env.alu, 0)
+    sch.annotate(sch.get_loops(res_max_block)[-2], env.alu, 0)
+    sch.annotate(sch.get_loops(res_min_block)[-2], env.alu, 0)
+
+    sch.set_scope(gemm_block, 0, env.acc_scope)
+    bici = sch.fuse(bi, ci)
+    sch.tensorize(bici, "vta_gemm_intrin1")
+
+    _, _, I_init, J_init, i_init, j_init = sch.get_loops(gemm_init)
+    ij_init = sch.fuse(i_init, j_init)
+    sch.tensorize(ij_init, "vta_init_intrin1")
+
+    sch.annotate(sch.get_loops(data_cache)[-2], env.dma_copy, 0)
+    sch.annotate(sch.get_loops(weight_cache)[-4], env.dma_copy, 0)
+    sch.annotate(sch.get_loops(res_block)[-2], env.dma_copy, 0)
+
+    mod = sch.mod
+
+    ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
+
+    data_np = rng.integers(-128, 128, size=(batch_size, in_chann)).astype(data.dtype)
+    weight_np = rng.integers(-128, 128, size=(out_chann, in_chann)).astype(weight.dtype)
+
+    data_packed = data_np.reshape(
+        blocked_batch_size, env.BATCH, blocked_in_chann, env.BLOCK_IN
+    ).transpose((0, 2, 1, 3))
+    weight_packed = weight_np.reshape(
+        blocked_out_chann, env.BLOCK_OUT, blocked_in_chann, env.BLOCK_IN
+    ).transpose((0, 2, 1, 3))
+
+    data_nd = tvm.nd.array(data_packed, dev)
+    weight_nd = tvm.nd.array(weight_packed, dev)
+    res_nd = tvm.nd.array(numpy.zeros(output_shape).astype(res.dtype), dev)
+
+    ex(data_nd, weight_nd, res_nd)
+
+    res_ref = numpy.dot(data_np.astype(env.acc_dtype), weight_np.T.astype(env.acc_dtype))
+    res_ref = res_ref >> env.INP_WIDTH
+    res_ref = numpy.clip(res_ref, 0, inp_max)
+    res_ref = res_ref.astype(res.dtype)
+    res_ref = res_ref.reshape(
+        blocked_batch_size, env.BATCH, blocked_out_chann, env.BLOCK_OUT
+    ).transpose((0, 2, 1, 3))
+    numpy.testing.assert_equal(res_ref, res_nd.numpy())
 
 
 # Relax tests ##################################################################
