@@ -49,7 +49,7 @@ BaseAddress + ( (i * I * J * K) +
                 (k * K) +
                 (l * 1) )
             * ElementSize
-\sum_i index_i * \prod_{j=i}^{4-1} dim_j
+\\sum_i index_i * \\prod_{j=i}^{4-1} dim_j
 """
 
 from tvm import tir, ir
