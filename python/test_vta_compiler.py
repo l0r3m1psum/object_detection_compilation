@@ -260,14 +260,15 @@ def test_blocked_vta_gemm():
     sch = tir.Schedule(gemm)
     gemm_block = sch.get_block("res_gemm")
 
-    data_cache = sch.cache_read(gemm_block, 0, env.inp_scope)
-    weight_cache = sch.cache_read(gemm_block, 1, env.wgt_scope)
     bo, co, bi, ci, ro, ri = sch.get_loops(gemm_block)
     boo, boi = sch.split(bo, (None, batch_block))
     coo, coi = sch.split(co, (None, output_block))
     roo, roi = sch.split(ro, (None, input_block))
-    sch.reorder(roo, boo, coo, roi, boi, coi, bi, ci, ri)
+    sch.reorder(boo, coo, roo, roi, boi, coi, bi, ci, ri)
 
+    data_cache = sch.cache_read(gemm_block, 0, env.inp_scope)
+    weight_cache = sch.cache_read(gemm_block, 1, env.wgt_scope)
+    gemm_init = sch.decompose_reduction(gemm_block, roo)
     sch.compute_at(data_cache, coo)
     sch.compute_at(weight_cache, coo)
     sch.reverse_compute_at(sch.get_block("res_shr"), boo)
@@ -275,7 +276,6 @@ def test_blocked_vta_gemm():
     sch.reverse_compute_at(sch.get_block("res_min"), boo)
     sch.reverse_compute_at(sch.get_block("res"), boo)
 
-    # gemm_init = sch.decompose_reduction(gemm_block, boo)
     sch.mod["main"].show()
 
 
