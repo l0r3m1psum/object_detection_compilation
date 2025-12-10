@@ -1,6 +1,6 @@
 import tvm
 from tvm import testing
-from tvm import te, tir, relax, ir
+from tvm import te, tir, relax, ir, dlight as dl
 
 from tvm.script import ir as I
 from tvm.script import relax as R
@@ -428,6 +428,51 @@ def test_trivial_remove_unnecessary_dequantize_quantize_wrapping():
         vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(DequantReshapeQuant),
         Reshape
     )
+
+def test_trivial_end2end_compilation():
+    inp_width = 8
+    int8_max = 127
+
+    @I.ir_module
+    class ALUOperations:
+        @R.function
+        def main(
+            x: R.Tensor((1, 128 + 1, 1, 16), dtype="int32"),
+            y: R.Tensor((1, 128 + 1, 1, 16), dtype="int32"),
+        ):
+            with R.dataflow():
+                # TODO: x + y * x
+                lv = x + y
+                lv1 = R.right_shift(lv, R.const(inp_width))
+                lv2 = R.maximum(lv1, R.const(0)) # ReLU
+                lv3 = R.minimum(lv2, R.const(int8_max))
+                lv4 = lv3.astype("int8")
+                gv = lv4
+                R.output(gv)
+            return gv
+
+    mod = ALUOperations
+    almost_end2end_pipeline = ir.transform.Sequential([
+        # TODO: integer only quantization
+        # vtar.relax.transform.GraphPack(),
+        # relax.transform.CanonicalizeBindings(), # removes redundant assignments
+        relax.get_pipeline('vtar_zero'),
+        ############################################################################
+        tir.transform.ForceNarrowIndexToInt32(),
+        dl.ApplyDefaultSchedule(
+            vtar.dlight.ALU(),
+        ),
+        vtar.get_vtar_tir_transform(),
+    ])
+
+    with target:
+        mod = almost_end2end_pipeline(mod)
+    # mod.show()
+    ex = tvm.compile(mod, target=target)
+    vm = relax.VirtualMachine(ex, dev)
+    # Perché devono essere allocati su dev???
+    a = tvm.nd.array(numpy.ones((1, 128 + 1, 1, 16), dtype='int32')*1024, dev)
+    res = vm['main'](a, a)
 
 if __name__ == '__main__':
     testing.main()
