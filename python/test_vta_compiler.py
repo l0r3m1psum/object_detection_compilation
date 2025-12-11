@@ -1,6 +1,6 @@
 import tvm
 from tvm import testing
-from tvm import te, tir, relax, ir, dlight as dl
+from tvm import te, tir, relax, ir, dlight as dl, topi
 
 from tvm.script import ir as I
 from tvm.script import relax as R
@@ -330,6 +330,81 @@ def test_blocked_vta_gemm():
     ).transpose((0, 2, 1, 3))
     numpy.testing.assert_equal(res_ref, res_nd.numpy())
 
+def test_blocked_vta_conv2d():
+    batch_size = 1
+    height = 14
+    width = 14
+    in_channels = 256
+    out_channels = 256
+    kernel_h = 3
+    kernel_w = 3
+    pad_h = 1
+    pad_w = 1
+    stride_h = 1
+    stride_w = 1
+    assert batch_size % env.BATCH == 0
+    assert in_channels % env.BLOCK_IN == 0
+    assert out_channels % env.BLOCK_OUT == 0
+    
+    data_shape = ( # NCHW1n16c
+        batch_size // env.BATCH,
+        in_channels // env.BLOCK_IN,
+        height,
+        width,
+        env.BATCH,
+        env.BLOCK_IN,
+    )
+    kernel_shape = ( # OIHW16o16i
+        out_channels // env.BLOCK_OUT,
+        in_channels // env.BLOCK_IN,
+        kernel_h,
+        kernel_w,
+        env.BLOCK_OUT,
+        env.BLOCK_IN,
+    )
+    fout_height = (height + 2 * pad_h - kernel_h) // stride_h + 1
+    fout_width = (width + 2 * pad_w - kernel_w) // stride_w + 1
+    output_shape = ( # NOHW1n16o
+        batch_size // env.BATCH,
+        out_channels // env.BLOCK_OUT,
+        fout_height,
+        fout_width,
+        env.BATCH,
+        env.BLOCK_OUT,
+    )
+    
+    dy = te.reduce_axis((0, kernel_h), "dy")
+    dx = te.reduce_axis((0, kernel_w), "dx")
+    ic = te.reduce_axis((0, in_channels // env.BLOCK_IN), "ic")
+    ic_tns = te.reduce_axis((0, env.BLOCK_IN), "ic_tns")
+    
+    data = te.placeholder(data_shape, env.inp_dtype, "data")
+    kernel = te.placeholder(kernel_shape, env.wgt_dtype, "kernel")
+    
+    data_buf = topi.nn.pad(data, (0, 0, pad_h, pad_w, 0, 0), name="data_buf")
+    res_conv = te.compute(
+        output_shape,
+        lambda bo, co, i, j, bi, ci: te.sum(
+            data_buf[bo, ic, i * stride_h + dy, j * stride_w + dx, bi, ic_tns].astype(env.acc_dtype)
+            * kernel[co, ic, dy, dx, ci, ic_tns].astype(env.acc_dtype),
+            axis=[ic, dy, dx, ic_tns],
+        ),
+        "res_conv",
+    )
+    inp_max = (1 << (env.INP_WIDTH - 1)) - 1
+    res_shr = te.compute(output_shape, lambda bo, co, i, j, bi, ci: res_conv(bo, co, i, j, bi, ci) >> 8, "res_shr")
+    res_max = te.compute(output_shape, lambda bo, co, i, j, bi, ci: te.max(res_shr(bo, co, i, j, bi, ci), 0), "res_max")
+    res_min = te.compute(output_shape, lambda bo, co, i, j, bi, ci: te.min(res_max(bo, co, i, j, bi, ci), inp_max), "res_min")
+    res = te.compute(output_shape, lambda bo, co, i, j, bi, ci: res_min(bo, co, i, j, bi, ci).astype(env.inp_dtype), "res")
+    
+    conv2d = te.create_prim_func((data, kernel, res))
+    
+    sch = tir.Schedule(conv2d)
+    res_conv_block = sch.get_block("res_conv")
+    kernel_cache = sch.cache_read(res_conv_block, 1, env.wgt_scope)
+    
+    mod = sch.mod
+    mod["main"].show()
 
 # Relax tests ##################################################################
 
