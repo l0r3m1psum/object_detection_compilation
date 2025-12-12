@@ -1,6 +1,6 @@
 import tvm
 from tvm import testing
-from tvm import te, tir, relax, ir, dlight as dl, topi
+from tvm import te, tir, relax, ir, dlight as dl, topi, arith
 
 from tvm.script import ir as I
 from tvm.script import relax as R
@@ -273,6 +273,8 @@ def test_blocked_vta_gemm():
 
     data_cache = sch.cache_read(gemm_block, 0, env.inp_scope)
     weight_cache = sch.cache_read(gemm_block, 1, env.wgt_scope)
+    # decompose_reduction works only if the index is the outermost reduction
+    # index or an index after that.
     gemm_init = sch.decompose_reduction(gemm_block, roo)
     sch.compute_at(data_cache, roo)
     sch.compute_at(weight_cache, roo)
@@ -612,6 +614,74 @@ def test_trivial_quantized_gemm():
     mod.show()
 
     assert False
+
+# Misc. tests ##################################################################
+
+# TODO: use a similar algorithm for InjectDMAIntrin
+def test_can_prove_data_load_invariant_of_access_order():
+    N, M = tir.Var("N", "int32"), tir.Var("M", "int32")
+
+    @T.prim_func
+    def row_major(A: T.Buffer((N, M), "float32"), B: T.Buffer((N, M), "float32")):
+        for i, j in T.grid(N, M):
+            with T.block("block_row"):
+                vi, vj = T.axis.remap("SS", [i, j])
+                B[vi, vj] = A[vi, vj]
+
+    @T.prim_func
+    def col_major(A: T.Buffer((N, M), "float32"), B: T.Buffer((N, M), "float32")):
+        for j, i in T.grid(M, N):
+            with T.block("block_col"):
+                vi, vj = T.axis.remap("SS", [i, j])
+                B[vi, vj] = A[vi, vj]
+
+    def get_access_region(func):
+        sch = tvm.tir.Schedule(func)
+        block_rv = sch.get_block("root")
+        block_stmt = sch.get(block_rv)
+
+        # Why func.buffer_map alone is not enough?
+        buffer_var_map = {buf.data: buf for var, buf in func.buffer_map.items()}
+        read_regions, write_regions = tir.analysis.get_block_read_write_region(
+            block_stmt,
+            buffer_var_map
+        )
+        return read_regions[0].region
+
+    region_1 = get_access_region(row_major)
+    region_2 = get_access_region(col_major)
+
+    analyzer = arith.Analyzer()
+
+    # print("Loop 1 Region:", region_1)
+    # print("Loop 2 Region:", region_2)
+
+    is_equivalent = True
+    for r1, r2 in zip(region_1, region_2):
+        min_eq = analyzer.can_prove_equal(r1.min, r2.min)
+        ext_eq = analyzer.can_prove_equal(r1.extent, r2.extent)
+
+        if not (min_eq and ext_eq):
+            is_equivalent = False
+            break
+
+    total_elements_accessed = 1
+    for r in region_1:
+        total_elements_accessed *= r.extent
+
+    buffer_shape = row_major.buffer_map[row_major.params[0]].shape
+    total_buffer_size = 1
+    for dim in buffer_shape:
+        total_buffer_size *= dim
+
+    is_contiguous = analyzer.can_prove_equal(total_elements_accessed, total_buffer_size)
+
+    assert is_equivalent and is_contiguous
+
+    print(f"Proof of Equivalence: {is_equivalent}")
+    print(f"Proof of Contiguity: {is_contiguous}")
+    print(f"Volume Accessed: {total_elements_accessed}")
+    print(f"Buffer Size:     {total_buffer_size}")
 
 if __name__ == '__main__':
     testing.main()
