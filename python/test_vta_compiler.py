@@ -572,30 +572,42 @@ def test_trivial_quantized_gemm():
             with R.dataflow():
                 lv = R.quantize(x, R.const(2., "float32"), R.const(-10, "int8"))
                 lv1 = R.quantize(w, R.const(2., "float32"), R.const(-5, "int8"))
-                lv2 = R.einsum((lv.astype("int32"), lv1.astype("int32")), "IKik,JKjk->IJij") # linear with packed format
-                lv3 = R.dequantize(lv2, R.const(2., "float32"), R.const(+3, "int8"))
-                gv = lv3
+                lv2 = R.einsum((lv.astype("int32"), lv1.astype("int32")), "IKik,JKjk->IJij") # matmul with packed format
+                lv3 = R.nn.relu(lv2)
+                lv4 = lv3.astype("int8")
+                lv5 = R.dequantize(lv4, R.const(2., "float32"), R.const(+3, "int8"))
+                gv = lv5
                 R.output(gv)
             return gv
 
-    # FIXME: the quantize disappears after relax.transform.FuseTIR
-    data = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
-    weight = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
-    args = relax.dpl.is_tuple((data, weight))
-    quantized_pat = relax.dpl.is_op("relax.einsum")(args)# .has_type(ir.Type("int32"))
+    # NOTE: relax.dpl.is_tuple seems to be broken on the TVM side it passes the
+    # arguments both "normally" and as a tuple hence passing them two times.
+    # To work around this we have to do our pattern matching after
+    # relax.transform.LegalizeOps
+    if False:
+        data = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
+        weight = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
+        args = relax.dpl.is_tuple((data, weight))
+        quantized_pat = relax.dpl.is_op("relax.einsum")(args)
+
+    data = relax.dpl.is_call_tir("cast", (relax.dpl.wildcard().has_dtype("int8"),)).has_dtype("int32")
+    weight = relax.dpl.is_call_tir("cast", (relax.dpl.wildcard().has_dtype("int8"),)).has_dtype("int32")
+    quantized_pat = relax.dpl.is_call_tir("einsum", (data, weight))
+    relu_pat = relax.dpl.is_call_tir("relu", (quantized_pat,))
+    cast_pat = relax.dpl.is_call_tir("cast", (relu_pat, )).has_dtype("int8")
 
     patterns = (
-        relax.transform.FusionPattern("quantized_compute", quantized_pat),
+        relax.transform.FusionPattern("vtar.relu_compute", cast_pat),
+        relax.transform.FusionPattern("vtar.quantized_compute", quantized_pat),
     )
 
     mod = QantizedGEMM
-    mod = relax.transform.FuseOpsByPattern(patterns)(mod)
     mod = relax.transform.LegalizeOps()(mod)
     mod = relax.transform.AnnotateTIROpPattern()(mod)
     mod = relax.transform.FoldConstant()(mod)
-    mod = relax.transform.RemoveUnusedOutputs()(mod)
-    mod.show()
     # mod = relax.transform.FuseOps()(mod)
+    mod = relax.transform.FuseOpsByPattern(patterns, annotate_codegen=False)(mod)
+    # mod = relax.transform.MergeCompositeFunctions()(mod)
     mod = relax.transform.FuseTIR()(mod)
     mod.show()
 
