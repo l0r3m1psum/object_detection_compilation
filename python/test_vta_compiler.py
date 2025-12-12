@@ -9,6 +9,7 @@ from tvm.script import tir as T
 import vtar.relax.transform
 import numpy
 import ctypes
+import pytest
 
 # Needed to register the ext_dev
 vta_fsim = ctypes.CDLL("vta_fsim")
@@ -406,6 +407,8 @@ def test_blocked_vta_conv2d():
     mod = sch.mod
     mod["main"].show()
 
+    pytest.skip("TODO")
+
 # Relax tests ##################################################################
 
 def test_trivial_graphpack():
@@ -428,6 +431,14 @@ def test_trivial_graphpack():
                 gv = avg1
                 R.output(gv)
             return gv
+
+    mod = ConvModel
+    # R.layout_transform is R.reshape followed by R.permute_dims
+    mod = relax.transform.ConvertLayout({
+        "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
+    })(mod)
+    mod.show()
+    # TODO: convert vtar.relax.transform.GraphPack to use R.layout_transform
 
     # TODO: check that the dimension factoring is correct, why in
     # https://tvm.apache.org/docs/v0.16.0/topic/vta/tutorials/optimize/convolution_opt.html#sphx-glr-topic-vta-tutorials-optimize-convolution-opt-py
@@ -545,9 +556,50 @@ def test_trivial_end2end_compilation():
     # mod.show()
     ex = tvm.compile(mod, target=target)
     vm = relax.VirtualMachine(ex, dev)
-    # Perché devono essere allocati su dev???
+    # The nd.array needs to be given the dev argument probably because the
+    # allocation needs to be performed in a CMA to be loaded with VTA's DMA.
     a = tvm.nd.array(numpy.ones((1, 128 + 1, 1, 16), dtype='int32')*1024, dev)
     res = vm['main'](a, a)
+
+def test_trivial_quantized_gemm():
+    @I.ir_module
+    class QantizedGEMM:
+        @R.function
+        def main(
+            x: R.Tensor((1, 64, 1, 16), "float32"),
+            w: R.Tensor((64, 64, 16, 16), "float32"),
+        ):
+            with R.dataflow():
+                lv = R.quantize(x, R.const(2., "float32"), R.const(-10, "int8"))
+                lv1 = R.quantize(w, R.const(2., "float32"), R.const(-5, "int8"))
+                lv2 = R.einsum((lv.astype("int32"), lv1.astype("int32")), "IKik,JKjk->IJij") # linear with packed format
+                lv3 = R.dequantize(lv2, R.const(2., "float32"), R.const(+3, "int8"))
+                gv = lv3
+                R.output(gv)
+            return gv
+
+    # FIXME: the quantize disappears after relax.transform.FuseTIR
+    data = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
+    weight = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
+    args = relax.dpl.is_tuple((data, weight))
+    quantized_pat = relax.dpl.is_op("relax.einsum")(args)# .has_type(ir.Type("int32"))
+
+    patterns = (
+        relax.transform.FusionPattern("quantized_compute", quantized_pat),
+    )
+
+    mod = QantizedGEMM
+    mod = relax.transform.FuseOpsByPattern(patterns)(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+    mod = relax.transform.AnnotateTIROpPattern()(mod)
+    mod = relax.transform.FoldConstant()(mod)
+    mod = relax.transform.RemoveUnusedOutputs()(mod)
+    mod.show()
+    # mod = relax.transform.FuseOps()(mod)
+    mod = relax.transform.FuseTIR()(mod)
+    mod.show()
+
+    assert False
 
 if __name__ == '__main__':
     testing.main()
