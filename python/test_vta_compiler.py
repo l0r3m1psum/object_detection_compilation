@@ -430,7 +430,6 @@ def test_blocked_vta_conv2d():
     sch.compute_at(res_max_block, x_out, preserve_unit_loops=True)
     sch.compute_at(res_shr_block, x_out, preserve_unit_loops=True)
     sch.compute_at(res_conv_block, x_out, preserve_unit_loops=True)
-    sch.mod["main"].show()
 
     (
         b_out, oc_out, y_out, x_out, # outer
@@ -445,8 +444,20 @@ def test_blocked_vta_conv2d():
     sch.reorder(tx, b_out)
     sch.bind(tx, "cthread")
 
+    conv_init = sch.decompose_reduction(res_conv_block, ic_out)
+
     sch.compute_at(data_cache, ic_out)
     sch.compute_at(kernel_cache, ic_out)
+
+    sch.set_scope(data_cache, 0, env.inp_scope)
+    sch.set_scope(res_conv_block, 0, env.acc_scope)
+    sch.set_scope(res_shr_block, 0, env.acc_scope)
+    sch.set_scope(res_max_block, 0, env.acc_scope)
+    sch.set_scope(res_min_block, 0, env.acc_scope)
+
+    # TODO: pragma dma_copy
+    # TODO: pragma alu
+    # TODO: tensorize
 
     sch.mod["main"].show()
 
