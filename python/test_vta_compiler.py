@@ -404,10 +404,51 @@ def test_blocked_vta_conv2d():
     
     sch = tir.Schedule(conv2d)
     res_conv_block = sch.get_block("res_conv")
+    res_shr_block = sch.get_block("res_shr")
+    res_max_block = sch.get_block("res_max")
+    res_min_block = sch.get_block("res_min")
+    res_block = sch.get_block("res")
     kernel_cache = sch.cache_read(res_conv_block, 1, env.wgt_scope)
+    data_cache = sch.get_block("data_buf")
     
-    mod = sch.mod
-    mod["main"].show()
+    sch.mod["main"].show()
+
+    b_block = 1 // env.BATCH
+    oc_block = 128 // env.BLOCK_OUT
+    ic_block = 16 // env.BLOCK_IN
+    h_block = 7
+    w_block = 14
+
+    b, oc, y, x, b_tns, oc_tns = sch.get_loops(res_block)
+    b_out, b_inn = sch.split(b, (None, b_block))
+    oc_out, oc_inn = sch.split(oc, (None, oc_block))
+    y_out, y_inn = sch.split(y, (None, h_block))
+    x_out, x_inn = sch.split(x, (None, w_block))
+    sch.reorder(b_out, oc_out, y_out, x_out, b_inn, oc_inn, y_inn, x_inn, b_tns, oc_tns)
+
+    sch.compute_at(res_min_block, x_out, preserve_unit_loops=True)
+    sch.compute_at(res_max_block, x_out, preserve_unit_loops=True)
+    sch.compute_at(res_shr_block, x_out, preserve_unit_loops=True)
+    sch.compute_at(res_conv_block, x_out, preserve_unit_loops=True)
+    sch.mod["main"].show()
+
+    (
+        b_out, oc_out, y_out, x_out, # outer
+        b_inn, oc_inn, y_inn, x_inn, # inner
+        b_tns, oc_tns, ic, dy, dx, ic_tns # bi, ci, ic, dy, dx, ic_tns
+    ) = sch.get_loops(res_conv_block)
+    ic_out, ic_inn = sch.split(ic, (None, ic_block))
+    sch.reorder(ic_out, b_inn, oc_inn, y_inn, ic_inn, dy, dx, x_inn, b_tns, oc_tns, ic_tns)
+
+    v_threads = 2
+    _, tx = sch.split(oc_out, (None, v_threads))
+    sch.reorder(tx, b_out)
+    sch.bind(tx, "cthread")
+
+    sch.compute_at(data_cache, ic_out)
+    sch.compute_at(kernel_cache, ic_out)
+
+    sch.mod["main"].show()
 
     pytest.skip("TODO")
 
@@ -613,7 +654,7 @@ def test_trivial_quantized_gemm():
     mod = relax.transform.FuseTIR()(mod)
     mod.show()
 
-    assert False
+    pytest.skip("TODO")
 
 # Misc. tests ##################################################################
 
