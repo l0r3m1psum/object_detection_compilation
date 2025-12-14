@@ -446,6 +446,8 @@ def test_blocked_vta_conv2d():
 
     conv_init = sch.decompose_reduction(res_conv_block, ic_out)
 
+    sch.mod["main"].show()
+
     sch.compute_at(data_cache, ic_out)
     sch.compute_at(kernel_cache, ic_out)
 
@@ -455,9 +457,19 @@ def test_blocked_vta_conv2d():
     sch.set_scope(res_max_block, 0, env.acc_scope)
     sch.set_scope(res_min_block, 0, env.acc_scope)
 
-    # TODO: pragma dma_copy
-    # TODO: pragma alu
-    # TODO: tensorize
+    sch.annotate(sch.get_loops(data_cache)[-3], env.dma_copy, 0)
+    sch.annotate(sch.get_loops(kernel_cache)[-5], env.dma_copy, 0)
+    sch.annotate(sch.get_loops(res_block)[-6], env.dma_copy, 0)
+    sch.annotate(sch.get_loops(res_shr_block)[-6], env.alu, 0)
+    sch.annotate(sch.get_loops(res_max_block)[-6], env.alu, 0)
+    sch.annotate(sch.get_loops(res_min_block)[-6], env.alu, 0)
+
+    init_loops = sch.get_loops(conv_init)
+    ij_init = sch.fuse(init_loops[-2], init_loops[-1])
+    sch.tensorize(ij_init, "vta_init_intrin1")
+    conv_loops = sch.get_loops(res_conv_block)
+    ij_conv = sch.fuse(conv_loops[-3], conv_loops[-2])
+    sch.tensorize(ij_conv, "vta_gemm_intrin1")
 
     sch.mod["main"].show()
 
