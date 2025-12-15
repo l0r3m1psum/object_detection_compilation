@@ -471,7 +471,17 @@ def test_blocked_vta_conv2d():
     ij_conv = sch.fuse(conv_loops[-3], conv_loops[-2])
     sch.tensorize(ij_conv, "vta_gemm_intrin1")
 
+    if False:
+        # It would be nice for the VTA TIR pipeline to support fused indices
+        # [ax1_ax2_fused // 3, ax1_ax2_fused % 3, ax3, ax4]
+        kernel_cache_loops = sch.get_loops(kernel_cache)
+        kernel_cache_fused = sch.fuse(kernel_cache_loops[-4], kernel_cache_loops[-3])
+
     sch.mod["main"].show()
+
+    mod = sch.mod
+
+    ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
 
     pytest.skip("TODO")
 
