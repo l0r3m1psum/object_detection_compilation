@@ -431,13 +431,19 @@ def test_blocked_vta_conv2d():
     sch.compute_at(res_shr_block, x_out, preserve_unit_loops=True)
     sch.compute_at(res_conv_block, x_out, preserve_unit_loops=True)
 
+    # oc = output_channel (spatial axis)
+    # ic = input_channel (reduce axis)
     (
         b_out, oc_out, y_out, x_out, # outer
         b_inn, oc_inn, y_inn, x_inn, # inner
         b_tns, oc_tns, ic, dy, dx, ic_tns # bi, ci, ic, dy, dx, ic_tns
     ) = sch.get_loops(res_conv_block)
     ic_out, ic_inn = sch.split(ic, (None, ic_block))
-    sch.reorder(ic_out, b_inn, oc_inn, y_inn, ic_inn, dy, dx, x_inn, b_tns, oc_tns, ic_tns)
+    sch.reorder(
+        ic_out, b_inn, oc_inn, # RSS
+        y_inn, ic_inn, dy, dx, x_inn, # SRRRS
+        b_tns, oc_tns, ic_tns # SSR
+    )
 
     v_threads = 2
     _, tx = sch.split(oc_out, (None, v_threads))
