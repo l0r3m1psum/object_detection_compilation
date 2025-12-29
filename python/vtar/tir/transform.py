@@ -74,6 +74,27 @@ def _check_compact(buf: tir.Buffer):
 
 def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List[int], List[int]]:
     """
+    Given a buffer and an elem_block it "folds" the contiguous dimensions (i.e.)
+    the ones without "jumps" in the strides. Below there is an example of how we
+    can have jumps in the strides
+
+    array = numpy.empty((2, 3, 16), dtype='int8')[:, :2, :]
+    (array.shape, array.strides) == ((2, 2, 16), (48, 16, 1))
+    48 == 16*3
+    numpy.empty((2, 2, 16), dtype='int8').strides == (32, 16, 1)
+
+    The first fold is for elem_block which is one of the VTA words sizes
+    (INP, WGT, ACC) so that we can reason in terms of it e.g. say that the
+    buffer has (1, 4, 4) as its last dimensions with strides (16, 4, 1) and
+    elem_block is 16 then the algorithm folds all of them in a single
+    dimension.
+
+    numpy.empty((1, 4, 4), dtype='int8').strides == (16, 4, 1)
+
+    After the first fold the other folds are done until a discontinuity is found
+    and than the process stops and starts again "logging" the amount of folding
+    in the shape and strides lists.
+
     scope: only used for error reporting
     """
     ndim = len(buf.shape)
@@ -104,9 +125,12 @@ def _fold_buffer_dim(buf: tir.Buffer, scope: str, elem_block: int) -> Tuple[List
     shape = [elem_block]
     strides = [1]
 
-
-    # ???
-    if base < ndim + 1 and not utils.equal_const_int(buf_strides[ndim - base], elem_block):
+    # Considering that base i used to index backwards in the strides array
+    # (strides[-base]), if it is less than ndim+1 it means that the base is not
+    # at the beginning of the strides array.
+    # Then it checks if there is any jumps in the strides.
+    if base < ndim + 1 and \
+        not utils.equal_const_int(buf_strides[ndim - base], elem_block):
         shape.append(1)
         strides.append(elem_block)
 
@@ -732,6 +756,14 @@ def my_get_2d_pattern(
     # loop_indices = [ax0, ax1, ax2, ax3]
     # dram_buf_indices = [bo_0 * 4 + ax0, co_0 * 4 + ax1, ax2, ax3]
 
+    if len(loop_indices) > 4:
+        # We have to perform fusion...
+        pass
+
+    # dram_buf_indices = [0, ax6_0, i_0 * 7 + ax0 - 1, ax1 - 1, 0, ax2]
+    dram_buf_indices_offse = dram_buf_indices[:-4]
+    dram_buf_indices = dram_buf_indices[-4:]
+
     # The number of loop indices can vary based on the kind of copy that it is
     # being performed. For the DMA we only care about the indices in the first
     # two dimensions of the DRAM buffer, since the first two either are used for
@@ -832,21 +864,52 @@ def do_inject_dma_intin3(stmt: tir.Stmt) -> tir.Stmt | None:
 
     value: tir.PrimExpr = store.value
     load: tir.BufferLoad
+    zero = tir.const(0, 'int32')
+    pad_before = (zero,)*len(dst.shape)
+    pad_after = (zero,)*len(dst.shape)
+    pad_value = zero
     if isinstance(value, tir.BufferLoad):
         load = value
     elif isinstance(value, tir.Cast):
         load = value.value
         assert dst.dtype == value.dtype, "Ill-typed cast, type-checking has not been performed?"
-    elif isinstance(value, tir.IfThenElse):
-        raise ValueError("Padding is not supported")
-    pad_before = (0,)*len(dst.shape)
-    pad_after = (0,)*len(dst.shape)
-    pad_value = 0
+    elif isinstance(value, tir.Call) and value.op.name == "tir.if_then_else":
+        sel_cond, sel_true_val, sel_false_val = value.args
+        clip_bound = arith.detect_clip_bound(sel_cond, loop_indices)
+        pad_value = sel_false_val
+        load = sel_true_val
+        src = load.buffer
+        assert len(loop_indices)*2 == len(clip_bound)
+        # TODO: assert that src.shape has the same length as loop_indices except
+        # dimensions of size 1
+        pad_before = []
+        pad_after = []
+        analyzer = arith.Analyzer()
+        for i in range(len(loop_indices)):
+            min_value = clip_bound[2*i]
+            max_value = clip_bound[2*i + 1]
+            t = loop_indices[i].dtype
+            zero = tir.const(0, t)
+            if min_value is not None: # nullptr is used to signal no padding on that axis
+                # TODO: understand what is this calculation
+                pbefore = analyzer.simplify(tir.Max(min_value, zero)) # ???
+                pad_before.append(pbefore)
+            else:
+                pad_before.append(zero)
+            if max_value is not None:
+                pafter = analyzer.simplify(tir.Max(loop_extents[i] - max_value - 1, zero))
+                pad_after.append(pafter)
+            else:
+                pad_after.append(zero)
+        # raise ValueError("Padding is not supported")
+    else:
+        raise ValueError("Unsupported operation for DMA %s" % value)
     src = load.buffer
 
     # Up to this point is what tir.transform.InjectCopyIntrin used to do
 
-    if not (1 <= loop_depth <= 4) or len(dst.shape) != 4 or len(src.shape) != 4:
+    # We support up to 5 indices for the convolution
+    if not (1 <= loop_depth <= 5): # or len(dst.shape) != 4 or len(src.shape) != 4:
         return None
 
     import vtar
@@ -900,11 +963,14 @@ def do_inject_dma_intin3(stmt: tir.Stmt) -> tir.Stmt | None:
         else:
             raise RuntimeError("Do not support copy dram->%s" % (dst.scope()))
         # collect pad statistics
-        if any(pad_before):
+        from tvm import topi
+        if any(topi.nn.equal_const_int(pad, 0) for pad in pad_before):
             assert pad_after
             ndim = len(pad_before)
             if ndim <= 2 or ndim > 5:
-                raise ValueError("Limitation of 2D pad load forbid ndim=%d" % ndim)
+                # breakpoint()
+                pass
+                # raise ValueError("Limitation of 2D pad load forbid ndim=%d" % ndim)
             if ndim == 5:
                 # This case occurs when batch size N > 1
                 y_pad_before = pad_before[1]
