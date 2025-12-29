@@ -1,6 +1,7 @@
 import tvm
 from tvm import testing
 from tvm import te, tir, relax, ir, dlight as dl, topi, arith
+import tvm.topi.testing
 
 from tvm.script import ir as I
 from tvm.script import relax as R
@@ -10,6 +11,7 @@ import vtar.relax.transform
 import numpy
 import ctypes
 import pytest
+import warnings
 
 # Needed to register the ext_dev
 vta_fsim = ctypes.CDLL("vta_fsim")
@@ -448,7 +450,10 @@ def test_blocked_vta_conv2d():
     v_threads = 2
     _, tx = sch.split(oc_out, (None, v_threads))
     sch.reorder(tx, b_out)
-    sch.bind(tx, "cthread")
+    warnings.warn(UserWarning("skipping thread binding because it is not "
+        "supported in codegen_llvm.cc::GetThreadIndex"))
+    if False:
+        sch.bind(tx, "cthread")
 
     conv_init = sch.decompose_reduction(res_conv_block, ic_out)
 
@@ -465,7 +470,7 @@ def test_blocked_vta_conv2d():
 
     sch.annotate(sch.get_loops(data_cache)[-3], env.dma_copy, 0)
     sch.annotate(sch.get_loops(kernel_cache)[-5], env.dma_copy, 0)
-    sch.annotate(sch.get_loops(res_block)[-6], env.dma_copy, 0)
+    sch.annotate(sch.get_loops(res_block)[-4], env.dma_copy, 0)
     sch.annotate(sch.get_loops(res_shr_block)[-6], env.alu, 0)
     sch.annotate(sch.get_loops(res_max_block)[-6], env.alu, 0)
     sch.annotate(sch.get_loops(res_min_block)[-6], env.alu, 0)
@@ -477,19 +482,56 @@ def test_blocked_vta_conv2d():
     ij_conv = sch.fuse(conv_loops[-3], conv_loops[-2])
     sch.tensorize(ij_conv, "vta_gemm_intrin1")
 
-    if False:
-        # It would be nice for the VTA TIR pipeline to support fused indices
-        # [ax1_ax2_fused // 3, ax1_ax2_fused % 3, ax3, ax4]
-        kernel_cache_loops = sch.get_loops(kernel_cache)
-        kernel_cache_fused = sch.fuse(kernel_cache_loops[-4], kernel_cache_loops[-3])
-
     sch.mod["main"].show()
 
     mod = sch.mod
 
     ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
 
-    pytest.skip("TODO")
+    data_np = rng.integers(
+        -128, 128, size=(batch_size, in_channels, height, width)
+    ).astype(data.dtype)
+    kernel_np = rng.integers(
+        -128, 128, size=(out_channels, in_channels, kernel_h, kernel_w)
+    ).astype(kernel.dtype)
+    data_packed = data_np.reshape(
+        batch_size // env.BATCH, env.BATCH, in_channels // env.BLOCK_IN, env.BLOCK_IN, height, width
+    ).transpose((0, 2, 4, 5, 1, 3))
+
+    kernel_packed = kernel_np.reshape(
+        out_channels // env.BLOCK_OUT,
+        env.BLOCK_OUT,
+        in_channels // env.BLOCK_IN,
+        env.BLOCK_IN,
+        kernel_h,
+        kernel_w,
+    ).transpose((0, 2, 4, 5, 1, 3))
+
+    data_nd = tvm.nd.array(data_packed, dev)
+    kernel_nd = tvm.nd.array(kernel_packed, dev)
+    res_nd = tvm.nd.array(numpy.zeros(output_shape).astype(res.dtype), dev)
+
+    ex(data_nd, kernel_nd, res_nd)
+
+    res_ref = topi.testing.conv2d_nchw_python(
+        data_np.astype(env.acc_dtype),
+        kernel_np.astype(env.acc_dtype),
+        (stride_h, stride_w),
+        (pad_h, pad_w),
+    ).astype(env.acc_dtype)
+    res_ref = res_ref >> env.INP_WIDTH
+    res_ref = numpy.clip(res_ref, 0, inp_max)
+    res_ref = res_ref.astype(res.dtype)
+    res_ref = res_ref.reshape(
+        batch_size // env.BATCH,
+        env.BATCH,
+        out_channels // env.BLOCK_OUT,
+        env.BLOCK_OUT,
+        fout_height,
+        fout_width,
+    ).transpose((0, 2, 4, 5, 1, 3))
+    tvm.testing.assert_allclose(res_ref, res_nd.numpy())
+
 
 # Relax tests ##################################################################
 
