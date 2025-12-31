@@ -91,13 +91,20 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
-		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#inputs
+		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#dequantizelinear-10
 		x = inputs[0]
 		x_scale = get_arg(inputs[1], params[1])
 		x_zero_point = get_arg(inputs[2], params[1])
+		assert len(x_scale.data.shape) == len(x_zero_point.data.shape)
 
+		# NOTE: this is very best effort we assume that the data is a
+		# convolution kernel in OIHW, we do not know how to drop this
+		# assumption. The axis to is the first because we assume per-tensor
+		# dequantization.
+		is_conv_kernel = len(x_scale.data.shape) != 0
+		axis = 0 if is_conv_kernel else -1
 		# TODO: add check for cast to not loose precision
-		return relax.op.dequantize(x, x_scale, x_zero_point.astype("int8"))
+		return relax.op.dequantize(x, x_scale, x_zero_point.astype("int8"), axis)
 
 class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
