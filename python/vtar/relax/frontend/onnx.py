@@ -6,6 +6,7 @@ import tvm.relax.frontend.onnx
 from onnx import GraphProto
 
 from typing import Dict, List
+import warnings
 
 def clamp(data, min, max):
 	res = relax.op.minimum(data, relax.const(max))
@@ -50,8 +51,37 @@ class QuantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		y_scale = get_arg(inputs[1], params[1])
 		y_zero_point = get_arg(inputs[2], params[1])
 
-		# TODO: add check for cast to not lose precision
-		return relax.op.quantize(x, y_scale, y_zero_point.astype("int8"))
+		y_zero_point_dtype = y_zero_point.struct_info.dtype
+		if y_zero_point_dtype != "int8":
+			warnings.warn("Unsupported zero_point dtype for quantization '%s' casting it to 'int8" % y_zero_point_dtype)
+			# TODO: add check for cast to not lose precision
+			y_zero_point = y_zero_point.astype("int8")
+
+		return relax.op.quantize(x, y_scale, y_zero_point)
+
+class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v10(cls, bb, inputs, attr, params):
+		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#dequantizelinear-10
+		x = inputs[0]
+		x_scale = get_arg(inputs[1], params[1])
+		x_zero_point = get_arg(inputs[2], params[1])
+		assert len(x_scale.data.shape) == len(x_zero_point.data.shape)
+
+		x_zero_point_dtype = x_zero_point.struct_info.dtype
+		if x_zero_point_dtype != "int8":
+			warnings.warn("Unsupported zero_point dtype for dequantization '%s' casting it to 'int8" % x_zero_point_dtype)
+			# TODO: add check for cast to not lose precision
+			x_zero_point = x_zero_point.astype("int8")
+
+		# NOTE: this is very best effort we assume that the data is a
+		# convolution kernel in OIHW, we do not know how to drop this
+		# assumption. The axis to is the first because we assume per-tensor
+		# dequantization.
+		is_conv_kernel = len(x_scale.data.shape) != 0
+		axis = 0 if is_conv_kernel else -1
+		# TODO: add check for cast to not loose precision
+		return relax.op.dequantize(x, x_scale, x_zero_point, axis)
 
 class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -82,29 +112,9 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			kernel_layout="OIHW",
 			out_dtype="int32"
 		)
-		# print(conv)
 		res = (conv + relax.op.reshape(B, (1,-1,1,1))).astype("float32")
 		res = clamp(relax.op.round(M*res), -128., 127.).astype("int8") + Y_z
-		# breakpoint()
 		return res
-
-class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
-	@classmethod
-	def _impl_v10(cls, bb, inputs, attr, params):
-		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#dequantizelinear-10
-		x = inputs[0]
-		x_scale = get_arg(inputs[1], params[1])
-		x_zero_point = get_arg(inputs[2], params[1])
-		assert len(x_scale.data.shape) == len(x_zero_point.data.shape)
-
-		# NOTE: this is very best effort we assume that the data is a
-		# convolution kernel in OIHW, we do not know how to drop this
-		# assumption. The axis to is the first because we assume per-tensor
-		# dequantization.
-		is_conv_kernel = len(x_scale.data.shape) != 0
-		axis = 0 if is_conv_kernel else -1
-		# TODO: add check for cast to not loose precision
-		return relax.op.dequantize(x, x_scale, x_zero_point.astype("int8"), axis)
 
 class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -190,11 +200,11 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 
 convert_map = {
 	"QuantizeLinear": QuantizeLinear,
+	"DequantizeLinear": DequantizeLinear,
 	"QLinearConv": QLinearConv,
 	"QGemm": QGemm,
 	"QLinearAdd": QLinearAdd,
 	"QLinearGlobalAveragePool": QLinearGlobalAveragePool,
-	"DequantizeLinear": DequantizeLinear,
 }
 
 def from_onnx(
