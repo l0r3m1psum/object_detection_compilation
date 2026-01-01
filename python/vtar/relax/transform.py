@@ -312,17 +312,56 @@ class WrapMaxpoolDequantizeQuantize:
 
 		return rewriter.builder_.get()
 
-# https://arxiv.org/pdf/2311.02103
-# https://mlc.ai/
-if False:
-	# Dataflow Pattern Language
-	x = relax.dpl.wildcard()
-	scale = relax.dpl.wildcard()
-	zero_point = relax.dpl.wildcard()
-	shape = relax.dpl.wildcard()
+@relax.expr_functor.mutator
+class Matcher(relax.PyExprMutator):
+	def __init__(self, mod: tvm.IRModule) -> None:
+		super().__init__(mod)
 
-	lv = relax.dpl.is_op("relax.dequantize")(x, scale, zero_point)
-	lv1 = relax.dpl.is_op("relax.reshape")(lv, shape)
-	lv2 = relax.dpl.is_op("relax.quantize")(lv1, scale, zero_point)
+		wc = relax.dpl.wildcard
+		is_op = relax.dpl.is_op
 
-	pattern = lv2
+		self.data_scale = wc()
+		self.data_zero_point = wc()
+		self.weight_scale = wc()
+		self.weight_zero_point = wc()
+		self.bias_scale = wc()
+		self.bias_zero_point = wc()
+		self.output_scale = wc()
+		self.output_zero_point = wc()
+
+		# This should match all the quantized convolutions in ResNet
+		qdata = is_op("relax.dequantize")(wc(), self.data_scale, self.data_zero_point)
+		qweight = is_op("relax.dequantize")(wc(), self.weight_scale, self.weight_zero_point)
+		qbias = is_op("relax.dequantize")(wc(), self.bias_scale, self.bias_zero_point)
+		qreshape = is_op("relax.reshape")(qbias, wc()) | qbias # reshape is optional
+		conv = is_op("relax.nn.conv2d")(qdata, qweight)
+		add = is_op("relax.add")(conv, qreshape)
+		relu = is_op("relax.nn.relu")(add) | add # ReLU is optional
+		quant = is_op("relax.quantize")(relu, self.output_scale, self.output_zero_point)
+		cast = is_op("relax.astype")(quant)
+		self.pattern = cast
+
+		self.var2val = {}
+		self.conv_cnt = 0
+		self.match_cnt = 0
+
+	def visit_function_(self, func: relax.Function) -> relax.Expr:
+		self.var2val = relax.analysis.get_var2val(func)
+		return super().visit_function_(func)
+
+	def visit_call_(self, call: relax.Call) -> relax.Expr:
+		if call.op.name == "relax.nn.conv2d":
+			self.conv_cnt += 1
+		matched_expr = self.pattern.extract_matched_expr(call, self.var2val)
+		if matched_expr:
+			self.match_cnt += 1
+			data_scale = matched_expr[self.data_scale]
+			data_zero_point = matched_expr[self.data_zero_point]
+			weight_scale = matched_expr[self.weight_scale]
+			weight_zero_point = matched_expr[self.weight_zero_point]
+			bias_scale = matched_expr[self.bias_scale]
+			bias_zero_point = matched_expr[self.bias_zero_point]
+			output_scale = matched_expr[self.output_scale]
+			output_zero_point = matched_expr[self.output_zero_point]
+
+		return super().visit_call_(call)
