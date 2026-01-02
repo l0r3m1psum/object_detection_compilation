@@ -188,7 +188,11 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		res = requantize(M, res, Y_z)
 		return res
 
-# TODO: https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html
+class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v10(cls, bb, inputs, attr, params):
+		# https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html#qlinearmatmul-10
+		raise Exception("TODO")
 
 class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -214,6 +218,7 @@ convert_map = {
 	"DequantizeLinear": DequantizeLinear,
 	"QLinearConv": QLinearConv,
 	"QGemm": QGemm,
+	"QLinearMatMul": QLinearMatMul,
 	"QLinearAdd": QLinearAdd,
 	"QLinearGlobalAveragePool": QLinearGlobalAveragePool,
 }

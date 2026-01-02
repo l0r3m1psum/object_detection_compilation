@@ -370,6 +370,7 @@ class Matcher(relax.PyExprMutator):
 
 		qmean = is_op("relax.mean")(is_op("relax.dequantize")(wc(), wc(), wc()))
 		avg_pool = is_op("relax.astype")(is_op("relax.quantize")(qmean, wc(), wc()))
+		# TODO: add support for relax.nn.avg_pool2d
 		self.quant_avg_pool_pattern = avg_pool
 
 		self.var2val = {}
