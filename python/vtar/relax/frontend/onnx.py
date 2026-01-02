@@ -13,6 +13,9 @@ def clamp(data, min, max):
 	res = relax.op.maximum(relax.const(min), res)
 	return res
 
+def requantize(s, x, z):
+	return clamp(relax.op.round(s*x), -128., 127.).astype("int8") + z
+
 def get_data(expr: relax.Expr, params: Dict[str, relax.Expr]) -> float|int:
 	keep_params_in_input = hasattr(expr, 'data')
 	if keep_params_in_input:
@@ -116,7 +119,7 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			out_dtype="int32"
 		)
 		res = (conv + relax.op.reshape(B, (1,-1,1,1))).astype("float32")
-		res = clamp(relax.op.round(M*res), -128., 127.).astype("int8") + Y_z
+		res = requantize(M, res, Y_z)
 		return res
 
 class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
@@ -177,8 +180,8 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			(BT-B_z),
 			out_dtype="int32"
 		)
-		res = clamp(relax.op.round(M*(matmul + C).astype("float32")), -128., 127.).astype("int8") + Y_z
-
+		res = (matmul + C).astype("float32")
+		res = requantize(M, res, Y_z)
 		return res
 
 # TODO: https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html
@@ -198,7 +201,8 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 			data=(x - x_z).astype("int32"),
 			pool_size=x.struct_info.shape.values[2:],
 		)
-		res = clamp(relax.op.round(M*(avg_pool2d).astype("float32")), -128., 127.).astype("int8") + y_z
+		res = avg_pool2d.astype("float32")
+		res = requantize(M, res, y_z)
 		return res
 
 convert_map = {
