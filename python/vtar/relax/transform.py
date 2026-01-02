@@ -329,6 +329,9 @@ class Matcher(relax.PyExprMutator):
 		self.output_scale = wc()
 		self.output_zero_point = wc()
 
+		# Are all commutative "is_op" operators commutative?
+		# TODO: relu = is_op("relax.nn.relu")(prev) | is_op("relax.max")(prev, ...)
+
 		# This should match all the quantized convolutions in ResNet
 		qdata = is_op("relax.dequantize")(wc(), self.data_scale, self.data_zero_point)
 		qweight = is_op("relax.dequantize")(wc(), self.weight_scale, self.weight_zero_point)
@@ -339,7 +342,35 @@ class Matcher(relax.PyExprMutator):
 		relu = is_op("relax.nn.relu")(add) | add # ReLU is optional
 		quant = is_op("relax.quantize")(relu, self.output_scale, self.output_zero_point)
 		cast = is_op("relax.astype")(quant)
-		self.pattern = cast
+		self.quant_conv2d_pattern = cast
+
+		a = is_op("relax.dequantize")(wc(), wc(), wc())
+		b = is_op("relax.reshape")(a, wc()) | is_op("relax.nn.max_pool2d")(a)
+		c = is_op("relax.astype")(is_op("relax.quantize")(b, wc(), wc()))
+		self.quant_useless_pattern = c
+
+		# FIXME: this also fuses only relax.astype for some reason...
+		qadd = is_op("relax.add")(
+			is_op("relax.dequantize")(wc(), wc(), wc()),
+			is_op("relax.dequantize")(wc(), wc(), wc())
+		)
+		relu = is_op("relax.nn.relu")(qadd) | qadd.dup()
+		add = is_op("relax.astype")(is_op("relax.quantize")(relu, wc(), wc()))
+		self.quant_add_pattern = add
+
+		qmatmul = is_op("relax.matmul")(
+			is_op("relax.dequantize")(wc(), wc(), wc()),
+			is_op("relax.permute_dims")(is_op("relax.dequantize")(wc(), wc(), wc())),
+		)
+		add = is_op("relax.add")(qmatmul, is_op("relax.dequantize")(wc(), wc(), wc())) | qmatmul
+		relu = is_op("relax.nn.relu")(add) | add
+		linear = is_op("relax.astype")(is_op("relax.quantize")(relu, wc(), wc()))
+		# TODO: add support for relax.nn.linear
+		self.quant_linear_pattern = linear
+
+		qmean = is_op("relax.mean")(is_op("relax.dequantize")(wc(), wc(), wc()))
+		avg_pool = is_op("relax.astype")(is_op("relax.quantize")(qmean, wc(), wc()))
+		self.quant_avg_pool_pattern = avg_pool
 
 		self.var2val = {}
 		self.conv_cnt = 0
@@ -352,7 +383,7 @@ class Matcher(relax.PyExprMutator):
 	def visit_call_(self, call: relax.Call) -> relax.Expr:
 		if call.op.name == "relax.nn.conv2d":
 			self.conv_cnt += 1
-		matched_expr = self.pattern.extract_matched_expr(call, self.var2val)
+		matched_expr = self.quant_conv2d_pattern.extract_matched_expr(call, self.var2val)
 		if matched_expr:
 			self.match_cnt += 1
 			data_scale = matched_expr[self.data_scale]

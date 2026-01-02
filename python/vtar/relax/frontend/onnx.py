@@ -43,6 +43,9 @@ def get_arg(expr: relax.Expr, params: Dict[str, relax.Expr]) -> relax.Expr:
 		res = expr
 	return res
 
+# TODO: implement custom relax function for quantization and dequantization with
+# non 'int8' zero_point.
+
 class QuantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
