@@ -75,6 +75,10 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		assert len(x_scale.data.shape) == len(x_zero_point.data.shape)
 
 		x_zero_point_dtype = x_zero_point.struct_info.dtype
+		if x_zero_point.struct_info.shape:
+			warnings.warn("Non scalar zero_point is supported at the Relax "
+				"level but it will fail when calling "
+				"relax.transform.LegalizeOps")
 		if x_zero_point_dtype != "int8":
 			warnings.warn("Unsupported zero_point dtype for dequantization '%s' casting it to 'int8" % x_zero_point_dtype)
 			# TODO: add check for cast to not lose precision
