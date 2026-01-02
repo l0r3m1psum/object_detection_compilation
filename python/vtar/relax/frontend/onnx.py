@@ -3,7 +3,7 @@ from tvm import ir
 from tvm import topi
 import tvm.relax.frontend.onnx
 
-from onnx import GraphProto
+import onnx
 
 from typing import Dict, List
 import warnings
@@ -224,7 +224,7 @@ convert_map = {
 }
 
 def from_onnx(
-		model: GraphProto,
+		model: onnx.GraphProto,
 		shape_dict: Dict[str, List] | None = None,
 		dtype_dict: str | Dict[str, str] | None = 'float32',
 		opset: int | None = None,
@@ -249,3 +249,68 @@ def from_onnx(
 	finally:
 		relax.frontend.onnx.onnx_frontend._get_convert_map = original_get_convert_map
 	return res
+
+from vtar.tir.util import prod # TODO: move prod in a util module inside vtar
+
+def make_initializers_hollow(model: onnx.GraphProto):
+
+	for tensor in model.graph.initializer:
+		tensor.data_location = onnx.TensorProto.EXTERNAL
+
+		tensor.ClearField("raw_data")
+
+		tensor.external_data.clear()
+		entry = tensor.external_data.add()
+		entry.key = "location"
+		entry.value = "weights.bin"
+
+	print(onnx.printer.to_text(model))
+
+def convert_weights_to_inputs(model: onnx.GraphProto):
+	graph = model.graph
+
+	initializers_to_keep = []
+	existing_input_names = {inp.name for inp in graph.input}
+	limit_elements = 1
+
+	for init in graph.initializer:
+		size = prod(init.dims)
+
+		if size <= limit_elements:
+			initializers_to_keep.append(init)
+		elif init.name not in existing_input_names:
+			input_arg = onnx.helper.make_tensor_value_info(
+				name=init.name,
+				elem_type=init.data_type,
+				shape=init.dims
+			)
+
+			graph.input.append(input_arg)
+
+	graph.initializer.clear()
+	graph.initializer.extend(initializers_to_keep)
+
+	print(onnx.printer.to_text(model))
+
+def move_constants_to_initializers(model: onnx.GraphProto):
+	graph = model.graph
+
+	new_nodes = []
+
+	for node in graph.node:
+		if node.op_type == "Constant":
+			# TODO: why is it done like this?
+			tensor_attr = next((attr for attr in node.attribute if attr.name == "value"), None)
+
+			if tensor_attr:
+				tensor_proto = tensor_attr.t
+				tensor_proto.name = node.output[0]
+				graph.initializer.append(tensor_proto)
+				continue
+
+		new_nodes.append(node)
+
+	del graph.node[:]
+	graph.node.extend(new_nodes)
+
+	print(onnx.printer.to_text(model))
