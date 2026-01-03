@@ -27,6 +27,13 @@ target = tvm.target.Target(env.target, host=env.target_host)
 dev = tvm.device(str(env.target))
 rng = numpy.random.default_rng(42)
 
+assert \
+    (env.INP_BUFF_SIZE//8, env.WGT_BUFF_SIZE//(8*8),
+        env.ACC_BUFF_SIZE//32, env.OUT_BUFF_SIZE//8) == (4096, 4096, 4096, 4096)
+assert 4096//16 == 256
+# (1, 128, 1, 16) we can load at most two of this in ACC_BUFF, hence anything
+# bigger needs to be split
+
 # Scheduling tests #############################################################
 
 def test_blocked_load_store():
@@ -894,6 +901,91 @@ def test_can_prove_data_load_invariant_of_access_order():
     print(f"Proof of Contiguity: {is_contiguous}")
     print(f"Volume Accessed: {total_elements_accessed}")
     print(f"Buffer Size:     {total_buffer_size}")
+
+import os
+
+@pytest.mark.skipif("HAS_VTA" not in os.environ, reason="Pynq with VTA is not connected")
+def test_pynq_remote():
+    # FIXME: implement this properly
+    from tvm import rpc
+    from tvm.contrib import utils
+
+    n = tvm.runtime.convert(1024)
+    A = te.placeholder((n,), name="A")
+    B = te.compute((n,), lambda i: A[i] + 1.0, name="B")
+    mod = tvm.IRModule.from_expr(te.create_prim_func([A, B]).with_attr("global_symbol", "add_one"))
+
+    local_demo = False
+
+    if local_demo:
+        target = "llvm"
+    else:
+        # uname -i
+        target = "llvm -mtriple=aarch64-linux-gnueabihf"
+
+    func = tvm.compile(mod, target=target)
+    # save the lib at a local temp folder
+    temp = utils.tempdir()
+    path = temp.relpath("lib.tar")
+    func.export_library(path)
+
+    if local_demo:
+        remote = rpc.LocalSession()
+    else:
+        host = "192.168.137.48"
+        port = 9091
+        remote = rpc.connect(host, port)
+
+    import vtar
+    import os
+    import shutil
+
+    # set "PYTHONPATH=%CD%\..\submodules\tvm\vta\python"
+    # The bitsream should be inside "zcu104\0_0_1\1x16_i8w8a32_15_15_18_17.bit"
+    os.environ["VTA_CACHE_PATH"] = os.path.join(os.environ["installdir"], "Programs/bitstreams")
+    # The code expect the HOME environment variable to exists.
+    os.environ["HOME"] = "workaround"
+    shutil.copy("submodules/tvm-vta/config/zcu104_sample.json",
+            "submodules/tvm-vta/config/vta_config.json")
+    # vtar.reconfig_runtime(remote)
+    # vtar.program_fpga(remote, bitstream=None)
+
+    remote.upload(path)
+    func = remote.load_module("lib.tar")
+
+    dev = remote.cpu()
+    a = tvm.nd.array(numpy.random.uniform(size=1024).astype(A.dtype), dev)
+    b = tvm.nd.array(numpy.zeros(1024, dtype=A.dtype), dev)
+    # the function will run on the remote device
+    func(a, b)
+    numpy.testing.assert_equal(b.numpy(), a.numpy() + 1)
+
+    time_f = func.time_evaluator(func.entry_name, dev, number=10)
+    cost = time_f(a, b).mean
+    print("%g secs/op" % cost)
+
+@pytest.mark.skipif("HAS_VTA" not in os.environ, reason="Pynq with VTA is not connected")
+def test_vta_remote():
+    from tvm import rpc
+    # FIXME: implement this properly
+    os.environ["VTA_CACHE_PATH"] = os.path.join(os.environ["installdir"], "\\Programs\\bitstreams")
+
+    host = "192.168.137.48"
+    port = 9091
+    remote = rpc.connect(host, port)
+    # vtar.program_fpga(remote, bitstream=None)
+    # rng = numpy.random.default_rng(42)
+    dev = remote.ext_dev(0)
+    # A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+    A = tvm.nd.empty((1, 64, 1, 16), "int32", dev)
+    # B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
+    B = tvm.nd.empty((1, 64, 1, 16), "int32", dev)
+    # C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
+    C = tvm.nd.empty((1, 64, 1, 16), "int8", dev)
+
+    remote.upload("vta.tar")
+    func = remote.load_module("vta.tar")
+    func(A, B, C)
 
 if __name__ == '__main__':
     testing.main()
