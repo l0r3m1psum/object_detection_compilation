@@ -15,6 +15,7 @@ import numpy
 import ctypes
 import pytest
 import warnings
+import os
 
 if onnx.__version__ != "1.18.0":
     warnings.warn("The version of ONNX is different from 1.18.0 which is the "
@@ -811,7 +812,7 @@ main_graph (float[1,3,224,224] input, int8[64,3,7,7] "onnx::Conv_193_quantized",
    ["/Flatten"] "/Flatten_output_0" = Flatten <axis: int = 1> ("/avgpool/GlobalAveragePool_output_0")
    ["/Flatten_output_0_QuantizeLinear"] "/Flatten_output_0_quantized" = QuantizeLinear ("/Flatten_output_0", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point")
 
-   ["/fc/Gemm_quant"] output_quantized = com.microsoft.QGemm <alpha: float = 1, transB: int = 1> ("/Flatten_output_0_quantized", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point", "fc.weight_quantized", "fc.weight_scale", "fc.weight_zero_point", "fc.bias_quantized", output_scale, output_zero_point)
+   ["/fc/Gemm_quant"] output_quantized = com.microsoft.QGemm <alpha: float = 1., transB: int = 1> ("/Flatten_output_0_quantized", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point", "fc.weight_quantized", "fc.weight_scale", "fc.weight_zero_point", "fc.bias_quantized", output_scale, output_zero_point)
 
    [output_DequantizeLinear] output = DequantizeLinear (output_quantized, output_scale, output_zero_point)
 }
@@ -819,9 +820,10 @@ main_graph (float[1,3,224,224] input, int8[64,3,7,7] "onnx::Conv_193_quantized",
 
 def test_onnx_import_quantized_resnet18():
     onnx_model = onnx.parser.parse_model(onnx_text_quantized_resnet18)
+    onnx.checker.check_model(onnx_model)
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
     mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
-    mod.show()
+    # mod.show()
     if False:
         # NOTE: this is bugged since it can't handle addition the addition of the
         # skip connection in InferLayoutBinaryEwise
@@ -830,9 +832,27 @@ def test_onnx_import_quantized_resnet18():
             "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
         })(mod)
     mod = vtar.relax.transform.GraphPack()(mod)
+    mod = relax.get_pipeline('vtar_zero')(mod)
     mod.show()
-
-    # TODO: make this test more "meaningful"
+    # FIXME: why does it crash if we use ext_dev(0)
+    dev = tvm.runtime.device('cpu')
+    target = tvm.target.Target.from_device(dev)
+    # tvm.target.Target("llvm", host="llvm")
+    params_spec = [
+        (topi.utils.get_const_tuple(relax.get_shape_of(param)), param.struct_info.dtype)
+        for param in mod['main'].params
+    ]
+    params = [tvm.nd.array((rng.random(shape)*10).astype(dtype), dev) for shape, dtype in params_spec]
+    ex = relax.build(mod, target)
+    vm = relax.VirtualMachine(ex, dev)
+    # vm.set_instrument could be used for quantization in TVM
+    ex.export_library("build/resnet18_int8.dll")
+    rt_mod = tvm.runtime.load_module("build/resnet18_int8.dll")
+    vm = relax.VirtualMachine(rt_mod, dev)
+    time_f = vm.time_evaluator("main", dev, number=1)
+    res = time_f(*params)
+    print(print(rt_mod["stats"]()))
+    print(res)
 
 # Misc. tests ##################################################################
 
@@ -901,8 +921,6 @@ def test_can_prove_data_load_invariant_of_access_order():
     print(f"Proof of Contiguity: {is_contiguous}")
     print(f"Volume Accessed: {total_elements_accessed}")
     print(f"Buffer Size:     {total_buffer_size}")
-
-import os
 
 @pytest.mark.skipif("HAS_VTA" not in os.environ, reason="Pynq with VTA is not connected")
 def test_pynq_remote():

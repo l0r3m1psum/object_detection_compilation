@@ -8,6 +8,7 @@ setlocal
 
 set "VTA_HW_PATH=%CD:\=/%/submodules/tvm-vta"
 set target=install
+set build_type=Debug
 
 REM TODO: pip install stuff like in setup env.
 pushd submodules\tvm || goto :exit
@@ -17,7 +18,7 @@ pushd submodules\tvm || goto :exit
         copy /y ..\cmake\config.cmake . || goto :exit
         copy /y ..\..\..\vtar\VTAR.cmake . || goto :exit
         REM Ignored by msbuild
-        REM echo set(CMAKE_BUILD_TYPE RelWithDebInfo) >> config.cmake || goto :exit
+        REM echo set(CMAKE_BUILD_TYPE %build_type%) >> config.cmake || goto :exit
         echo set(USE_LLVM "llvm-config --ignore-libllvm --link-static") >> config.cmake || goto :exit
         echo set(HIDE_PRIVATE_SYMBOLS ON) >> config.cmake || goto :exit
         REM echo set(USE_CUDA ON) >> config.cmake || goto :exit
@@ -41,12 +42,12 @@ pushd submodules\tvm || goto :exit
 
         cmake "-DCMAKE_INSTALL_PREFIX=%installdir%\Programs\TVM" .. || goto :exit
         REM Needed because otherwise LINK.EXE cannot find tvm.lib
-        set "LINK=/LIBPATH:%CD%\RelWithDebInfo /LIBPATH:%installdir%\Programs\Python\libs" || goto :exit
+        set "LINK=/LIBPATH:%CD%\%build_type% /LIBPATH:%installdir%\Programs\Python\libs" || goto :exit
         set "INCLUDE=%cd%\..\ffi\include"
         set UseEnv=true
-        cmake --build . --config RelWithDebInfo --verbose --target %target% --parallel %NUMBER_OF_PROCESSORS% || goto :exit
+        cmake --build . --config %build_type% --verbose --target %target% --parallel %NUMBER_OF_PROCESSORS% || goto :exit
         if "%target%" == "clean" (exit /b 0)
-        set "TVM_LIBRARY_PATH=%CD%\RelWithDebInfo" || goto :exit
+        set "TVM_LIBRARY_PATH=%CD%\%build_type%" || goto :exit
     popd || goto :exit
     set "LINK=/LIBPATH:%installdir%\Programs\Python\libs /LIBPATH:%installdir%\Programs\TVM\lib" || goto :exit
     REM --no-build-isolation makes it faster
