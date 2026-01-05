@@ -112,8 +112,8 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		M = relax.const((X_s*W_s)/Y_s)
 		conv = relax.op.nn.conv2d(
-			data=(X-X_z),
-			weight=(W-W_z),
+			data=(X.astype("int32") - X_z.astype("int32")),
+			weight=(W.astype("int32") - W_z.astype("int32")),
 			strides=attr.get("strides", 1),
 			padding=attr.get("pads", 0),
 			dilation=attr.get("dilations", 1),
@@ -149,7 +149,8 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		M_1 = relax.const(A_s/C_s)
 		M_2 = relax.const(B_s/C_s)
-		res = M_1*(A - A_z).astype("float32") + M_2*(B - B_z).astype("float32")
+		res = M_1*(A.astype("int32") - A_z.astype("int32")).astype("float32") \
+			+ M_2*(B.astype("int32") - B_z.astype("int32")).astype("float32")
 		res = requantize(relax.const(1.0), res, C_z)
 		return res
 
@@ -181,8 +182,8 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		M = relax.const((A_s*B_s)/Y_s)
 		matmul = relax.op.matmul(
-			(AT-A_z),
-			(BT-B_z),
+			(AT.astype("int32") - A_z.astype("int32")),
+			(BT.astype("int32") - B_z.astype("int32")),
 			out_dtype="int32"
 		)
 		res = (matmul + C).astype("float32")
@@ -204,8 +205,8 @@ class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		M = relax.const((A_s*B_s)/Y_s)
 		matmul = relax.op.matmul(
-			(A - A_z),
-			(B - B_z),
+			(A.astype("int32") - A_z.astype("int32")),
+			(B.astype("int32") - B_z.astype("int32")),
 			out_dtype="int32"
 		)
 		res = matmul.astype("float32")
