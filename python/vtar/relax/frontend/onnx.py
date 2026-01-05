@@ -14,7 +14,7 @@ def clamp(data, min, max):
 	return res
 
 def requantize(s, x, z):
-	return clamp(relax.op.round(s*x), -128., 127.).astype("int8") + z
+	return clamp(relax.op.round(s*x + z.astype("float32")), -128., 127.).astype("int8")
 
 def get_data(expr: relax.Expr, params: Dict[str, relax.Expr]) -> float|int:
 	keep_params_in_input = hasattr(expr, 'data')
@@ -150,7 +150,7 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		M_1 = relax.const(A_s/C_s)
 		M_2 = relax.const(B_s/C_s)
 		res = M_1*(A - A_z).astype("float32") + M_2*(B - B_z).astype("float32")
-		res = clamp(relax.op.round(res), -128., 127.).astype("int8") + C_z
+		res = requantize(relax.const(1.0), res, C_z)
 		return res
 
 class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
@@ -193,7 +193,24 @@ class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html#qlinearmatmul-10
-		raise RuntimeError("TODO")
+		A = inputs[0]
+		A_s = get_data(inputs[1], params[1])
+		A_z = get_arg(inputs[2], params[1])
+		B = get_arg(inputs[3], params[1])
+		B_s = get_data(inputs[4], params[1])
+		B_z = get_arg(inputs[5], params[1])
+		Y_s = get_data(inputs[6], params[1])
+		Y_z = get_arg(inputs[7], params[1])
+
+		M = relax.const((A_s*B_s)/Y_s)
+		matmul = relax.op.matmul(
+			(A - A_z),
+			(B - B_z),
+			out_dtype="int32"
+		)
+		res = matmul.astype("float32")
+		res = requantize(M, res, Y_z)
+		return res
 
 class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -207,9 +224,9 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 
 		M = relax.const(x_s/y_s)
 		avg_pool2d = relax.op.nn.avg_pool2d(
-			data=(x - x_z).astype("int32"),
+			data=(x).astype("int32"),
 			pool_size=x.struct_info.shape.values[2:],
-		)
+		).astype("int32") - x_z.astype("int32")
 		res = avg_pool2d.astype("float32")
 		res = requantize(M, res, y_z)
 		return res
