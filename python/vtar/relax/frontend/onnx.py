@@ -122,7 +122,7 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			kernel_layout="OIHW",
 			out_dtype="int32"
 		)
-		res = (conv + relax.op.reshape(B, (1,-1,1,1))).astype("float32")
+		res = (conv + relax.op.reshape(B, (1, -1, 1, 1))).astype("float32")
 		res = requantize(M, res, Y_z)
 		return res
 
@@ -149,7 +149,8 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		M_1 = relax.const(A_s/C_s)
 		M_2 = relax.const(B_s/C_s)
-		res = clamp(relax.op.round(M_1 * (A - A_z).astype("float32") + M_2 * (B - B_z).astype("float32")), -128., 127.).astype("int8") + C_z
+		res = M_1*(A - A_z).astype("float32") + M_2*(B - B_z).astype("float32")
+		res = clamp(relax.op.round(res), -128., 127.).astype("int8") + C_z
 		return res
 
 class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
@@ -192,7 +193,7 @@ class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html#qlinearmatmul-10
-		raise Exception("TODO")
+		raise RuntimeError("TODO")
 
 class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
