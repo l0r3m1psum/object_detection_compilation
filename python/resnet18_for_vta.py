@@ -110,6 +110,7 @@ def main():
     vm = relax.VirtualMachine(ex, dev)
 
     test_dataset = datasets.Imagenette(root='build/dataset', split='val', download=False, transform=transform)
+    test_dataset = torch.utils.data.Subset(test_dataset, torch.randperm(len(test_dataset))[:200])
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     sess_fp32 = ort.InferenceSession("build/resnet18.onnx")
