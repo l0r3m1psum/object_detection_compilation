@@ -13,6 +13,9 @@ import tvm
 from tvm import relax
 import onnx
 
+# From the ONNX model zoo there are already quantized models available
+# https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx
+
 class MyCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_loader):
         super().__init__()

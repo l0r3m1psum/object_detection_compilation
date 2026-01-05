@@ -111,17 +111,36 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		assert get_data(inputs[5], params[1]) == 0
 
 		M = relax.const((X_s*W_s)/Y_s)
-		conv = relax.op.nn.conv2d(
-			data=(X.astype("int32") - X_z.astype("int32")),
-			weight=(W.astype("int32") - W_z.astype("int32")),
+		kwargs = dict(
 			strides=attr.get("strides", 1),
 			padding=attr.get("pads", 0),
 			dilation=attr.get("dilations", 1),
 			groups=attr.get("group", 1),
 			data_layout="NCHW",
 			kernel_layout="OIHW",
-			out_dtype="int32"
+			out_dtype="int32",
 		)
+		if False:
+			conv = relax.op.nn.conv2d(
+				data=(X.astype("int32") - X_z.astype("int32")),
+				weight=(W.astype("int32") - W_z.astype("int32")),
+				**kwargs
+			)
+		else:
+			O, I, H, W_ = topi.utils.get_const_tuple(relax.get_shape_of(W))
+			n = relax.const(I*H*W_)
+			# TODO: write faster versions of the 2D convolutions with ones or
+			# implement some rewrite/constant folding rules
+			conv = (
+				n*X_z.astype("int32")*W_z.astype("int32")
+				- W_z.astype("int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
+				- X_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
+				# - relax.op.reshape(
+				# 	bb.normalize(X_z.astype("int32")*relax.op.sum(W.astype("int32"), axis=(1,2,3))),
+				# 	(1, -1, 1, 1)
+				# )
+				+ relax.op.nn.conv2d(X, W, **kwargs)
+			)
 		res = (conv + relax.op.reshape(B, (1, -1, 1, 1))).astype("float32")
 		res = requantize(M, res, Y_z)
 		return res
@@ -154,6 +173,32 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		res = requantize(relax.const(1.0), res, C_z)
 		return res
 
+def do_matmul(A: ir.expr.RelaxExpr, A_z: ir.expr.RelaxExpr, B: ir.expr.RelaxExpr, B_z: ir.expr.RelaxExpr) -> ir.expr.RelaxExpr:
+	n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(A))[1])
+	rows, cols = 0, 1
+	if False:
+		matmul = relax.op.matmul(
+			(A.astype("int32") - A_z.astype("int32")),
+			(B.astype("int32") - B_z.astype("int32")),
+		)
+	elif False:
+		matmul = (
+			n*A_z.astype("int32")*B_z.astype("int32")
+			- B_z.astype("int32")*relax.op.matmul(A, relax.op.ones_like(B), out_dtype="int32")
+			- A_z.astype("int32")*relax.op.matmul(relax.op.ones_like(A), B, out_dtype="int32")
+			+ relax.op.matmul(A, B, out_dtype="int32")
+		)
+	else:
+		# From "Quantization and Training of Neural Networks for Efficient
+		# Integer-Arithmetic-Only Inference"
+		matmul = (
+			n*A_z.astype("int32")*B_z.astype("int32")
+			- B_z.astype("int32")*relax.op.sum(A.astype("int32"), axis=cols, keepdims=True)
+			- A_z.astype("int32")*relax.op.sum(B.astype("int32"), axis=rows, keepdims=True)
+			+ relax.op.matmul(A, B, out_dtype="int32")
+		)
+	return matmul
+
 class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v1(cls, bb, inputs, attr, params):
@@ -166,8 +211,6 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		assert inputs[3].struct_info.ndim == 2
 		assert alpha == 1.0, "alpha != 1.0 requires some work to keep it integer only"
 
-		# A has shape MxN and B has shape NxO
-		n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(inputs[0]))[1])
 		A   = inputs[0]
 		A_s = get_data(inputs[1], params[1])
 		A_z = get_arg(inputs[2], params[1])
@@ -177,15 +220,11 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		C   = get_arg(inputs[6], params[1])
 		Y_s = get_data(inputs[7], params[1])
 		Y_z = get_arg(inputs[8], params[1])
-		AT = relax.op.permute_dims(A) if transA else A
+		AT = bb.normalize(relax.op.permute_dims(A) if transA else A)
 		BT = relax.op.permute_dims(B) if transB else B
 
 		M = relax.const((A_s*B_s)/Y_s)
-		matmul = relax.op.matmul(
-			(AT.astype("int32") - A_z.astype("int32")),
-			(BT.astype("int32") - B_z.astype("int32")),
-			out_dtype="int32"
-		)
+		matmul = do_matmul(AT, A_z, BT, B_z)
 		res = (matmul + C).astype("float32")
 		res = requantize(M, res, Y_z)
 		return res
@@ -204,11 +243,7 @@ class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		Y_z = get_arg(inputs[7], params[1])
 
 		M = relax.const((A_s*B_s)/Y_s)
-		matmul = relax.op.matmul(
-			(A.astype("int32") - A_z.astype("int32")),
-			(B.astype("int32") - B_z.astype("int32")),
-			out_dtype="int32"
-		)
+		matmul = do_matmul(A, A_z, B, B_z)
 		res = matmul.astype("float32")
 		res = requantize(M, res, Y_z)
 		return res
