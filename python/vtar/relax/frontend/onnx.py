@@ -224,6 +224,9 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 		y_z = get_arg(inputs[4], params[1])
 
 		M = relax.const(x_s/y_s)
+		# NOTE: that astype("int32") is needed because for some reason Relax
+		# infers the type of the avg_pool2d expression to be an "int64". Is this
+		# a TVM bug?
 		avg_pool2d = relax.op.nn.avg_pool2d(
 			data=(x).astype("int32"),
 			pool_size=x.struct_info.shape.values[2:],
