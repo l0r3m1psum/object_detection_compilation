@@ -467,6 +467,8 @@ def test_blocked_vta_conv2d():
     sch.reorder(tx, b_out)
     warnings.warn(UserWarning("skipping thread binding because it is not "
         "supported in codegen_llvm.cc::GetThreadIndex"))
+    # TODO: what I need here is probably software pipeline but
+    # tir.transform.InjectSoftwarePipeline should be only for CUDA
     if False:
         sch.bind(tx, "cthread")
 
@@ -753,7 +755,7 @@ def test_trivial_quantized_gemm():
 
 # ONNX tests ###################################################################
 
-# Generated from:
+# Generated and slightly edited from:
 # onnx_model = onnx.load("build/resnet18_int8.onnx")
 # vtar.relax.frontend.onnx.convert_weights_to_inputs(onnx_model)
 onnx_text_quantized_resnet18 = """\
@@ -818,6 +820,7 @@ main_graph (float[1,3,224,224] input, int8[64,3,7,7] "onnx::Conv_193_quantized",
 }
 """
 
+@pytest.mark.skip(reason="very slow")
 def test_onnx_import_quantized_resnet18():
     onnx_model = onnx.parser.parse_model(onnx_text_quantized_resnet18)
     onnx.checker.check_model(onnx_model)
@@ -834,7 +837,7 @@ def test_onnx_import_quantized_resnet18():
     mod = vtar.relax.transform.GraphPack()(mod)
     mod = relax.get_pipeline('vtar_zero')(mod)
     mod.show()
-    # FIXME: why does it crash if we use ext_dev(0)
+    # FIXME: this crashes if we use ext_dev(0) because look at test_trivial_end2end_compilation
     dev = tvm.runtime.device('cpu')
     target = tvm.target.Target.from_device(dev)
     # tvm.target.Target("llvm", host="llvm")
@@ -844,11 +847,134 @@ def test_onnx_import_quantized_resnet18():
     ]
     params = [tvm.nd.array((rng.random(shape)*10).astype(dtype), dev) for shape, dtype in params_spec]
     ex = relax.build(mod, target)
-    vm = relax.VirtualMachine(ex, dev)
-    # vm.set_instrument could be used for quantization in TVM
     ex.export_library("build/resnet18_int8.dll")
     rt_mod = tvm.runtime.load_module("build/resnet18_int8.dll")
     vm = relax.VirtualMachine(rt_mod, dev)
+    time_f = vm.time_evaluator("main", dev, number=1)
+    res = time_f(*params)
+    print(print(rt_mod["stats"]()))
+    print(res)
+
+onnx_text_quantized_bottleneck = """\
+<
+   ir_version: 6,
+   opset_import: ["" : 11, "com.microsoft" : 1]
+>
+main_graph (
+    float[1,3,224,224] input,
+    int8[64,3,7,7] "onnx::Conv_193_quantized",
+    int32[64] "onnx::Conv_194_quantized",
+    int8[64,64,3,3] "onnx::Conv_196_quantized",
+    int32[64] "onnx::Conv_197_quantized",
+    int8[64,64,3,3] "onnx::Conv_199_quantized",
+    int32[64] "onnx::Conv_200_quantized",
+    int8[64,64,3,3] "onnx::Conv_202_quantized",
+    int32[64] "onnx::Conv_203_quantized",
+    int8[64,64,3,3] "onnx::Conv_205_quantized",
+    int32[64] "onnx::Conv_206_quantized",
+    int8[10,64] "fc.weight_quantized",
+    int32[10] "fc.bias_quantized"
+    ) => (float[1,10] output)
+   <int8 "/conv1/Conv_output_0_zero_point" =  {-128},
+    float "/conv1/Conv_output_0_scale" =  {0.0288692},
+    int8 input_zero_point =  {-14},
+    float input_scale =  {0.0186584},
+    float "onnx::Conv_193_scale" =  {0.00268506},
+    int8 "onnx::Conv_193_zero_point" =  {0},
+    int8 "/layer1/layer1.0/conv1/Conv_output_0_zero_point" =  {-128},
+    float "/layer1/layer1.0/conv1/Conv_output_0_scale" =  {0.0219578},
+    int8 "/maxpool/MaxPool_output_0_zero_point" =  {-128},
+    float "/maxpool/MaxPool_output_0_scale" =  {0.0288692},
+    float "onnx::Conv_196_scale" =  {0.00252428},
+    int8 "onnx::Conv_196_zero_point" =  {0},
+    int8 "/layer1/layer1.0/conv2/Conv_output_0_zero_point" =  {16},
+    float "/layer1/layer1.0/conv2/Conv_output_0_scale" =  {0.0414506},
+    float "onnx::Conv_199_scale" =  {0.00593825},
+    int8 "onnx::Conv_199_zero_point" =  {0},
+    int8 "/layer1/layer1.0/Add_output_0_zero_point" =  {-128},
+    float "/layer1/layer1.0/Add_output_0_scale" =  {0.0333703},
+    int8 "/layer1/layer1.1/conv1/Conv_output_0_zero_point" =  {-128},
+    float "/layer1/layer1.1/conv1/Conv_output_0_scale" =  {0.0201473},
+    float "onnx::Conv_202_scale" =  {0.00179852},
+    int8 "onnx::Conv_202_zero_point" =  {0},
+    int8 "/layer1/layer1.1/conv2/Conv_output_0_zero_point" =  {32},
+    float "/layer1/layer1.1/conv2/Conv_output_0_scale" =  {0.0872713},
+    float "onnx::Conv_205_scale" =  {0.006156},
+    int8 "onnx::Conv_205_zero_point" =  {0},
+    int8 "/layer1/layer1.1/Add_output_0_zero_point" =  {-128},
+    float "/layer1/layer1.1/Add_output_0_scale" =  {0.0397232},
+    int8 "/avgpool/GlobalAveragePool_output_0_zero_point" =  {-128},
+    float "/avgpool/GlobalAveragePool_output_0_scale" =  {0.05131},
+    int8 output_zero_point =  {-47},
+    float output_scale =  {0.240899},
+    int8 "/Flatten_output_0_zero_point" =  {-128},
+    float "/Flatten_output_0_scale" =  {0.05131},
+    float "fc.weight_scale" =  {0.000817349},
+    int8 "fc.weight_zero_point" =  {0}>
+{
+   [input_QuantizeLinear] input_quantized = QuantizeLinear (input, input_scale, input_zero_point)
+
+   ["/conv1/Conv_quant"] "/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [7, 7], pads: ints = [3, 3, 3, 3], strides: ints = [2, 2]> (input_quantized, input_scale, input_zero_point, "onnx::Conv_193_quantized", "onnx::Conv_193_scale", "onnx::Conv_193_zero_point", "/conv1/Conv_output_0_scale", "/conv1/Conv_output_0_zero_point", "onnx::Conv_194_quantized")
+
+   ["/relu/Relu_output_0_DequantizeLinear"] "/relu/Relu_output_0" = DequantizeLinear ("/conv1/Conv_output_0_quantized", "/conv1/Conv_output_0_scale", "/conv1/Conv_output_0_zero_point")
+   ["/maxpool/MaxPool"] "/maxpool/MaxPool_output_0" = MaxPool <ceil_mode: int = 0, dilations: ints = [1, 1], kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [2, 2]> ("/relu/Relu_output_0")
+   ["/maxpool/MaxPool_output_0_QuantizeLinear"] "/maxpool/MaxPool_output_0_quantized" = QuantizeLinear ("/maxpool/MaxPool_output_0", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point")
+
+   ["/layer1/layer1.0/conv1/Conv_quant"] "/layer1/layer1.0/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/maxpool/MaxPool_output_0_quantized", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point", "onnx::Conv_196_quantized", "onnx::Conv_196_scale", "onnx::Conv_196_zero_point", "/layer1/layer1.0/conv1/Conv_output_0_scale", "/layer1/layer1.0/conv1/Conv_output_0_zero_point", "onnx::Conv_197_quantized")
+   ["/layer1/layer1.0/conv2/Conv_quant"] "/layer1/layer1.0/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.0/conv1/Conv_output_0_quantized", "/layer1/layer1.0/conv1/Conv_output_0_scale", "/layer1/layer1.0/conv1/Conv_output_0_zero_point", "onnx::Conv_199_quantized", "onnx::Conv_199_scale", "onnx::Conv_199_zero_point", "/layer1/layer1.0/conv2/Conv_output_0_scale", "/layer1/layer1.0/conv2/Conv_output_0_zero_point", "onnx::Conv_200_quantized")
+   ["/layer1/layer1.0/Add_quant"] "/layer1/layer1.0/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer1/layer1.0/conv2/Conv_output_0_quantized", "/layer1/layer1.0/conv2/Conv_output_0_scale", "/layer1/layer1.0/conv2/Conv_output_0_zero_point", "/maxpool/MaxPool_output_0_quantized", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point")
+   ["/layer1/layer1.1/conv1/Conv_quant"] "/layer1/layer1.1/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.0/Add_output_0_quantized", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point", "onnx::Conv_202_quantized", "onnx::Conv_202_scale", "onnx::Conv_202_zero_point", "/layer1/layer1.1/conv1/Conv_output_0_scale", "/layer1/layer1.1/conv1/Conv_output_0_zero_point", "onnx::Conv_203_quantized")
+   ["/layer1/layer1.1/conv2/Conv_quant"] "/layer1/layer1.1/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.1/conv1/Conv_output_0_quantized", "/layer1/layer1.1/conv1/Conv_output_0_scale", "/layer1/layer1.1/conv1/Conv_output_0_zero_point", "onnx::Conv_205_quantized", "onnx::Conv_205_scale", "onnx::Conv_205_zero_point", "/layer1/layer1.1/conv2/Conv_output_0_scale", "/layer1/layer1.1/conv2/Conv_output_0_zero_point", "onnx::Conv_206_quantized")
+   ["/layer1/layer1.1/Add_quant"] "/layer1/layer1.1/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer1/layer1.1/conv2/Conv_output_0_quantized", "/layer1/layer1.1/conv2/Conv_output_0_scale", "/layer1/layer1.1/conv2/Conv_output_0_zero_point", "/layer1/layer1.0/Add_output_0_quantized", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point", "/layer1/layer1.1/Add_output_0_scale", "/layer1/layer1.1/Add_output_0_zero_point")
+
+   ["/avgpool/GlobalAveragePool_quant"] "/avgpool/GlobalAveragePool_output_0_quantized" = com.microsoft.QLinearGlobalAveragePool <channels_last: int = 0> ("/layer1/layer1.1/Add_output_0_quantized", "/layer1/layer1.1/Add_output_0_scale", "/layer1/layer1.1/Add_output_0_zero_point", "/avgpool/GlobalAveragePool_output_0_scale", "/avgpool/GlobalAveragePool_output_0_zero_point")
+
+   ["/avgpool/GlobalAveragePool_output_0_DequantizeLinear"] "/avgpool/GlobalAveragePool_output_0" = DequantizeLinear ("/avgpool/GlobalAveragePool_output_0_quantized", "/avgpool/GlobalAveragePool_output_0_scale", "/avgpool/GlobalAveragePool_output_0_zero_point")
+   ["/Flatten"] "/Flatten_output_0" = Flatten <axis: int = 1> ("/avgpool/GlobalAveragePool_output_0")
+   ["/Flatten_output_0_QuantizeLinear"] "/Flatten_output_0_quantized" = QuantizeLinear ("/Flatten_output_0", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point")
+
+   ["/fc/Gemm_quant"] output_quantized = com.microsoft.QGemm <alpha: float = 1., transB: int = 1> ("/Flatten_output_0_quantized", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point", "fc.weight_quantized", "fc.weight_scale", "fc.weight_zero_point", "fc.bias_quantized", output_scale, output_zero_point)
+
+   [output_DequantizeLinear] output = DequantizeLinear (output_quantized, output_scale, output_zero_point)
+}
+"""
+
+def my_instrument(func, func_symbol: str, before_run: bool, ret_value, *args) -> int:
+    after_run = not before_run
+    # NOTE: why ret_value is always None???
+    if after_run and "conv" in func_symbol:
+        print(func_symbol)
+    return relax.VMInstrumentReturnKind.NO_OP
+
+def test_onnx_import_simple_bottleneck():
+    onnx_model = onnx.parser.parse_model(onnx_text_quantized_bottleneck)
+    onnx.checker.check_model(onnx_model)
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
+    try:
+        mod = relax.transform.ConvertLayout({
+            "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
+        })(mod)
+        raise ValueError("This should not be reached because ConvertLayout is bugged")
+    except tvm.error.TVMError:
+        pass
+    mod = vtar.relax.transform.GraphPack()(mod)
+    mod = relax.get_pipeline('vtar_zero')(mod)
+    mod.show()
+    # FIXME: this crashes if we use ext_dev(0) because look at test_trivial_end2end_compilation
+    dev = tvm.runtime.device('cpu')
+    target = tvm.target.Target.from_device(dev)
+    # tvm.target.Target("llvm", host="llvm")
+    params_spec = [
+        (topi.utils.get_const_tuple(relax.get_shape_of(param)), param.struct_info.dtype)
+        for param in mod['main'].params
+    ]
+    params = [tvm.nd.array((rng.random(shape)*10).astype(dtype), dev) for shape, dtype in params_spec]
+    ex = relax.build(mod, target)
+    ex.export_library("build/resnet18_int8.dll")
+    rt_mod = tvm.runtime.load_module("build/resnet18_int8.dll")
+    vm = relax.VirtualMachine(rt_mod, dev)
+    vm.set_instrument(my_instrument) # could be used for quantization in TVM
     time_f = vm.time_evaluator("main", dev, number=1)
     res = time_f(*params)
     print(print(rt_mod["stats"]()))
