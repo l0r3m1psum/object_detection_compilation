@@ -7,6 +7,7 @@ import onnx
 
 from typing import Dict, List
 import warnings
+import math
 
 def clamp(data, min, max):
 	res = relax.op.minimum(data, relax.const(max))
@@ -93,6 +94,24 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# TODO: add check for cast to not loose precision
 		return relax.op.dequantize(x, x_scale, x_zero_point, axis)
 
+def integer_only_arithmetic(M: relax.Expr, s_w: float, q_w: relax.Expr, z_w: relax.expr):
+	"""From "Speed up integer-arithmetic-only inference via bit-shifting" """
+	M = M.data.numpy().item()
+	n = int(math.floor(-math.log2(M)))
+	if n < 0: print(n, M)
+	M_star = 2**(-n)
+	assert 2**(-(n + 1)) <= M <= M_star, "M = %f, n = %d" % (M, n)
+	assert 1 <= M_star/M < 2
+
+	s_star_w = M_star/M * s_w
+	assert s_star_w >= s_w
+	if True:
+		q_star_w = (q_w.astype("int32") - z_w.astype("int32")).astype("float32")
+		q_star_w = requantize(relax.const(s_w/s_star_w), q_star_w , z_w)
+	else:
+		q_star_w = relax.op.quantize(relax.op.dequantize(q_w, relax.const(s_w), z_w), relax.const(s_star_w), z_w)
+	return n, q_star_w
+
 class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
@@ -120,6 +139,8 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			kernel_layout="OIHW",
 			out_dtype="int32",
 		)
+		N, W = integer_only_arithmetic(M, W_s, W, W_z)
+		W = bb.normalize(W)
 		if False:
 			conv = relax.op.nn.conv2d(
 				data=(X.astype("int32") - X_z.astype("int32")),
@@ -141,9 +162,14 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 				# )
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
-		res = (conv + relax.op.reshape(B, (1, -1, 1, 1))).astype("float32")
-		res = requantize(M, res, Y_z)
-		return res
+		res = (conv + relax.op.reshape(B, (1, -1, 1, 1)))
+		if False:
+			tmp = res * relax.const(2**N) if -N >= 0 else res / relax.const(2**N)
+		else:
+			tmp = relax.op.left_shift(res, N) if -N >= 0 else relax.op.right_shift(res, N)
+		return clamp(tmp + Y_z.astype("int32"), -128, 127).astype("int8")
+		# res = requantize(M, res.astype("float32"), Y_z)
+		# return res
 
 class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod

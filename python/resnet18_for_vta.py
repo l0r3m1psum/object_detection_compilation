@@ -5,6 +5,7 @@ import numpy as np
 import onnxruntime as ort
 from torchvision import datasets, transforms
 import os
+import sys
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import vtar.relax.frontend.onnx
@@ -108,12 +109,13 @@ def main():
             extra_options={
                 "ActivationSymmetric": False,
                 "WeightSymmetric": True,
+                "QDQKeepRemovableActivations": False,
             },
 
         )
 
     dev = tvm.runtime.device('cpu')
-    if not os.path.exists("build/resnet18_int8.dll"):
+    if True or not os.path.exists("build/resnet18_int8.dll"):
         onnx_model = onnx.load("build/resnet18_int8.onnx")
         mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
         mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
@@ -156,6 +158,7 @@ def main():
         correct_tvm += (pred_tvm == labels.numpy()).sum()
         total += labels.size(0)
         print(".", end="")
+        sys.stdout.flush()
     print("")
 
     print(f"Accuracy FP32: {correct_fp32/total*100:.2f}%")
