@@ -163,10 +163,13 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
 		res = (conv + relax.op.reshape(B, (1, -1, 1, 1)))
+		# This is horrible. N is the inverted exponent of 2 to perform the
+		# multiplication in IOA i.e. M_star = 2**(-n).
 		if False:
-			tmp = res * relax.const(2**N) if -N >= 0 else res / relax.const(2**N)
+			tmp = res * relax.const(2**(-N)) if -N >= 0 else res / relax.const(2**N)
 		else:
-			tmp = relax.op.left_shift(res, N) if -N >= 0 else relax.op.right_shift(res, N)
+			tmp = relax.op.left_shift(res, relax.const(-N)) \
+				if -N >= 0 else relax.op.right_shift(res, relax.const(N))
 		return clamp(tmp + Y_z.astype("int32"), -128, 127).astype("int8")
 		# res = requantize(M, res.astype("float32"), Y_z)
 		# return res
