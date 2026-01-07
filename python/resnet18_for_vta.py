@@ -1,6 +1,6 @@
 import torch
 from torchvision.models import resnet18, ResNet18_Weights
-from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, QuantFormat
+from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, QuantFormat, CalibrationMethod, quant_pre_process
 import numpy as np
 import onnxruntime as ort
 from torchvision import datasets, transforms
@@ -88,13 +88,28 @@ def main():
         calib_data_loader = DataLoader(calib_dataset, batch_size=1, shuffle=False)
         calib_data_reader = MyCalibrationDataReader(calib_data_loader)
 
+        # TODO: make arguments of this function explicit (and understand them)
+        quant_pre_process("build/resnet18.onnx", "build/resnet18_pre_proc.onnx")
         quantize_static(
-            model_input="build/resnet18.onnx",
+            model_input="build/resnet18_pre_proc.onnx",
             model_output="build/resnet18_int8.onnx",
             calibration_data_reader=calib_data_reader,
             quant_format=QuantFormat.QOperator,
+            op_types_to_quantize=None,
+            per_channel=False,
+            reduce_range=False,
+            activation_type=QuantType.QInt8,
             weight_type=QuantType.QInt8,
-            activation_type=QuantType.QInt8
+            nodes_to_quantize=None,
+            nodes_to_exclude=None,
+            use_external_data_format=False,
+            calibrate_method=CalibrationMethod.MinMax,
+            calibration_providers=None,
+            extra_options={
+                "ActivationSymmetric": False,
+                "WeightSymmetric": True,
+            },
+
         )
 
     dev = tvm.runtime.device('cpu')

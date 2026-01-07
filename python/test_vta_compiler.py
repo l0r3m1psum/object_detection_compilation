@@ -971,8 +971,9 @@ def test_onnx_import_simple_bottleneck():
     ]
     params = [tvm.nd.array((rng.random(shape)*10).astype(dtype), dev) for shape, dtype in params_spec]
     ex = relax.build(mod, target)
-    ex.export_library("build/resnet18_int8.dll")
-    rt_mod = tvm.runtime.load_module("build/resnet18_int8.dll")
+    path = "build/bottleneck_int8.dll"
+    ex.export_library(path)
+    rt_mod = tvm.runtime.load_module(path)
     vm = relax.VirtualMachine(rt_mod, dev)
     vm.set_instrument(my_instrument) # could be used for quantization in TVM
     time_f = vm.time_evaluator("main", dev, number=1)
