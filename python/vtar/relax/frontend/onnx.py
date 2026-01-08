@@ -17,12 +17,24 @@ def clamp(data, min, max):
 def requantize(s, x, z):
 	return clamp(relax.op.round(s*x + z.astype("float32")), -128., 127.).astype("int8")
 
+def get_array(params: dict, var: relax.Var) -> tvm.runtime.NDArray:
+	name = str(var)
+	for key, value in params.items():
+		if key.replace("/", "_").replace(".", "_") == name:
+			_, array = value
+			break
+	else:
+		raise ValueError("The variable %s was not found in %s after applying "
+			"the normalizing transformations" % (name, list(params.keys())))
+
+	return array
+
 def get_data(expr: relax.Expr, params: Dict[str, relax.Expr]) -> float|int:
 	keep_params_in_input = hasattr(expr, 'data')
 	if keep_params_in_input:
 		array = expr.data
 	else:
-		_, array = params[str(expr)]
+		array = get_array(params, expr)
 	res = array.numpy().item()
 	return res
 
@@ -34,7 +46,7 @@ def get_data(expr: relax.Expr, params: Dict[str, relax.Expr]) -> float|int:
 def get_arg(expr: relax.Expr, params: Dict[str, relax.Expr]) -> relax.Expr:
 	keep_params_in_input = bool(params)
 	if keep_params_in_input:
-		_, array = params[str(expr)]
+		array = get_array(params, expr)
 		if isinstance(array, relax.Expr):
 			res = array
 		else:
