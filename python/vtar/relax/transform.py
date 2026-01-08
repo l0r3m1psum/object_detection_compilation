@@ -1,5 +1,6 @@
 import tvm
 
+from tvm import ir
 from tvm import relax
 from tvm import topi
 
@@ -209,6 +210,8 @@ class GraphPack:
 # ``start_pack`` and ``stop_pack`` range. Also all operations in that range
 # shall be supported by VTA and the subgraph should be in A-Normal Form (ANF).
 
+################################################################################
+
 # https://mlc.ai/chapter_graph_optimization/index.html#fuse-linear-and-relu
 @relax.expr_functor.mutator
 class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
@@ -254,7 +257,7 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 # the backend/runtime.
 # https://github.com/onnx/onnx/issues/5895#issuecomment-1928446285
 # TODO: in the future this should support also binary operations like addition
-@tvm.ir.transform.module_pass(opt_level=0)
+@ir.transform.module_pass(opt_level=0)
 class RemoveUnnecessaryDequantizeQuantizeWrapping:
 	def transform_module(self, mod, ctx):
 		rewriter = UnnecessaryDequantizeQuantizeWrappingRemover(mod)
@@ -267,10 +270,10 @@ class RemoveUnnecessaryDequantizeQuantizeWrapping:
 
 		return rewriter.builder_.get()
 
-def to_dict(attrs: tvm.ir.Attrs) -> Dict:
+def to_dict(attrs: ir.Attrs) -> Dict:
 	if str(attrs).startswith('relax.attrs.QuantizeAttrs'):
 		return {'axis': attrs.axis, 'out_dtype': attrs.out_dtype}
-	assert isinstance(attrs, tvm.ir.Attrs)
+	assert isinstance(attrs, ir.Attrs)
 	return {key: attrs[key] for key in attrs.keys()}
 
 @relax.expr_functor.mutator
@@ -299,7 +302,7 @@ class MaxpoolDequantizeQuantizeWrapper(relax.PyExprMutator):
 
 		return res
 
-@tvm.ir.transform.module_pass(opt_level=0)
+@ir.transform.module_pass(opt_level=0)
 class WrapMaxpoolDequantizeQuantize:
 	def transform_module(self, mod, ctx):
 		rewriter = MaxpoolDequantizeQuantizeWrapper(mod)
@@ -397,3 +400,91 @@ class Matcher(relax.PyExprMutator):
 			output_zero_point = matched_expr[self.output_zero_point]
 
 		return super().visit_call_(call)
+
+@relax.expr_functor.mutator
+class ConstAstypeSimplifyer(relax.PyExprMutator):
+	def __init__(self, mod: tvm.IRModule) -> None:
+		super().__init__(mod)
+		self.pattern = relax.dpl.is_op("relax.astype")(relax.dpl.is_const())
+
+	def visit_call_(self, call):
+
+		res = call
+		if self.pattern.match(call):
+			res = relax.const(call.args[0].data.numpy().astype(call.struct_info.dtype))
+
+		return res
+
+@ir.transform.module_pass(opt_level=0)
+class SimplifyConstAstype:
+	def transform_module(self, mod, ctx):
+		rewriter = ConstAstypeSimplifyer(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				updated_func = rewriter.visit_expr(func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				rewriter.builder_.update_func(global_var, updated_func)
+
+		return rewriter.builder_.get()
+
+@relax.expr_functor.mutator
+class RingSimplifier(relax.PyExprMutator):
+	def __init__(self, mod: tvm.IRModule) -> None:
+		super().__init__(mod)
+		# NOTE: Yes the pattern of commutative operations is commutative
+		self.pattern = (
+			relax.dpl.is_op("relax.multiply")
+			| relax.dpl.is_op("relax.add")
+		)(relax.dpl.is_const(), relax.dpl.wildcard())
+		# TODO: handle "relax.subtract" with relax.op.negative
+
+	def visit_call_(self, call):
+		# We rebuild the graph.
+		new_args = [self.visit_expr(arg) for arg in call.args]
+
+		res = call
+		if self.pattern.match(call):
+			if isinstance(new_args[0], relax.Constant):
+				const = new_args[0]
+				var = new_args[1]
+			else:
+				const = new_args[1]
+				var = new_args[0]
+			const_np = const.data.numpy()
+			# TODO what if both are const?
+			is_scalar = not const_np.shape
+			if is_scalar:
+				if call.op.name == "relax.multiply":
+					if const_np == 1:
+						res = var
+					elif const_np == 0:
+						res = const
+				if call.op.name == "relax.add":
+					if const_np == 0:
+						res = var
+			res = self.builder_.emit(res)
+
+		if res is call:
+			res = relax.Call(call.op, new_args, call.attrs)
+		return res
+
+@ir.transform.module_pass(opt_level=0)
+class SimplifyRing:
+	def transform_module(self, mod, ctx):
+		rewriter = RingSimplifier(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				old_func = func
+				updated_func = rewriter.visit_expr(old_func)
+				# FIXME: why doesn't this halt?
+				if False:
+					while not ir.structural_equal(updated_func, old_func):
+						print(".")
+						old_func = updated_func
+						updated_func = rewriter.visit_expr(old_func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				rewriter.builder_.update_func(global_var, updated_func)
+
+		return rewriter.builder_.get()
