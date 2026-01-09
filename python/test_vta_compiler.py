@@ -753,6 +753,59 @@ def test_trivial_quantized_gemm():
 
     pytest.skip("TODO")
 
+def test_constant_folding_patches():
+    @I.ir_module
+    class BeforeModule:
+        @R.function
+        def main(x: R.Tensor((1, 4), dtype="float32")):
+            with R.dataflow():
+                c1 = R.const(numpy.array(((1, 2, 3, 4),), dtype="float32"))
+                c2 = R.const(numpy.array(((10, 20, 30, 40),), dtype="float32"))
+                c3 = R.astype(R.const(numpy.array([1]), dtype="int32"), dtype="float32")
+                c4 = R.add(c1, c3)
+                tt = R.astype(R.const(0), dtype="float32")
+                # relax.transform.FoldConstant does constant folding by execution
+                # hence it completely stops the analysis if it encounters a non
+                # compile-time known constant. This is a shame since it misses to do
+                # some trivial optimizations when multiplying or adding by zero or
+                # one.
+                c5 = R.multiply(x, tt)
+                c6 = R.add(c5, c4)
+                intermediate = R.add(c6, c2)
+                lv1 = R.add(x, intermediate)
+                # Given the previously explained limitations this pattern is
+                # also out of scope for relax.transform.FoldConstant
+                lv2 = R.add(lv1, R.const(numpy.array(((1, 1, 1, 1),), dtype="float32")))
+                gv = R.add(R.const(numpy.array(((1, 1, 1, 1),), dtype="float32")), lv2)
+                R.output(gv)
+            return gv
+
+    @I.ir_module
+    class ReferenceModule:
+        @R.function
+        def main(x: R.Tensor((1, 4), dtype="float32")) -> R.Tensor((1, 4), dtype="float32"):
+            with R.dataflow():
+                gv: R.Tensor((1, 4), dtype="float32") = R.add(x, R.const(numpy.array(((11+1+2, 22+1+2, 33+1+2, 44+1+2),), dtype="float32")))
+                R.output(gv)
+            return gv
+
+    pipeline = tvm.transform.Sequential((
+        vtar.relax.transform.SimplifyConstAstype(),
+        relax.transform.CanonicalizeBindings(), # necessary
+        vtar.relax.transform.SimplifyRing(),
+        relax.transform.FoldConstant(),
+        tvm.ir.transform.PrintIR(),
+        vtar.relax.transform.AddChainSimplify(),
+        vtar.relax.transform.AddChainSimplify(),
+        relax.transform.CanonicalizeBindings(),
+        tvm.ir.transform.PrintIR(),
+    ))
+    mod = BeforeModule
+    mod = pipeline(mod)
+    AfterModule = mod
+
+    ir.assert_structural_equal(AfterModule, ReferenceModule)
+
 # ONNX tests ###################################################################
 
 # Generated and slightly edited from:
