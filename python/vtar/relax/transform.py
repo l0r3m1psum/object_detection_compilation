@@ -402,7 +402,7 @@ class Matcher(relax.PyExprMutator):
 		return super().visit_call_(call)
 
 @relax.expr_functor.mutator
-class ConstAstypeSimplifyer(relax.PyExprMutator):
+class ConstAstypeSimplifier(relax.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
 		super().__init__(mod)
 		self.pattern = relax.dpl.is_op("relax.astype")(relax.dpl.is_const())
@@ -418,7 +418,7 @@ class ConstAstypeSimplifyer(relax.PyExprMutator):
 @ir.transform.module_pass(opt_level=0)
 class SimplifyConstAstype:
 	def transform_module(self, mod, ctx):
-		rewriter = ConstAstypeSimplifyer(mod)
+		rewriter = ConstAstypeSimplifier(mod)
 
 		for global_var, func in mod.functions.items():
 			if isinstance(func, relax.Function):
@@ -473,6 +473,60 @@ class RingSimplifier(relax.PyExprMutator):
 class SimplifyRing:
 	def transform_module(self, mod, ctx):
 		rewriter = RingSimplifier(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				old_func = func
+				updated_func = rewriter.visit_expr(old_func)
+				# FIXME: why doesn't this halt?
+				if False:
+					while not ir.structural_equal(updated_func, old_func):
+						print(".")
+						old_func = updated_func
+						updated_func = rewriter.visit_expr(old_func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				rewriter.builder_.update_func(global_var, updated_func)
+
+		return rewriter.builder_.get()
+
+@relax.expr_functor.mutator
+class AddChainSimplifier(relax.PyExprMutator):
+	def __init__(self, mod: tvm.IRModule) -> None:
+		super().__init__(mod)
+		# lvN: = R.add(metadata["relax.expr.Constant"][N], lvO)
+		# lvM: = R.add(lvN, metadata["relax.expr.Constant"][M])
+		self.c1 = relax.dpl.is_const()
+		self.c2 = relax.dpl.is_const()
+		self.var = relax.dpl.wildcard()
+		self.pattern = relax.dpl.is_op("relax.add")(
+			relax.dpl.is_op("relax.add")(self.c1, self.var),
+			self.c2
+		)
+
+	def visit_function_(self, func: relax.Function) -> relax.Expr:
+		self.var2val = relax.analysis.get_var2val(func)
+		return super().visit_function_(func)
+
+	def visit_call_(self, call: relax.Call) -> relax.Expr:
+		# We rebuild the graph.
+		new_args = [self.visit_expr(arg) for arg in call.args]
+
+		res = call
+		matched_expr = self.pattern.extract_matched_expr(call, self.var2val)
+		if matched_expr:
+			new_data = matched_expr[self.c1].data.numpy() + matched_expr[self.c2].data.numpy()
+
+			res = relax.op.add(matched_expr[self.var], relax.const(new_data))
+			res = self.builder_.emit(res)
+
+		if res is call:
+			res = relax.Call(call.op, new_args, call.attrs)
+		return res
+
+@ir.transform.module_pass(opt_level=0)
+class AddChainSimplify:
+	def transform_module(self, mod, ctx):
+		rewriter = AddChainSimplifier(mod)
 
 		for global_var, func in mod.functions.items():
 			if isinstance(func, relax.Function):
