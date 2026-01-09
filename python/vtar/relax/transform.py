@@ -463,7 +463,6 @@ class RingSimplifier(relax.PyExprMutator):
 				if call.op.name == "relax.add":
 					if const_np == 0:
 						res = var
-			res = self.builder_.emit(res)
 
 		if res is call:
 			res = relax.Call(call.op, new_args, call.attrs)
@@ -478,12 +477,9 @@ class SimplifyRing:
 			if isinstance(func, relax.Function):
 				old_func = func
 				updated_func = rewriter.visit_expr(old_func)
-				# FIXME: why doesn't this halt?
-				if False:
-					while not ir.structural_equal(updated_func, old_func):
-						print(".")
-						old_func = updated_func
-						updated_func = rewriter.visit_expr(old_func)
+				while not ir.structural_equal(updated_func, old_func):
+					old_func = updated_func
+					updated_func = rewriter.visit_expr(old_func)
 				updated_func = relax.analysis.remove_all_unused(updated_func)
 				rewriter.builder_.update_func(global_var, updated_func)
 
@@ -515,8 +511,9 @@ class AddChainSimplifier(relax.PyExprMutator):
 		matched_expr = self.pattern.extract_matched_expr(call, self.var2val)
 		if matched_expr:
 			new_data = matched_expr[self.c1].data.numpy() + matched_expr[self.c2].data.numpy()
+			new_var = self.visit_expr(matched_expr[self.var])
 
-			res = relax.op.add(matched_expr[self.var], relax.const(new_data))
+			res = relax.op.add(new_var, relax.const(new_data))
 			res = self.builder_.emit(res)
 
 		if res is call:
@@ -532,12 +529,9 @@ class AddChainSimplify:
 			if isinstance(func, relax.Function):
 				old_func = func
 				updated_func = rewriter.visit_expr(old_func)
-				# FIXME: why doesn't this halt?
-				if False:
-					while not ir.structural_equal(updated_func, old_func):
-						print(".")
-						old_func = updated_func
-						updated_func = rewriter.visit_expr(old_func)
+				while not ir.structural_equal(updated_func, old_func):
+					old_func = updated_func
+					updated_func = rewriter.visit_expr(old_func)
 				updated_func = relax.analysis.remove_all_unused(updated_func)
 				rewriter.builder_.update_func(global_var, updated_func)
 
