@@ -558,6 +558,7 @@ class FunctionToBindRewriter(relax.PyExprMutator):
 			if params_to_bind:
 				new_func = self.mod[call.op].bind_params(params_to_bind)
 				new_func_name = self.builder_.get_unique_name(call.op.name_hint + "_binded")
+				# This populates the struct_info of gv!
 				gv = self.builder_.add_func(new_func, new_func_name)
 				res = relax.Call(gv, params_to_leave, call.attrs)
 		if res is call:
