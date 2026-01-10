@@ -536,3 +536,43 @@ class AddChainSimplify:
 				rewriter.builder_.update_func(global_var, updated_func)
 
 		return rewriter.builder_.get()
+
+@relax.expr_functor.mutator
+class FunctionToBindRewriter(relax.PyExprMutator):
+	def __init__(self, mod: ir.IRModule) -> None:
+		super().__init__(mod)
+		self.mod = mod
+
+	def visit_call_(self, call: relax.Call) -> relax.Expr:
+		res = call
+		if isinstance(call.op, ir.GlobalVar):
+
+			params_to_bind = {}
+			params_to_leave = []
+			for arg, var in zip(call.args, self.mod[call.op].params):
+				if isinstance(arg, relax.Constant) \
+					and not arg.data.numpy().shape:
+					params_to_bind[var] = arg
+				else:
+					params_to_leave.append(arg)
+			if params_to_bind:
+				new_func = self.mod[call.op].bind_params(params_to_bind)
+				new_func_name = self.builder_.get_unique_name(call.op.name_hint + "_binded")
+				gv = self.builder_.add_func(new_func, new_func_name)
+				res = relax.Call(gv, params_to_leave, call.attrs)
+		if res is call:
+			res = super().visit_call_(call)
+		return res
+
+@ir.transform.module_pass(opt_level=0)
+class BindScalarToFunctions:
+	def transform_module(self, mod, ctx):
+		rewriter = FunctionToBindRewriter(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				updated_func = rewriter.visit_expr(func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				rewriter.builder_.update_func(global_var, updated_func)
+
+		return rewriter.builder_.get()
