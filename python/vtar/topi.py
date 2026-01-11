@@ -8,9 +8,9 @@ from typing import Tuple
 def conv2d_NCHWnc(
 		data: te.Tensor,
 		kernel: te.Tensor,
-		strides: Tuple[int],
-		padding: Tuple[int],
-		dilation: Tuple[int],
+		strides: Tuple[int, int],
+		padding: Tuple[int, int],
+		dilation: Tuple[int, int],
 		layout: str,
 		out_layout: str,
 		out_dtype='int32'
@@ -27,20 +27,20 @@ def conv2d_NCHWnc(
 	dshape = topi.utils.get_const_tuple(data.shape)
 	kshape = topi.utils.get_const_tuple(kernel.shape)
 
-	if padding[0]:
+	if any(padding):
 		pad_data = topi.nn.pad(data, [0, 0, padding[0], padding[1], 0, 0])
 	else:
 		pad_data = data
 
-	oheight = topi.utils.get_const_int((pad_data.shape[2] - kernel.shape[2]) // strides[0] + 1)
-	owidth = topi.utils.get_const_int((pad_data.shape[3] - kernel.shape[3]) // strides[1] + 1)
+	hstride, wstride = strides
+	oheight = topi.utils.get_const_int((pad_data.shape[2] - kernel.shape[2]) // hstride + 1)
+	owidth = topi.utils.get_const_int((pad_data.shape[3] - kernel.shape[3]) // wstride + 1)
 	oshape = (dshape[0], kshape[0], oheight, owidth, dshape[4], kshape[4])
 
 	d_i = te.reduce_axis((0, kshape[2]), name="d_i")
 	d_j = te.reduce_axis((0, kshape[3]), name="d_j")
 	k_o = te.reduce_axis((0, dshape[1]), name="k_o")
 	k_i = te.reduce_axis((0, dshape[-1]), name="k_i")
-	hstride, wstride = strides
 	res = te.compute(
 		oshape,
 		lambda b_o, c_o, i, j, b_i, c_i: te.sum(
@@ -50,6 +50,82 @@ def conv2d_NCHWnc(
 		),
 		name="res",
 		tag="conv2d_dense",
+	)
+
+	return res
+
+from tvm import tir
+
+def avg_pool2d_int(
+		data: te.Tensor,
+		pool_size: Tuple[int, int],
+		strides: Tuple[int, int],
+		dilation: Tuple[int, int],
+		padding: Tuple[int, int],
+		count_include_pad: bool = False,
+		layout: str = "NCHW", # TODO: handle factored layouts
+		out_layout: str = "NCHW",
+	) -> te.Tensor:
+
+	# TODO: it should be trivial to add support for dilation
+	assert dilation == (1, 1)
+	assert layout == "NCHW"
+	assert out_layout == "NCHW"
+	assert not count_include_pad
+
+	pool_h, pool_w = pool_size
+	N = te.const(pool_h * pool_w, data.dtype)
+
+	ry = te.reduce_axis((0, pool_h), name="ry")
+	rx = te.reduce_axis((0, pool_w), name="rx")
+
+	def reducer_intr(lhs, rhs):
+		acc_quot, acc_rem = lhs
+		new_quot, new_rem = rhs
+		new_acc_rem = acc_rem + new_rem
+		new_acc_quot = acc_quot + new_quot
+		# NOTE: N must be less than INT32_MIN because of negation in two's complement
+		quot_correction_pos = tir.Select(new_acc_rem >= N, 1, 0)
+		quot_correction_neg = tir.Select(new_acc_rem <= -N, -1, 0)
+		quot_correction = quot_correction_pos + quot_correction_neg
+		rem_correction_pos = tir.Select(new_acc_rem >= N, -N, 0)
+		rem_correction_neg = tir.Select(new_acc_rem <= -N, N, 0)
+		rem_correction = rem_correction_pos + rem_correction_neg
+		return (new_acc_quot + quot_correction, new_acc_rem + rem_correction)
+
+	def reducer_identity(dtype1: str, dtype2: str):
+		return (te.const(0, dtype1), te.const(0, dtype2))
+
+	dist_avg_reducer = te.comm_reducer(reducer_intr, reducer_identity, name="dist_avg")
+
+	if any(padding):
+		pad_data = topi.nn.pad(data, [0, 0, padding[0], padding[1]])
+	else:
+		pad_data = data
+
+	hstride, wstride = strides
+	dshape = topi.utils.get_const_tuple(data.shape)
+	pad_data_shape = topi.utils.get_const_tuple(pad_data.shape)
+	oheight = (pad_data_shape[2] - pool_h) // hstride + 1
+	owidth = (pad_data_shape[3] - pool_w) // wstride + 1
+	oshape = (dshape[0], dshape[1], oheight, owidth)
+
+	sum_quot, sum_rem = te.compute(
+		oshape,
+		lambda n, c, h, w: dist_avg_reducer(
+			(
+				te.truncdiv(pad_data[n, c, h*hstride + ry, w*wstride + rx], N),
+				te.truncmod(pad_data[n, c, h*hstride + ry, w*wstride + rx], N)
+			),
+			axis=[ry, rx]
+		),
+		name="pool_distributive_accum"
+	)
+	res = te.compute(
+		oshape,
+		lambda n, c, h, w: sum_quot[n, c, h*hstride, w]    \
+			+ te.truncdiv(sum_rem[n, c, h*hstride, w], N),
+		name="res"
 	)
 
 	return res
