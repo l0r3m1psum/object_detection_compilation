@@ -382,11 +382,11 @@ class RingSimplifier(relax.PyExprMutator):
 						res = var
 				if call.op.name == "relax.subtract":
 					if const_np == 0:
-						is_lhs = matched_const is call.args[0]
+						is_lhs = matched_const.same_as(self.builder_.lookup_binding(call.args[0]))
 						if is_lhs:
-							res = relax.op.negative(const)
+							res = relax.op.negative(var)
 						else:
-							res = const
+							res = var
 
 		if res is call:
 			new_args = [self.visit_expr(arg) for arg in call.args]
@@ -439,7 +439,6 @@ class AddChainSimplifier(relax.PyExprMutator):
 			new_var = self.visit_expr(matched_expr[self.var])
 
 			res = relax.op.add(new_var, relax.const(new_data))
-			res = self.builder_.emit(res)
 
 		if res is call:
 			res = relax.Call(call.op, new_args, call.attrs)
