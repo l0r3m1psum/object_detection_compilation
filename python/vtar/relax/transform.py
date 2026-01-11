@@ -432,25 +432,28 @@ class SimplifyConstAstype:
 class RingSimplifier(relax.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
 		super().__init__(mod)
-		# NOTE: Yes the pattern of commutative operations is commutative
-		self.pattern = (
+		# Yes, the pattern of commutative operations is commutative.
+		self.const = relax.dpl.is_const()
+		self.var = relax.dpl.wildcard()
+		self.op = (
 			relax.dpl.is_op("relax.multiply")
 			| relax.dpl.is_op("relax.add")
-		)(relax.dpl.is_const(), relax.dpl.wildcard())
-		# TODO: handle "relax.subtract" with relax.op.negative
+			| relax.dpl.is_op("relax.subtract")
+		)
+		self.pattern = self.op(self.const, self.var)
+
+	def visit_function_(self, func: relax.Function) -> relax.Expr:
+		self.var2val = relax.analysis.get_var2val(func)
+		return super().visit_function_(func)
 
 	def visit_call_(self, call):
-		# We rebuild the graph.
-		new_args = [self.visit_expr(arg) for arg in call.args]
 
 		res = call
-		if self.pattern.match(call):
-			if isinstance(new_args[0], relax.Constant):
-				const = new_args[0]
-				var = new_args[1]
-			else:
-				const = new_args[1]
-				var = new_args[0]
+		matched_expr = self.pattern.extract_matched_expr(call, self.var2val)
+		if matched_expr:
+			matched_const = matched_expr[self.const]
+			const = self.visit_expr(matched_const)
+			var = self.visit_expr(matched_expr[self.var])
 			const_np = const.data.numpy()
 			# TODO what if both are const?
 			is_scalar = not const_np.shape
@@ -463,8 +466,16 @@ class RingSimplifier(relax.PyExprMutator):
 				if call.op.name == "relax.add":
 					if const_np == 0:
 						res = var
+				if call.op.name == "relax.subtract":
+					if const_np == 0:
+						is_lhs = matched_const is call.args[0]
+						if is_lhs:
+							res = relax.op.negative(const)
+						else:
+							res = const
 
 		if res is call:
+			new_args = [self.visit_expr(arg) for arg in call.args]
 			res = relax.Call(call.op, new_args, call.attrs)
 		return res
 
