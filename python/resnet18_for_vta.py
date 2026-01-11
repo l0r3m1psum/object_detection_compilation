@@ -1,7 +1,7 @@
 import torch
 from torchvision.models import resnet18, ResNet18_Weights
 from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, QuantFormat, CalibrationMethod, quant_pre_process
-import numpy as np
+import numpy
 import onnxruntime as ort
 from torchvision import datasets, transforms
 import os
@@ -32,7 +32,7 @@ class MyCalibrationDataReader(CalibrationDataReader):
 def run_inference(session, input_tensor):
     ort_inputs = {session.get_inputs()[0].name: input_tensor.numpy()}
     ort_outs = session.run(None, ort_inputs)
-    return np.array(ort_outs[0])
+    return numpy.array(ort_outs[0])
 
 def main():
 
@@ -115,7 +115,7 @@ def main():
         )
 
     dev = tvm.runtime.device('cpu')
-    if True or not os.path.exists("build/resnet18_int8.dll"):
+    if not os.path.exists("build/resnet18_int8.dll"):
         onnx_model = onnx.load("build/resnet18_int8.onnx")
         mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
         mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
@@ -145,13 +145,13 @@ def main():
         images = images.cpu()
 
         outputs_fp32 = run_inference(sess_fp32, images)
-        pred_fp32 = np.argmax(outputs_fp32, axis=1)
+        pred_fp32 = numpy.argmax(outputs_fp32, axis=1)
 
         outputs_int8 = run_inference(sess_int8, images)
-        pred_int8 = np.argmax(outputs_int8, axis=1)
+        pred_int8 = numpy.argmax(outputs_int8, axis=1)
 
         outputs_tvm = vm["main"](tvm.nd.array(images.numpy(), dev)).numpy()
-        pred_tvm = np.argmax(outputs_tvm, axis=1)
+        pred_tvm = numpy.argmax(outputs_tvm, axis=1)
 
         correct_fp32 += (pred_fp32 == labels.numpy()).sum()
         correct_int8 += (pred_int8 == labels.numpy()).sum()

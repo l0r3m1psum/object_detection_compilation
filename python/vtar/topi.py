@@ -1,5 +1,6 @@
 from tvm import topi
 from tvm import te
+from tvm import tir
 
 from typing import Tuple
 
@@ -54,8 +55,6 @@ def conv2d_NCHWnc(
 
 	return res
 
-from tvm import tir
-
 def avg_pool2d_int(
 		data: te.Tensor,
 		pool_size: Tuple[int, int],
@@ -79,11 +78,11 @@ def avg_pool2d_int(
 	ry = te.reduce_axis((0, pool_h), name="ry")
 	rx = te.reduce_axis((0, pool_w), name="rx")
 
-	def reducer_intr(lhs, rhs):
+	def reducer_intr(lhs: Tuple[tir.Var], rhs: Tuple[tir.Var]) -> Tuple[tir.PrimExpr, tir.PrimExpr]:
 		acc_quot, acc_rem = lhs
 		new_quot, new_rem = rhs
-		new_acc_rem = acc_rem + new_rem
 		new_acc_quot = acc_quot + new_quot
+		new_acc_rem = acc_rem + new_rem
 		# NOTE: N must be less than INT32_MIN because of negation in two's complement
 		quot_correction_pos = tir.Select(new_acc_rem >= N, 1, 0)
 		quot_correction_neg = tir.Select(new_acc_rem <= -N, -1, 0)
@@ -93,13 +92,13 @@ def avg_pool2d_int(
 		rem_correction = rem_correction_pos + rem_correction_neg
 		return (new_acc_quot + quot_correction, new_acc_rem + rem_correction)
 
-	def reducer_identity(dtype1: str, dtype2: str):
+	def reducer_identity(dtype1: str, dtype2: str) -> Tuple[tir.PrimExpr, tir.PrimExpr]:
 		return (te.const(0, dtype1), te.const(0, dtype2))
 
 	dist_avg_reducer = te.comm_reducer(reducer_intr, reducer_identity, name="dist_avg")
 
 	if any(padding):
-		pad_data = topi.nn.pad(data, [0, 0, padding[0], padding[1]])
+		pad_data = topi.nn.pad(data, (0, 0, padding[0], padding[1]))
 	else:
 		pad_data = data
 
@@ -123,8 +122,8 @@ def avg_pool2d_int(
 	)
 	res = te.compute(
 		oshape,
-		lambda n, c, h, w: sum_quot[n, c, h*hstride, w]    \
-			+ te.truncdiv(sum_rem[n, c, h*hstride, w], N),
+		lambda n, c, h, w: sum_quot[n, c, h*hstride, w*wstride]    \
+			+ te.truncdiv(sum_rem[n, c, h*hstride, w*wstride], N),
 		name="res"
 	)
 
