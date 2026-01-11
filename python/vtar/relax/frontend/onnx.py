@@ -265,6 +265,7 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		BT = relax.op.permute_dims(B) if transB else B
 
 		M = relax.const((A_s*B_s)/Y_s)
+		# TODO: add support for relax.nn.linear
 		matmul = do_matmul(AT, A_z, BT, B_z)
 		res = (matmul + C).astype("float32")
 		res = requantize(M, res, Y_z)
