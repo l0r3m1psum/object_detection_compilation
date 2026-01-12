@@ -2,6 +2,7 @@ import typing
 import logging
 import os
 
+# TODO: move some torch utility functions to vtar.relax.fromntend.torch
 import torch
 import torchvision
 

@@ -368,7 +368,7 @@ if __name__ == "__main__":
 
     pipeline = tvm.transform.Sequential((
         vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
-        ###
+        ### TODO: determine if it is necessary to fold constants twice...
         vtar.relax.transform.SimplifyConstAstype(),
         relax.transform.CanonicalizeBindings(), # necessary
         vtar.relax.transform.SimplifyRing(),

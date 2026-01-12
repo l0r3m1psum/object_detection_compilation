@@ -120,27 +120,24 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 			if (call.op.name == "relax.nn.conv2d"
 					and call.attrs['out_dtype'] == "int32"):
 				data, weight = packed_args
+				# NOTE: I don't know why this if before was not necessary and now it is...
 				if len(data.struct_info.shape) != 6:
 					data = pack_nchw_to_NCHWnc(self.builder_, data, self.bfactor, self.cfactor)
 				weight = pad_channel(self.builder_, weight, self.cfactor)
 				weight = pack_nchw_to_NCHWnc(self.builder_, weight, self.cfactor, self.cfactor)
 				# TODO: topi.nn.bitpack
-				try:
-					res = self.builder_.emit(relax.op.nn.conv2d(
-						data,
-						weight,
-						call.attrs['strides'],
-						call.attrs['padding'],
-						call.attrs['dilation'],
-						call.attrs['groups'],
-						self.conv_data_layout,
-						self.conv_kernel_layout,
-						# bb.emit infers the out_layout
-						out_dtype=call.attrs['out_dtype']
-					))
-				except:
-					breakpoint()
-					pass
+				res = self.builder_.emit(relax.op.nn.conv2d(
+					data,
+					weight,
+					call.attrs['strides'],
+					call.attrs['padding'],
+					call.attrs['dilation'],
+					call.attrs['groups'],
+					self.conv_data_layout,
+					self.conv_kernel_layout,
+					# bb.emit infers the out_layout
+					out_dtype=call.attrs['out_dtype']
+				))
 			elif call.op.name == 'relax.add' or call.op.name == 'relax.multiply':
 				# This code should work for all elementwise binary functions.
 				arg0_shape = _get_shape(packed_args[0])
@@ -157,6 +154,7 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 					data, bias = packed_args
 					data_shape = _get_shape(data)
 					bias_shape = _get_shape(bias)
+					# NOTE: I don't know why this if before was not necessary and now it is...
 					if len(bias_shape) != 6:
 						if (len(bias_shape) != 4 or
 							(bias_shape[0] != 1 or bias_shape[2] != 1 or bias_shape[3] != 1)):
@@ -164,13 +162,10 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 							raise ValueError("Broadcasted %s is only supported channel dimension" % call.op.name)
 						bias = pad_channel(self.builder_, bias, self.cfactor)
 						bias = pack_nchw_to_NCHWnc(self.builder_, bias, 1, self.cfactor)
+					# NOTE: I don't know why this if before was not necessary and now it is...
 					if len(data_shape) != 6:
 						data = pack_nchw_to_NCHWnc(self.builder_, data, 1, self.cfactor)
-					try:
-						res = self.builder_.emit(relax.Call(call.op, (data, bias)))
-					except:
-						breakpoint()
-						pass
+					res = self.builder_.emit(relax.Call(call.op, (data, bias)))
 			elif call.op.name == 'relax.reshape':
 				# Data in packed_args is passed in pack_nchw_to_NCHWnc
 				(data, shape) = packed_args

@@ -164,10 +164,9 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			n = relax.const(I*H*W_)
 			# TODO: write faster versions of the 2D convolutions with ones or
 			# implement some rewrite/constant folding rules
-			if W_z.data.numpy() != 0: raise ValueError("AAAA")
 			conv = (
-				# n*X_z.astype("int32")*W_z.astype("int32")
-				# - W_z.astype("int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
+				n*X_z.astype("int32")*W_z.astype("int32")
+				- W_z.astype("int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
 				- X_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
