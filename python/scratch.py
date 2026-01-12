@@ -1,5 +1,5 @@
 import tvm
-from tvm import tir, arith, ir, te, topi, relax
+from tvm import tir, arith, ir, te, topi, relax, dlight as dl
 from tvm.script import tir as T
 from tvm.script import ir as I
 from tvm.script import relax as R
@@ -420,7 +420,16 @@ if __name__ == "__main__":
     )(mod)
     mod = relax.transform.FuseTIR()(mod)
     mod = tir.transform.ForceNarrowIndexToInt32()(mod)
+    import ctypes
+    vta_fsim = ctypes.CDLL("vta_fsim")
+    env = vtar.get_env()
+    target = tvm.target.Target(env.target, host=env.target_host)
+    with target:
+        mod = dl.ApplyDefaultSchedule(
+            vtar.dlight.Conv2D(),
+        )(mod)
     mod.show()
+    raise SystemExit(0)
 
     dev = tvm.runtime.device('cpu')
     target = tvm.target.Target.from_device(dev)
