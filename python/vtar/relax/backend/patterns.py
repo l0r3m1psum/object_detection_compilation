@@ -97,12 +97,14 @@ def _get_patterns():
     # NOTE: probably VTA can load int8 and cast them to int32 for acc memory
     # hence we need to as type to the input pattern
     qadd_lhs = relax.dpl.is_op("relax.subtract")(
-        relax.dpl.wildcard().has_dtype("int32"), relax.dpl.wildcard().has_dtype("int32")
+        relax.dpl.is_op("relax.astype")(relax.dpl.wildcard().has_dtype("int8")).has_dtype("int32"),
+        relax.dpl.wildcard().has_dtype("int32")
     )
     qadd_lhs = relax.dpl.is_op("relax.astype")(qadd_lhs).has_dtype("float32")
     qadd_lhs = relax.dpl.is_op("relax.multiply")(relax.dpl.is_const(), qadd_lhs) # not commutative for some reason...
     qadd_rhs = relax.dpl.is_op("relax.subtract")(
-        relax.dpl.wildcard().has_dtype("int32"), relax.dpl.wildcard().has_dtype("int32")
+        relax.dpl.is_op("relax.astype")(relax.dpl.wildcard().has_dtype("int8")).has_dtype("int32"),
+        relax.dpl.wildcard().has_dtype("int32")
     )
     qadd_rhs = relax.dpl.is_op("relax.astype")(qadd_rhs).has_dtype("float32")
     qadd_rhs = relax.dpl.is_op("relax.multiply")(relax.dpl.is_const(), qadd_rhs) # not commutative for some reason...
