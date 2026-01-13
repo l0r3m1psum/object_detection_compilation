@@ -2,6 +2,7 @@
 https://discuss.tvm.apache.org/t/dlight-enabling-fast-and-efficient-kernel-generation-by-hardware-information/16273/4?u=l0r3m
 """
 from typing import Callable, List, Union
+import warnings
 
 import tvm
 from tvm import dlight as dl
@@ -129,6 +130,13 @@ def is_conv2d(sch: tir.Schedule, block_info: dl.BlockInfo) -> bool:
     if error: return False
     return True
 
+# Taken from tvm.dlight.analysis.common_analysis
+def _iter_kind(i: tir.IterVar) -> str:
+    return {
+        tir.IterVar.DataPar: "S",
+        tir.IterVar.CommReduce: "R",
+    }.get(i.iter_type, "O") # O as in Other I guess.
+
 class Conv2D(VTAScheduleRule):
     def apply(
         self,
@@ -141,30 +149,37 @@ class Conv2D(VTAScheduleRule):
         if len(func.params) != 3 + 1:
             return None
 
+        if any(len(param.shape) != 6 for param in func.struct_info.params):
+            return None
+
         sch = tir.Schedule(func)
-        block_infos = dl.normalize_prim_func(sch)
+        # For some reason normalization removes loops with extent 1, so for us
+        # is not usable...
+        # block_infos = dl.normalize_prim_func(sch)
+        blocks: List[tir.schedule.BlockRV] = sch.get_child_blocks(sch.get_block("root"))
+
         # Then initial padding is optional
-        if not block_infos[0].is_injective():
+        block0_iter_kinds = [_iter_kind(iter_var) for iter_var in sch.get(blocks[0]).iter_vars]
+        block0_is_injective = all(iter_kind == "S" for iter_kind in block0_iter_kinds)
+        if not block0_is_injective:
             # For the moment we skip it
             return None
 
-        if len(block_infos) != 8:
+        if len(blocks) != 8:
             return None
 
         env = vtar.get_env()
 
-        data_cache = block_infos[0].block_rv # Load
-        res_conv_block = block_infos[1].block_rv # GEMM
+        data_cache = blocks[0] # Load
+        res_conv_block = blocks[1] # GEMM
         kernel_cache = sch.cache_read(res_conv_block, 1, env.wgt_scope) # Load
-        res_bias_block = block_infos[2].block_rv # ALU
+        res_bias_block = blocks[2] # ALU
         bias_cache = sch.cache_read(res_bias_block, 1, env.acc_scope) # Load
-        res_shr_block = block_infos[3].block_rv # ALU
-        res_add_block = block_infos[4].block_rv # ALU
-        res_min_block = block_infos[5].block_rv # ALU
-        res_max_block = block_infos[6].block_rv # ALU
-        res_block = block_infos[7].block_rv # Store
-
-        # sch.mod["main"].show()
+        res_shr_block = blocks[3] # ALU
+        res_add_block = blocks[4] # ALU
+        res_min_block = blocks[5] # ALU
+        res_max_block = blocks[6] # ALU
+        res_block = blocks[7] # Store
 
         # TODO: take this numbers form data and weight
         b_block = 1 // env.BATCH
@@ -173,23 +188,22 @@ class Conv2D(VTAScheduleRule):
         h_block = 7
         w_block = 14
 
-        try:
-            # FIXME: loops with extent 1 are not returned...
-            b, oc, y, x, b_tns, oc_tns = sch.get_loops(res_block)
-        except:
-            breakpoint()
+        b, oc, y, x, b_tns, oc_tns = sch.get_loops(res_block)
         b_out, b_inn = sch.split(b, (None, b_block))
         oc_out, oc_inn = sch.split(oc, (None, oc_block))
         y_out, y_inn = sch.split(y, (None, h_block))
         x_out, x_inn = sch.split(x, (None, w_block))
         sch.reorder(b_out, oc_out, y_out, x_out, b_inn, oc_inn, y_inn, x_inn, b_tns, oc_tns)
-        return sch
 
         sch.compute_at(res_max_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_min_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_add_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_shr_block, x_out, preserve_unit_loops=True)
+        sch.compute_at(res_bias_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_conv_block, x_out, preserve_unit_loops=True)
+
+        # sch.mod["main"].show()
+        # return sch
 
         # oc = output_channel (spatial axis)
         # ic = input_channel (reduce axis)
@@ -217,23 +231,26 @@ class Conv2D(VTAScheduleRule):
 
         conv_init = sch.decompose_reduction(res_conv_block, ic_out)
 
-        sch.mod["main"].show()
+        # sch.mod["main"].show()
 
         sch.compute_at(data_cache, ic_out)
         sch.compute_at(kernel_cache, ic_out)
+        # sch.compute_at(bias_cache, ic_out)
 
         sch.set_scope(data_cache, 0, env.inp_scope)
         sch.set_scope(res_conv_block, 0, env.acc_scope)
         sch.set_scope(res_shr_block, 0, env.acc_scope)
-        sch.set_scope(res_max_block, 0, env.acc_scope)
+        sch.set_scope(res_add_block, 0, env.acc_scope)
         sch.set_scope(res_min_block, 0, env.acc_scope)
+        sch.set_scope(res_max_block, 0, env.acc_scope)
 
         sch.annotate(sch.get_loops(data_cache)[-3], env.dma_copy, 0)
         sch.annotate(sch.get_loops(kernel_cache)[-5], env.dma_copy, 0)
         sch.annotate(sch.get_loops(res_block)[-4], env.dma_copy, 0)
         sch.annotate(sch.get_loops(res_shr_block)[-6], env.alu, 0)
-        sch.annotate(sch.get_loops(res_max_block)[-6], env.alu, 0)
+        sch.annotate(sch.get_loops(res_add_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_min_block)[-6], env.alu, 0)
+        sch.annotate(sch.get_loops(res_max_block)[-6], env.alu, 0)
 
         init_loops = sch.get_loops(conv_init)
         ij_init = sch.fuse(init_loops[-2], init_loops[-1])
@@ -242,5 +259,6 @@ class Conv2D(VTAScheduleRule):
         ij_conv = sch.fuse(conv_loops[-3], conv_loops[-2])
         sch.tensorize(ij_conv, "vta_gemm_intrin1")
 
+        sch.mod["main"].show()
 
         return sch

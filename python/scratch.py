@@ -171,7 +171,11 @@ def analyze_tensorir_func_automatic(func):
     return read_write_regions
 
 @T.prim_func
-def main(data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"), kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"), res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")):
+def main(
+        data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"),
+        kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"),
+        res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")
+    ):
     T.func_attr({"tir.noalias": T.bool(True)})
     # with T.block("root"):
     data_buf = T.alloc_buffer((1, 16, 16, 16, 1, 16), "int8")
@@ -253,7 +257,11 @@ def main(data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"), kernel: T.Buffer((16, 1
                     res[v_bo, v_co, v_i, v_j, v_bi, v_ci] = T.Cast("int8", res_min[v_bo, v_co, v_i, v_j, v_bi, v_ci])
 
 @T.prim_func
-def main2(data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"), kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"), res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")):
+def main2(
+        data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"),
+        kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"),
+        res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")
+    ):
     T.func_attr({"tir.noalias": T.bool(True)})
     # with T.block("root"):
     data_buf = T.alloc_buffer((1, 16, 16, 16, 1, 16), "int8")
@@ -429,7 +437,7 @@ if __name__ == "__main__":
         mod = dl.ApplyDefaultSchedule(
             vtar.dlight.Conv2D(),
         )(mod)
-    mod.show()
+    mod['main'].show()
     raise SystemExit(0)
 
     dev = tvm.runtime.device('cpu')
