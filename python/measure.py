@@ -8,6 +8,9 @@ import pynq
 import time
 import numpy
 
+if not pynq.pl.PL.bitfile_name:
+    pynq.Bitstream('1x16_i8w8a32_15_15_18_17.bit').download()
+
 A = numpy.ones((2*1024, 1024))
 B = numpy.ones((1024, 2*1024))
 

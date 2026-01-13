@@ -213,7 +213,7 @@ def main(data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"), kernel: T.Buffer((16, 1
                     v_dy, v_dx, v_ic_tns = T.axis.remap("RRR", [ax7, ax8, ax9])
                     T.reads(res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci], data_buf[v_bo, v_ic, v_i + v_dy, v_j + v_dx, v_bi, v_ic_tns], kernel_local_wgt_buffer[v_co, v_ic, v_dy, v_dx, v_ci, v_ic_tns])
                     T.writes(res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci])
-                    res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci] = res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci] + T.Cast("int32", data_buf[v_bo, v_ic, v_i + v_dy, v_j + v_dx, v_bi, v_ic_tns]) * T.Cast("int32", kernel_local_wgt_buffer[v_co, v_ic, v_dy, v_dx, v_ci, v_ic_tns])
+                    res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci] += T.Cast("int32", data_buf[v_bo, v_ic, v_i + v_dy, v_j + v_dx, v_bi, v_ic_tns]) * T.Cast("int32", kernel_local_wgt_buffer[v_co, v_ic, v_dy, v_dx, v_ci, v_ic_tns])
             for ax0, ax1, ax2, ax3, ax4, ax5 in T.grid(1, 8, 7, 14, 1, 16):
                 with T.block("res_shr"):
                     v_bo = T.axis.spatial(1, ax0)
@@ -301,7 +301,8 @@ def main2(data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"), kernel: T.Buffer((16, 
                         v_dy, v_dx, v_ic_tns = T.axis.remap("RRR", [ax7, ax8, ax9])
                         T.reads(res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci], data_buf[v_bo, v_ic, v_i + v_dy, v_j + v_dx, v_bi, v_ic_tns], kernel_local_wgt_buffer[v_co, v_ic, v_dy, v_dx, v_ci, v_ic_tns])
                         T.writes(res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci])
-                        res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci] = res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci] + T.Cast("int32", data_buf[v_bo, v_ic, v_i + v_dy, v_j + v_dx, v_bi, v_ic_tns]) * T.Cast("int32", kernel_local_wgt_buffer[v_co, v_ic, v_dy, v_dx, v_ci, v_ic_tns])
+                        res_conv[v_bo, v_co, v_i, v_j, v_bi, v_ci] += \
+                            T.Cast("int32", data_buf[v_bo, v_ic, v_i + v_dy, v_j + v_dx, v_bi, v_ic_tns]) * T.Cast("int32", kernel_local_wgt_buffer[v_co, v_ic, v_dy, v_dx, v_ci, v_ic_tns])
             for ax0, ax1, ax2, ax3, ax4, ax5 in T.grid(1, 8, 7, 14, 1, 16):
                 with T.block("res_shr"):
                     v_bo = T.axis.spatial(1, ax0)
@@ -455,7 +456,13 @@ if __name__ == "__main__":
     x = numpy.transpose(x, (0, 3, 1, 2))
     y_hat = vm['main'](tvm.nd.array(x, dev))
     res = numpy.argmax(y_hat.numpy()[0])
-    labels = [('tench', 'Tinca tinca'), ('English springer', 'English springer spaniel'), ('cassette player',), ('chain saw', 'chainsaw'), ('church', 'church building'), ('French horn', 'horn'), ('garbage truck', 'dustcart'), ('gas pump', 'gasoline pump', 'petrol pump', 'island dispenser'), ('golf ball',), ('parachute', 'chute')]
+    labels = (
+        ('tench', 'Tinca tinca'), ('English springer', 'English springer spaniel'),
+        ('cassette player',), ('chain saw', 'chainsaw'), ('church', 'church building'),
+        ('French horn', 'horn'), ('garbage truck', 'dustcart'),
+        ('gas pump', 'gasoline pump', 'petrol pump', 'island dispenser'),
+        ('golf ball',), ('parachute', 'chute'),
+    )
     raise SystemExit(0)
 
     onnx_model = onnx.load("build/qresnet18.onnx")
