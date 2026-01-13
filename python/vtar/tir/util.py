@@ -31,7 +31,7 @@ def get_alu_op(
 		lhs = value.a
 		rhs = value.b
 		if   isinstance(value, tir.Add): alu_opcode = env.dev.ALU_OPCODE_ADD
-		elif isinstance(value, tir.Sub): alu_opcode = env.dev.ALU_OPCODE_SUB
+		elif isinstance(value, tir.Sub): alu_opcode = env.dev.ALU_OPCODE_ADD; rhs = -rhs
 		elif isinstance(value, tir.Mul): alu_opcode = env.dev.ALU_OPCODE_MUL
 		elif isinstance(value, tir.Min): alu_opcode = env.dev.ALU_OPCODE_MIN
 		elif isinstance(value, tir.Max): alu_opcode = env.dev.ALU_OPCODE_MAX

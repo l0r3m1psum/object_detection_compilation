@@ -437,12 +437,9 @@ if __name__ == "__main__":
         mod = dl.ApplyDefaultSchedule(
             vtar.dlight.Conv2D(),
         )(mod)
-    mod['main'].show()
-    raise SystemExit(0)
-
-    dev = tvm.runtime.device('cpu')
-    target = tvm.target.Target.from_device(dev)
-    ex = relax.build(mod, target)
+        mod.show()
+        # mod = vtar.get_vtar_tir_transform()(mod)
+        ex = tvm.compile(mod, target=target, relax_pipeline = "default", tir_pipeline = vtar.get_vtar_tir_transform())
     ex.export_library("build/resnet18_int8.dll")
 
     raise SystemExit(0)

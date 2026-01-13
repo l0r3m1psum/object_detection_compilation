@@ -7,6 +7,7 @@ import warnings
 import tvm
 from tvm import dlight as dl
 from tvm import tir
+from tvm import topi
 
 import vtar.tir.util
 
@@ -181,12 +182,20 @@ class Conv2D(VTAScheduleRule):
         res_max_block = blocks[6] # ALU
         res_block = blocks[7] # Store
 
-        # TODO: take this numbers form data and weight
         b_block = 1 // env.BATCH
         oc_block = 128 // env.BLOCK_OUT
         ic_block = 16 // env.BLOCK_IN
         h_block = 7
         w_block = 14
+
+        # We skip kernels that can't be spited by this hard-coded numbers...
+        N, C, H, W, n, c = topi.utils.get_const_tuple(func.struct_info.params[0].shape)
+        if C % ic_block != 0:
+            return None
+
+        N, C, H, W, n, c = topi.utils.get_const_tuple(func.struct_info.params[3].shape)
+        if N % b_block != 0 or C % oc_block != 0 or H % h_block != 0 or W % w_block:
+            return None
 
         b, oc, y, x, b_tns, oc_tns = sch.get_loops(res_block)
         b_out, b_inn = sch.split(b, (None, b_block))
@@ -203,7 +212,6 @@ class Conv2D(VTAScheduleRule):
         sch.compute_at(res_conv_block, x_out, preserve_unit_loops=True)
 
         # sch.mod["main"].show()
-        # return sch
 
         # oc = output_channel (spatial axis)
         # ic = input_channel (reduce axis)
@@ -220,6 +228,10 @@ class Conv2D(VTAScheduleRule):
         )
 
         v_threads = 2
+        # If it is not divisible T.where is generated which is then lowered to
+        # an "if" which we can't compile!
+        if sch.get(oc_out).extent % 2 != 0:
+            return None
         _, tx = sch.split(oc_out, (None, v_threads))
         sch.reorder(tx, b_out)
         warnings.warn(UserWarning("skipping thread binding because it is not "
@@ -235,10 +247,11 @@ class Conv2D(VTAScheduleRule):
 
         sch.compute_at(data_cache, ic_out)
         sch.compute_at(kernel_cache, ic_out)
-        # sch.compute_at(bias_cache, ic_out)
+        sch.compute_at(bias_cache, x_out) # NOTE: not sure this is correct...
 
         sch.set_scope(data_cache, 0, env.inp_scope)
         sch.set_scope(res_conv_block, 0, env.acc_scope)
+        sch.set_scope(res_bias_block, 0, env.acc_scope)
         sch.set_scope(res_shr_block, 0, env.acc_scope)
         sch.set_scope(res_add_block, 0, env.acc_scope)
         sch.set_scope(res_min_block, 0, env.acc_scope)
@@ -246,11 +259,14 @@ class Conv2D(VTAScheduleRule):
 
         sch.annotate(sch.get_loops(data_cache)[-3], env.dma_copy, 0)
         sch.annotate(sch.get_loops(kernel_cache)[-5], env.dma_copy, 0)
+        sch.annotate(sch.get_loops(bias_cache)[-3], env.dma_copy, 0) # NOTE: not sure this is correct...
         sch.annotate(sch.get_loops(res_block)[-4], env.dma_copy, 0)
         sch.annotate(sch.get_loops(res_shr_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_add_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_min_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_max_block)[-6], env.alu, 0)
+
+        # sch.mod["main"].show()
 
         init_loops = sch.get_loops(conv_init)
         ij_init = sch.fuse(init_loops[-2], init_loops[-1])
@@ -259,6 +275,6 @@ class Conv2D(VTAScheduleRule):
         ij_conv = sch.fuse(conv_loops[-3], conv_loops[-2])
         sch.tensorize(ij_conv, "vta_gemm_intrin1")
 
-        sch.mod["main"].show()
+        # sch.mod["main"].show()
 
         return sch

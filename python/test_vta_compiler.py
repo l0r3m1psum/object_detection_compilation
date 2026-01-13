@@ -432,7 +432,6 @@ def test_blocked_vta_conv2d():
 
     b_block = 1 // env.BATCH
     oc_block = 128 // env.BLOCK_OUT
-    ic_block = 16 // env.BLOCK_IN
     h_block = 7
     w_block = 14
 
@@ -447,6 +446,8 @@ def test_blocked_vta_conv2d():
     sch.compute_at(res_max_block, x_out, preserve_unit_loops=True)
     sch.compute_at(res_shr_block, x_out, preserve_unit_loops=True)
     sch.compute_at(res_conv_block, x_out, preserve_unit_loops=True)
+
+    ic_block = 16 // env.BLOCK_IN
 
     # oc = output_channel (spatial axis)
     # ic = input_channel (reduce axis)
@@ -469,6 +470,20 @@ def test_blocked_vta_conv2d():
         "supported in codegen_llvm.cc::GetThreadIndex"))
     # TODO: what I need here is probably software pipeline but
     # tir.transform.InjectSoftwarePipeline should be only for CUDA
+    # what I am probably looking for is tir.transform.InjectVirtualThread()
+    # but annotation with AttrStmt
+    if False:
+        T.attr(
+            T.iter_var(
+                vta, # v
+                None, # dom # Seem to be unused by InjectVirtualThread
+                "ThreadIndex", # iter_type # Seem to be unused by InjectVirtualThread
+                "vthread" # thread_tag
+            ), # node
+            "virtual_thread", # attr_key
+            v_threads # value
+        )
+        # Also te.thread_axis
     if False:
         sch.bind(tx, "cthread")
 

@@ -25,6 +25,7 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
     # Some documentation for old transformations is still available here
     # https://mlc.ai/docs/reference/api/tir/transform.html
     return tvm.transform.Sequential([
+        tvm.tir.transform.LowerInitBlock(), # Needed for TVM functions that won't go on VTA
         # Taken from tvm.tir.get_default_tir_pipeline in pipeline.py ###########
         tvm.tir.transform.PlanAndUpdateBufferAllocationLocation(),
         tvm.tir.transform.ConvertBlocksToOpaque(),
