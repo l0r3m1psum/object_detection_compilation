@@ -95,7 +95,6 @@ def _get_patterns():
     ioa_qconv2d = relax.dpl.is_op("relax.astype")(ioa_qconv2d).has_dtype("int8")
 
     # NOTE: probably VTA can load int8 and cast them to int32 for acc memory
-    # hence we need to as type to the input pattern
     qadd_lhs = relax.dpl.is_op("relax.subtract")(
         relax.dpl.is_op("relax.astype")(relax.dpl.wildcard().has_dtype("int8")).has_dtype("int32"),
         relax.dpl.wildcard().has_dtype("int32")
@@ -114,6 +113,9 @@ def _get_patterns():
     qadd = relax.dpl.is_op("relax.minimum")(qadd, relax.dpl.is_const())
     qadd = relax.dpl.is_op("relax.maximum")(relax.dpl.is_const(), qadd) # not commutative for some reason...
     qadd = relax.dpl.is_op("relax.astype")(qadd).has_dtype("int8")
+
+    # TODO: avg_pool
+    # TODO: linear
 
     patterns = (
         relax.transform.FusionPattern("vtar.ioa_qconv2d", ioa_qconv2d),

@@ -384,10 +384,10 @@ if __name__ == "__main__":
         relax.transform.FoldConstant(), # Some constant folding needs to be performed before graphpack because TVM does not now how to execute NCHWnc convolution
         ###
         vtar.relax.transform.GraphPack(),
-        vtar.relax.transform.SimplifyConstAstype(),
-        relax.transform.CanonicalizeBindings(), # necessary
-        vtar.relax.transform.SimplifyRing(),
-        relax.transform.FoldConstant(),
+        # vtar.relax.transform.SimplifyConstAstype(),
+        # relax.transform.CanonicalizeBindings(), # necessary
+        # vtar.relax.transform.SimplifyRing(),
+        # relax.transform.FoldConstant(),
         vtar.relax.transform.AddChainSimplify(),
         relax.transform.CanonicalizeBindings(),
     ))
@@ -440,7 +440,7 @@ if __name__ == "__main__":
         mod.show()
         # mod = vtar.get_vtar_tir_transform()(mod)
         ex = tvm.compile(mod, target=target, relax_pipeline = "default", tir_pipeline = vtar.get_vtar_tir_transform())
-    ex.export_library("build/resnet18_int8.dll")
+        ex.export_library("build/resnet18_int8.dll")
 
     raise SystemExit(0)
 
