@@ -95,20 +95,20 @@ def _get_patterns():
     ioa_qconv2d = relax.dpl.is_op("relax.astype")(ioa_qconv2d).has_dtype("int8")
 
     # NOTE: probably VTA can load int8 and cast them to int32 for acc memory
+    qadd_lhs = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard().has_dtype("int8")).has_dtype("int32")
     qadd_lhs = relax.dpl.is_op("relax.subtract")(
-        relax.dpl.is_op("relax.astype")(relax.dpl.wildcard().has_dtype("int8")).has_dtype("int32"),
-        relax.dpl.wildcard().has_dtype("int32")
-    )
+        qadd_lhs, relax.dpl.wildcard().has_dtype("int32")
+    ) | qadd_lhs
     qadd_lhs = relax.dpl.is_op("relax.astype")(qadd_lhs).has_dtype("float32")
     qadd_lhs = relax.dpl.is_op("relax.multiply")(relax.dpl.is_const(), qadd_lhs) # not commutative for some reason...
+    qadd_rhs = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard().has_dtype("int8")).has_dtype("int32")
     qadd_rhs = relax.dpl.is_op("relax.subtract")(
-        relax.dpl.is_op("relax.astype")(relax.dpl.wildcard().has_dtype("int8")).has_dtype("int32"),
-        relax.dpl.wildcard().has_dtype("int32")
-    )
+        qadd_rhs, relax.dpl.wildcard().has_dtype("int32")
+    ) | qadd_rhs
     qadd_rhs = relax.dpl.is_op("relax.astype")(qadd_rhs).has_dtype("float32")
     qadd_rhs = relax.dpl.is_op("relax.multiply")(relax.dpl.is_const(), qadd_rhs) # not commutative for some reason...
     qadd = relax.dpl.is_op("relax.add")(qadd_lhs, qadd_rhs) # Why can't I use qadd_lhs.dup()?
-    qadd = relax.dpl.is_op("relax.add")(qadd, relax.dpl.is_const())
+    qadd = relax.dpl.is_op("relax.add")(qadd, relax.dpl.is_const()) | qadd
     qadd = relax.dpl.is_op("relax.round")(qadd)
     qadd = relax.dpl.is_op("relax.minimum")(qadd, relax.dpl.is_const())
     qadd = relax.dpl.is_op("relax.maximum")(relax.dpl.is_const(), qadd) # not commutative for some reason...

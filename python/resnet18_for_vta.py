@@ -107,7 +107,7 @@ def main():
             calibrate_method=CalibrationMethod.MinMax,
             calibration_providers=None,
             extra_options={
-                "ActivationSymmetric": False,
+                "ActivationSymmetric": True,
                 "WeightSymmetric": True,
                 "QDQKeepRemovableActivations": False,
             },

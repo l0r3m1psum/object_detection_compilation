@@ -162,15 +162,12 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		else:
 			O, I, H, W_ = topi.utils.get_const_tuple(relax.get_shape_of(W))
 			n = relax.const(I*H*W_)
-			# TODO: write faster versions of the 2D convolutions with ones or
-			# implement some rewrite/constant folding rules
 			conv = (
 				n*X_z.astype("int32")*W_z.astype("int32")
 				- W_z.astype("int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
 				# TVM can't lower it down to a scalar, hence also the bias later
-				# is promoted to a full tensor.
-				# - X_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
-				- X_z.astype("int32")*relax.op.sum(W.astype("int32"))
+				# is promoted to a full tensor if X_z is not zero.
+				- X_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
 		res = (conv + relax.op.reshape(B, (1, -1, 1, 1)))
@@ -264,7 +261,7 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		BT = relax.op.permute_dims(B) if transB else B
 
 		M = relax.const((A_s*B_s)/Y_s)
-		# TODO: add support for relax.nn.linear
+		# TODO: add support for relax.linear
 		matmul = do_matmul(AT, A_z, BT, B_z)
 		res = (matmul + C).astype("float32")
 		res = requantize(M, res, Y_z)

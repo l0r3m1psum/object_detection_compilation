@@ -381,6 +381,7 @@ if __name__ == "__main__":
         relax.transform.CanonicalizeBindings(), # necessary
         vtar.relax.transform.SimplifyRing(),
         relax.transform.FoldConstant(), # Some constant folding needs to be performed before graphpack because TVM does not now how to execute NCHWnc convolution
+        ir.transform.PrintIR(),
         vtar.relax.transform.GraphPack(),
         relax.transform.FoldConstant(),
         vtar.relax.transform.AddChainSimplify(),
@@ -411,6 +412,7 @@ if __name__ == "__main__":
         with open("build/resnet18_int8.json") as f:
             mod = ir.load_json(f.read())
 
+    # TODO: write transform to put ReLU before astype
     patterns = relax.backend.get_patterns_with_prefix("vtar")
     mod = relax.transform.FuseOpsByPattern(patterns, bind_constants=False)(mod)
     mod = vtar.relax.transform.BindScalarToFunctions()(mod)

@@ -166,7 +166,7 @@ class Conv2D(VTAScheduleRule):
             # For the moment we skip it
             return None
 
-        if len(blocks) != 8:
+        if len(blocks) != 7:
             return None
 
         env = vtar.get_env()
@@ -177,10 +177,10 @@ class Conv2D(VTAScheduleRule):
         res_bias_block = blocks[2] # ALU
         bias_cache = sch.cache_read(res_bias_block, 1, env.acc_scope) # Load
         res_shr_block = blocks[3] # ALU
-        res_add_block = blocks[4] # ALU
-        res_min_block = blocks[5] # ALU
-        res_max_block = blocks[6] # ALU
-        res_block = blocks[7] # Store
+        # res_add_block = blocks[4] # ALU
+        res_min_block = blocks[4] # ALU
+        res_max_block = blocks[5] # ALU
+        res_block = blocks[6] # Store
 
         b_block = 1 // env.BATCH
         oc_block = 128 // env.BLOCK_OUT
@@ -206,7 +206,7 @@ class Conv2D(VTAScheduleRule):
 
         sch.compute_at(res_max_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_min_block, x_out, preserve_unit_loops=True)
-        sch.compute_at(res_add_block, x_out, preserve_unit_loops=True)
+        # sch.compute_at(res_add_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_shr_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_bias_block, x_out, preserve_unit_loops=True)
         sch.compute_at(res_conv_block, x_out, preserve_unit_loops=True)
@@ -253,7 +253,7 @@ class Conv2D(VTAScheduleRule):
         sch.set_scope(res_conv_block, 0, env.acc_scope)
         sch.set_scope(res_bias_block, 0, env.acc_scope)
         sch.set_scope(res_shr_block, 0, env.acc_scope)
-        sch.set_scope(res_add_block, 0, env.acc_scope)
+        # sch.set_scope(res_add_block, 0, env.acc_scope)
         sch.set_scope(res_min_block, 0, env.acc_scope)
         sch.set_scope(res_max_block, 0, env.acc_scope)
 
@@ -263,7 +263,7 @@ class Conv2D(VTAScheduleRule):
         sch.annotate(sch.get_loops(res_block)[-4], env.dma_copy, 0)
         sch.annotate(sch.get_loops(res_bias_block)[-5], env.alu, 0)
         sch.annotate(sch.get_loops(res_shr_block)[-6], env.alu, 0)
-        sch.annotate(sch.get_loops(res_add_block)[-6], env.alu, 0)
+        # sch.annotate(sch.get_loops(res_add_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_min_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_max_block)[-6], env.alu, 0)
 

@@ -86,7 +86,7 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
 		super().__init__(mod)
 		self.bitpack_start = "relax.nn.max_pool2d"
-		self.bitpack_end = "relax.nn.avg_pool2d"
+		self.bitpack_end = "relax.mean" # "relax.nn.avg_pool2d"
 		self.start_pack = False
 
 		self.bfactor = 1 # env.BATCH
@@ -226,6 +226,7 @@ class GraphPack:
 class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:
 		super().__init__(mod)
+		# TODO: make this more general
 
 	def visit_call_(self, call):
 
@@ -249,15 +250,17 @@ class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 		# the X node has only one outgoing edge to dequant and no other node is
 		# using it downstream?
 
+		res = call
 		if wrapper_in_dequant_quant:
 			if prev.op.name == 'relax.reshape':
 				res = relax.Call(prev.op, (prev_prev.args[0], prev.args[1]), prev.attrs)
 			elif prev.op.name == 'relax.nn.max_pool2d':
 				res = relax.Call(prev.op, (prev_prev.args[0],), prev.attrs)
-			else:
-				res = call
-		else:
-			res = call
+			elif prev.op.name == 'relax.nn.relu':
+				res = relax.Call(prev.op, (prev_prev.args[0],), prev.attrs)
+
+		if res is call:
+			res = super().visit_call_(call)
 
 		return res
 
@@ -363,7 +366,7 @@ class RingSimplifier(relax.PyExprMutator):
 			| relax.dpl.is_op("relax.add")
 			| relax.dpl.is_op("relax.subtract")
 		)
-		self.pattern = self.op(self.const, self.var)
+		self.pattern = self.op(self.const, self.var) | self.op(self.var, self.const)
 
 	def visit_function_(self, func: relax.Function) -> relax.Expr:
 		self.var2val = relax.analysis.get_var2val(func)
@@ -378,24 +381,22 @@ class RingSimplifier(relax.PyExprMutator):
 			const = self.visit_expr(matched_const)
 			var = self.visit_expr(matched_expr[self.var])
 			const_np = const.data.numpy()
-			# TODO what if both are const?
-			is_scalar = not const_np.shape
-			if is_scalar:
-				if call.op.name == "relax.multiply":
-					if const_np == 1:
+			# TODO: what if both are const?
+			if call.op.name == "relax.multiply":
+				if (const_np == 1).all():
+					res = var
+				elif (const_np == 0).all():
+					res = const
+			if call.op.name == "relax.add":
+				if (const_np == 0).all():
+					res = var
+			if call.op.name == "relax.subtract":
+				if (const_np == 0).all():
+					is_lhs = matched_const.same_as(self.builder_.lookup_binding(call.args[0]))
+					if is_lhs:
+						res = relax.op.negative(var)
+					else:
 						res = var
-					elif const_np == 0:
-						res = const
-				if call.op.name == "relax.add":
-					if const_np == 0:
-						res = var
-				if call.op.name == "relax.subtract":
-					if const_np == 0:
-						is_lhs = matched_const.same_as(self.builder_.lookup_binding(call.args[0]))
-						if is_lhs:
-							res = relax.op.negative(var)
-						else:
-							res = var
 
 		if res is call:
 			new_args = [self.visit_expr(arg) for arg in call.args]
@@ -428,6 +429,7 @@ class AddChainSimplifier(relax.PyExprMutator):
 		self.c1 = relax.dpl.is_const()
 		self.c2 = relax.dpl.is_const()
 		self.var = relax.dpl.wildcard()
+		# TODO: make this invariant to "chain" length
 		self.pattern = relax.dpl.is_op("relax.add")(
 			relax.dpl.is_op("relax.add")(self.c1, self.var),
 			self.c2
