@@ -470,8 +470,9 @@ def test_blocked_vta_conv2d():
         "supported in codegen_llvm.cc::GetThreadIndex"))
     # TODO: what I need here is probably software pipeline but
     # tir.transform.InjectSoftwarePipeline should be only for CUDA
-    # what I am probably looking for is tir.transform.InjectVirtualThread()
-    # but annotation with AttrStmt
+    # what I am probably looking for is tir.transform.InjectVirtualThread which
+    # should do the Unroll-and-Jam optimization but annotation with AttrStmt is
+    # required
     if False:
         T.attr(
             T.iter_var(

@@ -114,7 +114,12 @@ def main():
 
         )
 
-    dev = tvm.runtime.device('cpu')
+    import ctypes
+    vta_fsim = ctypes.CDLL("vta_fsim")
+    env = vtar.get_env()
+    target = tvm.target.Target(env.target, host=env.target_host)
+    dev = tvm.device(str(env.target))
+    # dev = tvm.runtime.device('cpu')
     if not os.path.exists("build/resnet18_int8.dll"):
         onnx_model = onnx.load("build/resnet18_int8.onnx")
         mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)

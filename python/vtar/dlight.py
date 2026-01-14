@@ -259,8 +259,9 @@ class Conv2D(VTAScheduleRule):
 
         sch.annotate(sch.get_loops(data_cache)[-3], env.dma_copy, 0)
         sch.annotate(sch.get_loops(kernel_cache)[-5], env.dma_copy, 0)
-        sch.annotate(sch.get_loops(bias_cache)[-3], env.dma_copy, 0) # NOTE: not sure this is correct...
+        sch.annotate(sch.get_loops(bias_cache)[-2], env.dma_copy, 0) # NOTE: not sure this is correct...
         sch.annotate(sch.get_loops(res_block)[-4], env.dma_copy, 0)
+        sch.annotate(sch.get_loops(res_bias_block)[-5], env.alu, 0)
         sch.annotate(sch.get_loops(res_shr_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_add_block)[-6], env.alu, 0)
         sch.annotate(sch.get_loops(res_min_block)[-6], env.alu, 0)

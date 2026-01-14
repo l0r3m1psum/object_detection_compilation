@@ -167,7 +167,10 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			conv = (
 				n*X_z.astype("int32")*W_z.astype("int32")
 				- W_z.astype("int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
-				- X_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
+				# TVM can't lower it down to a scalar, hence also the bias later
+				# is promoted to a full tensor.
+				# - X_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
+				- X_z.astype("int32")*relax.op.sum(W.astype("int32"))
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
 		res = (conv + relax.op.reshape(B, (1, -1, 1, 1)))

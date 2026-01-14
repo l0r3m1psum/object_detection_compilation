@@ -377,17 +377,12 @@ if __name__ == "__main__":
 
     pipeline = tvm.transform.Sequential((
         vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
-        ### TODO: determine if it is necessary to fold constants twice...
         vtar.relax.transform.SimplifyConstAstype(),
         relax.transform.CanonicalizeBindings(), # necessary
         vtar.relax.transform.SimplifyRing(),
         relax.transform.FoldConstant(), # Some constant folding needs to be performed before graphpack because TVM does not now how to execute NCHWnc convolution
-        ###
         vtar.relax.transform.GraphPack(),
-        # vtar.relax.transform.SimplifyConstAstype(),
-        # relax.transform.CanonicalizeBindings(), # necessary
-        # vtar.relax.transform.SimplifyRing(),
-        # relax.transform.FoldConstant(),
+        relax.transform.FoldConstant(),
         vtar.relax.transform.AddChainSimplify(),
         relax.transform.CanonicalizeBindings(),
     ))
@@ -415,12 +410,12 @@ if __name__ == "__main__":
     else:
         with open("build/resnet18_int8.json") as f:
             mod = ir.load_json(f.read())
-    mod.show()
 
     patterns = relax.backend.get_patterns_with_prefix("vtar")
     mod = relax.transform.FuseOpsByPattern(patterns, bind_constants=False)(mod)
     mod = vtar.relax.transform.BindScalarToFunctions()(mod)
     mod = relax.transform.DeadCodeElimination()(mod)
+    mod.show()
     mod = relax.transform.LegalizeOps(
         {
             "relax.nn.conv2d": vtar.relax.pipeline.customize_legalize_conv2d,
@@ -433,6 +428,7 @@ if __name__ == "__main__":
     vta_fsim = ctypes.CDLL("vta_fsim")
     env = vtar.get_env()
     target = tvm.target.Target(env.target, host=env.target_host)
+    os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
     with target:
         mod = dl.ApplyDefaultSchedule(
             vtar.dlight.Conv2D(),
