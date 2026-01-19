@@ -93,6 +93,10 @@ curl -O "https://files.pythonhosted.org/packages/24/fb/4f92f8c0f40a0d728b4f3d5ec
 curl -O "https://files.pythonhosted.org/packages/5e/af/c5c302d5ddaadb1875552d4eb109925f1e818832d5f5b31663069d2c4dba/numpy-1.19.0-cp38-cp38-manylinux2014_aarch64.whl"
 curl -O "https://files.pythonhosted.org/packages/13/a3/a812df4e2dd5696d1f351d58b8fe16a405b234ad2886a0dab9183fb78109/pycparser-2.22-py3-none-any.whl"
 curl -O "https://files.pythonhosted.org/packages/0a/04/50bcc8c74bbc35c6f4b92c03bee9e930bb1685b019bb89d700b5642e2598/cython-3.1.6-cp38-cp38-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl"
+curl -O "https://files.pythonhosted.org/packages/06/e4/b751cdf839c011a9714a783f120e6a86b7494eb70044d7d81a25a5cd295f/psutil-7.2.1-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl"
+
+# https://stackoverflow.com/a/67193166
+# grep -rl typing_extensions | xargs sed -i 's/typing_extensions/typing/g'
 
 # Download the cpyhton3.8 zip form GitHub
 # Download the tvm0.20 zip from Github together with its dependencies

@@ -4,7 +4,12 @@ from tvm.script import tir as T
 from tvm.script import ir as I
 from tvm.script import relax as R
 
+import shutil
+shutil.copy("submodules/tvm-vta/config/zcu104_sample.json",
+    "submodules/tvm-vta/config/vta_config.json")
 import vtar
+shutil.copy("submodules/tvm-vta/config/fsim_sample.json",
+    "submodules/tvm-vta/config/vta_config.json")
 import vtar.relax.frontend.onnx
 import vtar.relax.transform
 
@@ -426,11 +431,11 @@ if __name__ == "__main__":
     )(mod)
     mod = relax.transform.FuseTIR()(mod)
     mod = tir.transform.ForceNarrowIndexToInt32()(mod)
-    import ctypes
-    vta_fsim = ctypes.CDLL("vta_fsim")
+    # import ctypes
+    # vta_fsim = ctypes.CDLL("vta_fsim")
     env = vtar.get_env()
     target = tvm.target.Target(env.target, host=env.target_host)
-    os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
+    # os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
     with target:
         mod = dl.ApplyDefaultSchedule(
             vtar.dlight.Conv2D(),
@@ -438,7 +443,7 @@ if __name__ == "__main__":
         mod.show()
         # mod = vtar.get_vtar_tir_transform()(mod)
         ex = tvm.compile(mod, target=target, relax_pipeline = "default", tir_pipeline = vtar.get_vtar_tir_transform())
-        ex.export_library("build/resnet18_int8.dll")
+        ex.export_library("build/resnet18_int8.tar")
 
     raise SystemExit(0)
 
@@ -450,6 +455,7 @@ if __name__ == "__main__":
     ex.export_library("build/resnet18_int8.dll")
     vm = relax.VirtualMachine(ex, dev)
     path = r"dataset\imagenette2\val\n01440764\ILSVRC2012_val_00009111.JPEG"
+    # TODO: convert preprocessing to Relax (relax.op.image.resize2d)
     img = center_crop(PIL.Image.open(path).resize((256, 256)), 224, 224)
     x = numpy.array(img)/numpy.array(255, dtype="float32")
     mean = numpy.array((0.485, 0.456, 0.406), dtype="float32")
