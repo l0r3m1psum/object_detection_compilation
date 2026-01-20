@@ -5,8 +5,8 @@ from tvm.script import ir as I
 from tvm.script import relax as R
 
 import shutil
-shutil.copy("submodules/tvm-vta/config/zcu104_sample.json",
-    "submodules/tvm-vta/config/vta_config.json")
+# shutil.copy("submodules/tvm-vta/config/zcu104_sample.json",
+#     "submodules/tvm-vta/config/vta_config.json")
 import vtar
 shutil.copy("submodules/tvm-vta/config/fsim_sample.json",
     "submodules/tvm-vta/config/vta_config.json")
@@ -430,9 +430,11 @@ if __name__ == "__main__":
         }, True
     )(mod)
     mod = relax.transform.FuseTIR()(mod)
+
+
     mod = tir.transform.ForceNarrowIndexToInt32()(mod)
-    # import ctypes
-    # vta_fsim = ctypes.CDLL("vta_fsim")
+    import ctypes
+    vta_fsim = ctypes.CDLL("vta_fsim")
     env = vtar.get_env()
     target = tvm.target.Target(env.target, host=env.target_host)
     # os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
@@ -441,9 +443,19 @@ if __name__ == "__main__":
             vtar.dlight.Conv2D(),
         )(mod)
         mod.show()
-        # mod = vtar.get_vtar_tir_transform()(mod)
         ex = tvm.compile(mod, target=target, relax_pipeline = "default", tir_pipeline = vtar.get_vtar_tir_transform())
-        ex.export_library("build/resnet18_int8.tar")
+        ex.export_library(
+            "build/resnet18_int8.dll",
+            workspace_dir='build',
+            options=(
+                "-v", "-Wl,-verbose",
+                "-g",
+                "-L", os.path.expandvars('%installdir%\\Programs\\TVM\\lib'),
+                "-l", "vta_fsim",
+                "-l", "tvm_runtime",
+                "-Wl,/DEBUG:FULL,/PDB:build\\resnet18_int8.pdb",
+            )
+        )
 
     raise SystemExit(0)
 
@@ -472,20 +484,6 @@ if __name__ == "__main__":
         ('gas pump', 'gasoline pump', 'petrol pump', 'island dispenser'),
         ('golf ball',), ('parachute', 'chute'),
     )
-    raise SystemExit(0)
-
-    onnx_model = onnx.load("build/qresnet18.onnx")
-    mod2 = vtar.relax.frontend.onnx.from_onnx(onnx_model)
-
-    if False:
-        mod2 = relax.transform.ConvertLayout({
-            "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
-        })(mod2)
-        mod2 = relax.transform.FoldConstant()(mod2)
-        mod2.show()
-    mod2 = relax.transform.FuseOpsByPattern(patterns)(mod2)
-    mod2.show()
-
     raise SystemExit(0)
 
     vtar.relax.frontend.onnx.move_constants_to_initializers(onnx_model)

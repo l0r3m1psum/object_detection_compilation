@@ -14,8 +14,14 @@ import tvm
 from tvm import relax
 import onnx
 
-# From the ONNX model zoo there are already quantized models available
-# https://github.com/onnx/models/blob/main/validated/vision/classification/resnet/model/resnet50-v1-12-int8.onnx
+# From the ONNX model zoo there are already quantized models available they all
+# use per channel scale and zero_point. YOLOv3 has the pesky quantized leaky
+# ReLU.
+# https://huggingface.co/onnxmodelzoo
+# https://huggingface.co/onnxmodelzoo/mnist-12-int8/resolve/main/mnist-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/resnet50-v1-12-int8/resolve/main/resnet50-v1-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/inception-v1-12-int8/resolve/main/inception-v1-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/yolov3-12-int8/resolve/main/yolov3-12-int8.onnx
 
 class MyCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_loader):
@@ -36,12 +42,14 @@ def run_inference(session, input_tensor):
 
 def main():
 
+    # https://stackoverflow.com/q/58151507
+    imagenet_rgb_mean = (0.485, 0.456, 0.406)
+    imagenet_rgb_std = (0.229, 0.224, 0.225)
     transform = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                            std=[0.229, 0.224, 0.225]),
+        transforms.Normalize(mean=imagenet_rgb_mean, std=imagenet_rgb_std),
     ])
 
     if not os.path.exists("build/resnet18.onnx"):
