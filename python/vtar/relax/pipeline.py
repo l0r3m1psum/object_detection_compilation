@@ -101,3 +101,52 @@ def vtar_zero_pipeline():
 		mod = seq(mod)
 		return mod
 	return _pipeline
+
+def vtar_actual_pipeline():
+	@tvm.transform.module_pass(opt_level=0)
+	def _pipeline(mod: tvm.ir.IRModule, _ctx: tvm.transform.PassContext) -> tvm.ir.IRModule:
+		patterns = relax.backend.get_patterns_with_prefix("vtar")
+		seq = tvm.transform.Sequential([
+			vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
+			# Constant folding in TVM has some serious limitations. It can
+			# only fold code by executing it hence if x is not know at
+			# compile time even simple expressions like x + 0 are not
+			# simplified.
+			vtar.relax.transform.SimplifyConstAstype(),
+			relax.transform.CanonicalizeBindings(), # necessary
+			vtar.relax.transform.SimplifyRing(),
+			# Some constant folding needs to be performed before graphpack
+			# because TVM does not now how to execute NCHWnc convolution
+			relax.transform.FoldConstant(),
+			vtar.relax.transform.GraphPack(),
+			# GraphPack inserts some reshape, permute and pad that can be
+			# folded away.
+			relax.transform.FoldConstant(),
+			vtar.relax.transform.AddChainSimplify(),
+			relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
+		    # TODO: write transform to put ReLU before astype
+
+			# At this point the graph has hopefully been normalized and
+			# simplified enough that most of it can be fused in known
+			# patterns.
+			relax.transform.FuseOpsByPattern(patterns, bind_constants=False),
+			# Next to allow putting scalar constants as immediate values in
+			# the assembly specialized functions are generated with the
+			# scalar constants binded to the arguments. Dead code
+			# elimination is used subsequently to remove the old functions
+			# with no constant binded.
+			vtar.relax.transform.BindScalarToFunctions(),
+			relax.transform.DeadCodeElimination(),
+			relax.transform.LegalizeOps(
+				{
+					"relax.nn.conv2d": vtar.relax.pipeline.customize_legalize_conv2d,
+					"relax.nn.avg_pool2d": vtar.relax.pipeline.customize_legalize_avg_pool2d,
+				}, True
+			),
+			relax.transform.FuseTIR(),
+			# TODO: identify which transformations are necessary from the "default" pipeline
+			relax.get_pipeline("default"),
+		])
+		mod = seq(mod)
+		return mod
+	return _pipeline

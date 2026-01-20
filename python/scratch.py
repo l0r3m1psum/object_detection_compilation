@@ -354,18 +354,6 @@ def main2(
                     T.writes(res[v_bo, v_co, v_i, v_j, v_bi, v_ci])
                     res[v_bo, v_co, v_i, v_j, v_bi, v_ci] = T.Cast("int8", res_min[v_bo, v_co, v_i, v_j, v_bi, v_ci])
 
-# https://stackoverflow.com/a/16648197
-def center_crop(img, new_width, new_height):
-    width, height = img.size
-
-    left = (width - new_width)/2
-    top = (height - new_height)/2
-    right = (width + new_width)/2
-    bottom = (height + new_height)/2
-
-    img = img.crop((left, top, right, bottom))
-    return img
-
 if __name__ == "__main__":
     # The "metadata" notation is used every time a Relax constant is not a
     # scalar as it can be seen by (which seem to be bugged but okay)
@@ -437,7 +425,6 @@ if __name__ == "__main__":
     vta_fsim = ctypes.CDLL("vta_fsim")
     env = vtar.get_env()
     target = tvm.target.Target(env.target, host=env.target_host)
-    # os.environ["TVM_WIN_CC"] = "clang_wrapper.bat"
     with target:
         mod = dl.ApplyDefaultSchedule(
             vtar.dlight.Conv2D(),
@@ -456,38 +443,6 @@ if __name__ == "__main__":
                 "-Wl,/DEBUG:FULL,/PDB:build\\resnet18_int8.pdb",
             )
         )
-
-    raise SystemExit(0)
-
-    mod = vtar.relax.transform.GraphPack()(mod)
-    mod = relax.get_pipeline('vtar_zero')(mod)
-    dev = tvm.runtime.device('cpu')
-    target = tvm.target.Target.from_device(dev)
-    ex = relax.build(mod, target)
-    ex.export_library("build/resnet18_int8.dll")
-    vm = relax.VirtualMachine(ex, dev)
-    path = r"dataset\imagenette2\val\n01440764\ILSVRC2012_val_00009111.JPEG"
-    # TODO: convert preprocessing to Relax (relax.op.image.resize2d)
-    img = center_crop(PIL.Image.open(path).resize((256, 256)), 224, 224)
-    x = numpy.array(img)/numpy.array(255, dtype="float32")
-    mean = numpy.array((0.485, 0.456, 0.406), dtype="float32")
-    std = numpy.array((0.229, 0.224, 0.225), dtype="float32")
-    x = (x - mean)/std
-    x = numpy.expand_dims(x, axis=0)
-    x = numpy.transpose(x, (0, 3, 1, 2))
-    y_hat = vm['main'](tvm.nd.array(x, dev))
-    res = numpy.argmax(y_hat.numpy()[0])
-    labels = (
-        ('tench', 'Tinca tinca'), ('English springer', 'English springer spaniel'),
-        ('cassette player',), ('chain saw', 'chainsaw'), ('church', 'church building'),
-        ('French horn', 'horn'), ('garbage truck', 'dustcart'),
-        ('gas pump', 'gasoline pump', 'petrol pump', 'island dispenser'),
-        ('golf ball',), ('parachute', 'chute'),
-    )
-    raise SystemExit(0)
-
-    vtar.relax.frontend.onnx.move_constants_to_initializers(onnx_model)
-    vtar.relax.frontend.onnx.convert_weights_to_inputs(onnx_model)
 
     raise SystemExit(0)
 
