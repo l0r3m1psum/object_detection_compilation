@@ -397,6 +397,7 @@ class RingSimplifier(relax.PyExprMutator):
 						res = relax.op.negative(var)
 					else:
 						res = var
+			# TODO: add support for division by one and shifts by zero.
 
 		if res is call:
 			new_args = [self.visit_expr(arg) for arg in call.args]
