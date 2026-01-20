@@ -368,83 +368,19 @@ if __name__ == "__main__":
     y = topi.nn.simulated_quantize(x, dtype, scale, zero_point)
     f = te.create_prim_func((x, y))
 
-    pipeline = tvm.transform.Sequential((
-        vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
-        vtar.relax.transform.SimplifyConstAstype(),
-        relax.transform.CanonicalizeBindings(), # necessary
-        vtar.relax.transform.SimplifyRing(),
-        relax.transform.FoldConstant(), # Some constant folding needs to be performed before graphpack because TVM does not now how to execute NCHWnc convolution
-        ir.transform.PrintIR(),
-        vtar.relax.transform.GraphPack(),
-        relax.transform.FoldConstant(),
-        vtar.relax.transform.AddChainSimplify(),
-        relax.transform.CanonicalizeBindings(),
-    ))
-
-    if not os.path.exists("build/resnet18_int8.json"):
-        onnx_model = onnx.load("build/resnet18_int8.onnx")
-        # TODO: write a test for the permutation of this parameters
-        mod = vtar.relax.frontend.onnx.from_onnx(onnx_model, keep_params_in_input=False)
-        # mod = vtar.relax.frontend.onnx.from_onnx(onnx_model, keep_params_in_input=True)
-        if False:
-            # THIS method does not work because constant folding doesn't work
-            scalar_params = {}
-            non_scalar_attr = []
-            for param, data in zip(mod['main'].params[1:], mod['main'].attrs['params']):
-                is_scalar = not param.struct_info.shape.values
-                if is_scalar:
-                    scalar_params[param] = data
-                else:
-                    non_scalar_attr.append(data)
-            mod = relax.transform.BindParams('main', scalar_params)(mod)
-            mod['main'] = mod['main'].with_attr("params", non_scalar_attr)
-        mod = pipeline(mod)
-        with open("build/resnet18_int8.json", "w") as f:
-            f.write(ir.save_json(mod))
-    else:
-        with open("build/resnet18_int8.json") as f:
-            mod = ir.load_json(f.read())
-
-    # TODO: write transform to put ReLU before astype
-    patterns = relax.backend.get_patterns_with_prefix("vtar")
-    mod = relax.transform.FuseOpsByPattern(patterns, bind_constants=False)(mod)
-    mod = vtar.relax.transform.BindScalarToFunctions()(mod)
-    mod = relax.transform.DeadCodeElimination()(mod)
-    mod.show()
-    mod = relax.transform.LegalizeOps(
-        {
-            "relax.nn.conv2d": vtar.relax.pipeline.customize_legalize_conv2d,
-            "relax.nn.avg_pool2d": vtar.relax.pipeline.customize_legalize_avg_pool2d,
-        }, True
-    )(mod)
-    mod = relax.transform.FuseTIR()(mod)
-
-
-    mod = tir.transform.ForceNarrowIndexToInt32()(mod)
-    import ctypes
-    vta_fsim = ctypes.CDLL("vta_fsim")
-    env = vtar.get_env()
-    target = tvm.target.Target(env.target, host=env.target_host)
-    with target:
-        mod = dl.ApplyDefaultSchedule(
-            vtar.dlight.Conv2D(),
-        )(mod)
-        mod.show()
-        ex = tvm.compile(mod, target=target, relax_pipeline = "default", tir_pipeline = vtar.get_vtar_tir_transform())
-        ex.export_library(
-            "build/resnet18_int8.dll",
-            workspace_dir='build',
-            options=(
-                "-v", "-Wl,-verbose",
-                "-g",
-                "-L", os.path.expandvars('%installdir%\\Programs\\TVM\\lib'),
-                "-l", "vta_fsim",
-                "-l", "tvm_runtime",
-                "-Wl,/DEBUG:FULL,/PDB:build\\resnet18_int8.pdb",
-            )
-        )
-
-    raise SystemExit(0)
+    onnx_model = onnx.load("build/resnet18_int8.onnx")
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model, keep_params_in_input=True)
+    if False:
+    scalar_params = {}
+    non_scalar_attr = []
+    for param, data in zip(mod['main'].params[1:], mod['main'].attrs['params']):
+        is_scalar = not param.struct_info.shape.values
+        if is_scalar:
+            scalar_params[param] = data
+        else:
+            non_scalar_attr.append(data)
+    mod = relax.transform.BindParams('main', scalar_params)(mod)
+    mod['main'] = mod['main'].with_attr("params", non_scalar_attr)
 
     if False:
         analyze_index_map()

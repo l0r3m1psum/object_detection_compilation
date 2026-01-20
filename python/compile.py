@@ -1,4 +1,5 @@
 import tvm
+from tvm import ir
 from tvm.script import ir as I, relax as R
 
 import os
@@ -62,13 +63,17 @@ target = tvm.target.Target(env.target, host=env.target_host)
 
 onnx_model = onnx.load("build/resnet18_int8.onnx")
 mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
-with target:
-	ex = tvm.compile(
-		mod,
-		target=target,
-		relax_pipeline=vtar.relax.vtar_actual_pipeline(),
-		tir_pipeline=vtar.tir.get_actual_pipeline(),
-	)
+mod = vtar.relax.vtar_actual_pipeline()(mod)
+mod.show()
+with open("build/resnet18_int8.json", "w") as f:
+    f.write(ir.save_json(mod))
+
+ex = tvm.compile(
+	mod,
+	target=target,
+	relax_pipeline=None,
+	tir_pipeline=vtar.tir.get_actual_pipeline(),
+)
 
 ex.export_library(
 	"build/resnet18_int8.dll",
