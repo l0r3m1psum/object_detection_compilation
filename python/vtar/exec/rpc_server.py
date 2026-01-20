@@ -1,145 +1,87 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-"""VTA customized TVM RPC Server
-
-Provides additional runtime function and library loading.
 """
-from __future__ import absolute_import
-
-import logging
-import argparse
-import os
-import ctypes
-import json
 import tvm
-from tvm import rpc
-from tvm.contrib import cc
-from vtar import program_bitstream
+import ctypes
+import numpy
+libvta = ctypes.CDLL("./libvta.so", ctypes.RTLD_GLOBAL)
+# ref = tvm.get_global_func("device_api.ext_dev")()
+func = tvm.runtime.load_module("../../alu.tar")
+dev = tvm.ext_dev(0)
+A = tvm.nd.array(numpy.ones((1, 64, 1, 16), dtype='int32'), dev)
+B = tvm.nd.array(numpy.ones((1, 64, 1, 16), dtype='int32'), dev)
+C = tvm.nd.empty((1, 64, 1, 16), 'int8', dev)
+func(A, B, C)
+"""
+import sys
+if sys.platform != "linux":
+    raise RuntimeError("This program must run on a Pynq device")
+from typing import Tuple
 
-from ..environment import get_env, pkg_config
-from ..libinfo import find_libvta
+import tvm
+import numpy
 
+def init_callback():
+    sys.path.append('/usr/local/lib/python3.6/dist-packages')
+    import pynq
 
-def server_start():
-    """VTA RPC server extension."""
-    # pylint: disable=unused-variable
-    curr_path = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
-    proj_root = os.path.abspath(os.path.join(curr_path, "../../../../"))
-    dll_path = find_libvta("libvta")[0]
-    cfg_path = os.path.abspath(os.path.join(proj_root, "3rdparty/vta-hw/config/vta_config.json"))
-    runtime_dll = []
-    _load_module = tvm.get_global_func("tvm.rpc.server.load_module")
+    driver = pynq.xlnk.Xlnk()
+    print(driver.cma_stats())
 
-    def load_vta_dll():
-        """Try to load vta dll"""
-        if not runtime_dll:
-            runtime_dll.append(ctypes.CDLL(dll_path, ctypes.RTLD_GLOBAL))
-        logging.info("Loading VTA library: %s", dll_path)
-        return runtime_dll[0]
-
-    @tvm.register_func("tvm.rpc.server.load_module", override=True)
-    def load_module(file_name):
-        load_vta_dll()
-        return _load_module(file_name)
-
-    @tvm.register_func("device_api.ext_dev")
-    def ext_dev_callback():
-        load_vta_dll()
-        return tvm.get_global_func("device_api.ext_dev")()
+    rails = pynq.get_rails()
+    # power = voltage * current
+    # Watt = Volt * Ampere
+    power_supply_rail = '12V' # Gives power to the whole board
+    dram_rail = '1V2'
+    fpga_pl_rail = 'INT'
+    recorder = pynq.DataRecorder(
+        rails[power_supply_rail].power,
+        rails[dram_rail].power,
+        rails[fpga_pl_rail].power,
+    )
 
     @tvm.register_func("tvm.contrib.vta.init", override=True)
-    def program_fpga(file_name):
-        # pylint: disable=import-outside-toplevel
-        env = get_env()
-        if env.TARGET == ("pynq", "zcu104"):
-            from pynq import xlnk
-
-            # Reset xilinx driver
-            xlnk.Xlnk().xlnk_reset()
-        elif env.TARGET == "de10nano":
-            # Load the de10nano program function.
-            load_vta_dll()
+    def program_fpga(file_name: str) -> None:
         path = tvm.get_global_func("tvm.rpc.server.workpath")(file_name)
-        program_bitstream.bitstream_program(env.TARGET, path)
-        logging.info("Program FPGA with %s ", file_name)
 
-    @tvm.register_func("tvm.rpc.server.shutdown", override=True)
-    def server_shutdown():
-        if runtime_dll:
-            runtime_dll[0].VTARuntimeShutdown()
-            runtime_dll.pop()
+        driver.xlnk_reset()
 
-    @tvm.register_func("tvm.contrib.vta.reconfig_runtime", override=True)
-    def reconfig_runtime(cfg_json):
-        """Rebuild and reload runtime with new configuration.
+        if not pynq.pl.PL.bitfile_name:
+            # TODO: how do I reset the PL do download another bitstream?
+            pynq.Bitstream(path).download()
 
-        Parameters
-        ----------
-        cfg_json : str
-            JSON string used for configurations.
-        """
-        env = get_env()
-        if runtime_dll:
-            if env.TARGET == "de10nano":
-                print("Please reconfigure the runtime AFTER programming a bitstream.")
-            raise RuntimeError("Can only reconfig in the beginning of session...")
-        cfg = json.loads(cfg_json)
-        cfg["TARGET"] = env.TARGET
-        pkg = pkg_config(cfg)
-        # check if the configuration is already the same
-        if os.path.isfile(cfg_path):
-            old_cfg = json.loads(open(cfg_path, "r").read())
-            if pkg.same_config(old_cfg):
-                logging.info("Skip reconfig_runtime due to same config.")
-                return
-        cflags = ["-O2", "-std=c++17"]
-        cflags += pkg.cflags
-        ldflags = pkg.ldflags
-        lib_name = dll_path
-        source = pkg.lib_source
-        logging.info(
-            "Rebuild runtime:\n output=%s,\n cflags=%s,\n source=%s,\n ldflags=%s",
-            dll_path,
-            "\n\t".join(cflags),
-            "\n\t".join(source),
-            "\n\t".join(ldflags),
-        )
-        cc.create_shared(lib_name, source, cflags + ldflags)
-        with open(cfg_path, "w") as outputfile:
-            outputfile.write(pkg.cfg_json)
+    @tvm.register_func("tvm.contrib.vta.start_recording", override=True)
+    def start_recording(interval: float) -> None:
+        _ = recorder.record(interval)
 
+    @tvm.register_func("tvm.contrib.vta.stop_recording", override=True)
+    def stop_recording() -> Tuple:
+        recorder.stop()
+        # return recorder._data, recorder._columns
+        # NOTE: it seems that only tvm.nd.array can be returned from RPC functions
+        return tvm.nd.array(numpy.array(recorder._data), tvm.cpu())
 
-def main():
-    """Main funciton"""
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="The host IP address the server binds to"
-    )
-    parser.add_argument("--port", type=int, default=9091, help="The port of the RPC")
-    parser.add_argument("--port-end", type=int, default=9199, help="The end search port of the RPC")
-    parser.add_argument(
-        "--key", type=str, default="", help="RPC key used to identify the connection type."
-    )
-    parser.add_argument("--tracker", type=str, default="", help="Report to RPC tracker")
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO)
+    @tvm.register_func("tvm.contrib.vta.reset_recording", override=True)
+    def reset_recording() -> None:
+        recorder.reset()
 
+    @tvm.register_func("tvm.contrib.vta.mark_recording", override=True)
+    def mark_recording() -> None:
+        recorder.mark()
+
+# Taken from tvm.exec.rpc_server
+import argparse
+import logging
+from tvm import rpc
+
+def main(args):
+    """Main function
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        parsed args from command-line invocation
+    """
     if args.tracker:
-        url, port = args.tracker.split(":")
+        url, port = args.tracker.rsplit(":", 1)
         port = int(port)
         tracker_addr = (url, port)
         if not args.key:
@@ -147,24 +89,65 @@ def main():
     else:
         tracker_addr = None
 
-    # register the initialization callback
-    def server_init_callback():
-        # pylint: disable=redefined-outer-name, reimported, import-outside-toplevel, import-self
-        import tvm
-        import vta.exec.rpc_server
-
-        tvm.register_func("tvm.rpc.server.start", vta.exec.rpc_server.server_start, override=True)
-
     server = rpc.Server(
         args.host,
         args.port,
         args.port_end,
+        is_proxy=args.through_proxy,
         key=args.key,
         tracker_addr=tracker_addr,
-        server_init_callback=server_init_callback,
+        load_library=args.load_library,
+        custom_addr=args.custom_addr,
+        silent=args.silent,
+        no_fork=not args.fork,
+        server_init_callback=init_callback,
     )
     server.proc.join()
 
-
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--host", type=str, default="0.0.0.0", help="The host IP address the tracker binds to"
+    )
+    parser.add_argument("--port", type=int, default=9090, help="The port of the RPC")
+    parser.add_argument(
+        "--through-proxy",
+        dest="through_proxy",
+        action="store_true",
+        help=(
+            "Whether this server provide service through a proxy. If this is true, the host and"
+            "port actually is the address of the proxy."
+        ),
+    )
+    parser.add_argument("--port-end", type=int, default=9199, help="The end search port of the RPC")
+    parser.add_argument(
+        "--tracker",
+        type=str,
+        help=("The address of RPC tracker in host:port format. " "e.g. (10.77.1.234:9190)"),
+    )
+    parser.add_argument(
+        "--key", type=str, default="", help="The key used to identify the device type in tracker."
+    )
+    parser.add_argument("--silent", action="store_true", help="Whether run in silent mode.")
+    parser.add_argument("--load-library", type=str, help="Additional library to load")
+    parser.add_argument(
+        "--no-fork",
+        dest="fork",
+        action="store_false",
+        help="Use spawn mode to avoid fork. This option \
+                        is able to avoid potential fork problems with Metal, OpenCL \
+                        and ROCM compilers.",
+    )
+    parser.add_argument(
+        "--custom-addr", type=str, help="Custom IP Address to Report to RPC Tracker"
+    )
+
+    parser.set_defaults(fork=True)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+    if not args.fork is False and not args.silent:
+        logging.info(
+            "If you are running ROCM/Metal, fork will cause "
+            "compiler internal error. Try to launch with arg ```--no-fork```"
+        )
+    main(args)
