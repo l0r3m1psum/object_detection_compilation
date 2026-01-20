@@ -163,7 +163,9 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			O, I, H, W_ = topi.utils.get_const_tuple(relax.get_shape_of(W))
 			n = relax.const(I*H*W_)
 			conv = (
-				n*X_z.astype("int32")*W_z.astype("int32")
+				# If there is padding the output of the convolution is not made entirely of n
+				# n*X_z.astype("int32")*W_z.astype("int32")
+				X_z.astype("int32")*W_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), relax.op.ones_like(W), **kwargs)
 				- W_z.astype("int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
 				# TVM can't lower it down to a scalar, hence also the bias later
 				# is promoted to a full tensor if X_z is not zero.
