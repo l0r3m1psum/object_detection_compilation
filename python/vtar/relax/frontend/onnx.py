@@ -2,6 +2,7 @@ from tvm import relax
 from tvm import ir
 from tvm import topi
 import tvm.relax.frontend.onnx
+from tvm.relax.frontend.onnx.onnx_frontend import get_constant
 
 import onnx
 
@@ -17,58 +18,25 @@ def clamp(data, min, max):
 def requantize(s, x, z):
 	return clamp(relax.op.round(s*x + z.astype("float32")), -128., 127.).astype("int8")
 
-def get_array(params: dict, var: relax.Var) -> tvm.runtime.NDArray:
-	name = str(var)
-	for key, value in params.items():
-		if key.replace("/", "_").replace(".", "_") == name:
-			_, array = value
-			break
-	else:
-		raise ValueError("The variable %s was not found in %s after applying "
-			"the normalizing transformations" % (name, list(params.keys())))
-
-	return array
-
-def get_data(expr: relax.Expr, params: Dict[str, relax.Expr]) -> float|int:
-	keep_params_in_input = hasattr(expr, 'data')
-	if keep_params_in_input:
-		array = expr.data
-	else:
-		array = get_array(params, expr)
-	res = array.numpy().item()
-	return res
-
-# TODO: This allows to avoid taking certain parameters from the function input and
-# hardcoding  them as constants allowing for constant folding optimizations etc...
-# This is a bit of an hack, the way that it should be done instead is to create
-# a new function with the paramiters binded the value of the metadata so that
-# they are effectivelly constant in the new function.
-def get_arg(expr: relax.Expr, params: Dict[str, relax.Expr]) -> relax.Expr:
-	keep_params_in_input = bool(params)
-	if keep_params_in_input:
-		array = get_array(params, expr)
-		if isinstance(array, relax.Expr):
-			res = array
-		else:
-			# Because non scalars are picked from "metadata"
-			if array.shape:
-				res = expr
-			else:
-				res = relax.const(array)
-	else:
-		res = expr
-	return res
-
 # TODO: implement custom relax function for quantization and dequantization with
 # non 'int8' zero_point.
 
+# assert len(params) == 2
+# params_var, params_val = params
+# assert len(params_var) >= len(params_val)
+
+# TODO: what is the difference between using get_constant(inputs[n], params) and
+# just inputs[n]?
+
+# FIXME: using .data.numpy().item() prevents from having per channel quantization.
+
 class QuantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
-	def _impl_v10(cls, bb, inputs, attr, params):
+	def _impl_v10(cls, bb, inputs, attr, params: List[Dict[str, relax.Var]]):
 		# https://onnx.ai/onnx/operators/onnx__QuantizeLinear.html#quantizelinear-10
 		x = inputs[0]
-		y_scale = get_arg(inputs[1], params[1])
-		y_zero_point = get_arg(inputs[2], params[1])
+		y_scale = get_constant(inputs[1], params)
+		y_zero_point = get_constant(inputs[2], params)
 
 		y_zero_point_dtype = y_zero_point.struct_info.dtype
 		if y_zero_point_dtype != "int8":
@@ -82,9 +50,10 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#dequantizelinear-10
+		params_var, params_val = params
 		x = inputs[0]
-		x_scale = get_arg(inputs[1], params[1])
-		x_zero_point = get_arg(inputs[2], params[1])
+		x_scale = get_constant(inputs[1], params)
+		x_zero_point = get_constant(inputs[2], params)
 		assert len(x_scale.data.shape) == len(x_zero_point.data.shape)
 
 		x_zero_point_dtype = x_zero_point.struct_info.dtype
@@ -129,17 +98,17 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__QLinearConv.html#qlinearconv-10
 		X   = inputs[0]
-		X_s = get_data(inputs[1], params[1])
-		X_z = get_arg(inputs[2], params[1])
-		W   = get_arg(inputs[3], params[1])
-		W_s = get_data(inputs[4], params[1])
-		W_z = get_arg(inputs[5], params[1])
-		Y_s = get_data(inputs[6], params[1])
-		Y_z = get_arg(inputs[7], params[1])
-		B   = get_arg(inputs[8], params[1])
+		X_s = get_constant(inputs[1], params).data.numpy().item()
+		X_z = get_constant(inputs[2], params)
+		W   = get_constant(inputs[3], params)
+		W_s = get_constant(inputs[4], params).data.numpy().item()
+		W_z = get_constant(inputs[5], params)
+		Y_s = get_constant(inputs[6], params).data.numpy().item()
+		Y_z = get_constant(inputs[7], params)
+		B   = get_constant(inputs[8], params)
 		assert len(X.struct_info.shape) == 4
 		assert len(W.struct_info.shape) == 4
-		assert get_data(inputs[5], params[1]) == 0
+		# assert get_constant(inputs[5], params) == 0
 
 		M = relax.const((X_s*W_s)/Y_s)
 		kwargs = dict(
@@ -197,13 +166,13 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 		# C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
 		A   = inputs[0]
-		A_s = get_data(inputs[1], params[1])
-		A_z = get_arg(inputs[2], params[1])
+		A_s = get_constant(inputs[1], params).data.numpy().item()
+		A_z = get_constant(inputs[2], params)
 		B   = inputs[3]
-		B_s = get_data(inputs[4], params[1])
-		B_z = get_arg(inputs[5], params[1])
-		C_s = get_data(inputs[6], params[1])
-		C_z = get_arg(inputs[7], params[1])
+		B_s = get_constant(inputs[4], params).data.numpy().item()
+		B_z = get_constant(inputs[5], params)
+		C_s = get_constant(inputs[6], params).data.numpy().item()
+		C_z = get_constant(inputs[7], params)
 
 		M_1 = relax.const(A_s/C_s)
 		M_2 = relax.const(B_s/C_s)
@@ -251,14 +220,14 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		assert alpha == 1.0, "alpha != 1.0 requires some work to keep it integer only"
 
 		A   = inputs[0]
-		A_s = get_data(inputs[1], params[1])
-		A_z = get_arg(inputs[2], params[1])
-		B   = get_arg(inputs[3], params[1])
-		B_s = get_data(inputs[4], params[1])
-		B_z = get_arg(inputs[5], params[1])
-		C   = get_arg(inputs[6], params[1])
-		Y_s = get_data(inputs[7], params[1])
-		Y_z = get_arg(inputs[8], params[1])
+		A_s = get_constant(inputs[1], params).data.numpy().item()
+		A_z = get_constant(inputs[2], params)
+		B   = get_constant(inputs[3], params)
+		B_s = get_constant(inputs[4], params).data.numpy().item()
+		B_z = get_constant(inputs[5], params)
+		C   = get_constant(inputs[6], params)
+		Y_s = get_constant(inputs[7], params).data.numpy().item()
+		Y_z = get_constant(inputs[8], params)
 		AT = bb.normalize(relax.op.permute_dims(A) if transA else A)
 		BT = relax.op.permute_dims(B) if transB else B
 
@@ -274,13 +243,13 @@ class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html#qlinearmatmul-10
 		A = inputs[0]
-		A_s = get_data(inputs[1], params[1])
-		A_z = get_arg(inputs[2], params[1])
-		B = get_arg(inputs[3], params[1])
-		B_s = get_data(inputs[4], params[1])
-		B_z = get_arg(inputs[5], params[1])
-		Y_s = get_data(inputs[6], params[1])
-		Y_z = get_arg(inputs[7], params[1])
+		A_s = get_constant(inputs[1], params).data.numpy().item()
+		A_z = get_constant(inputs[2], params)
+		B = get_constant(inputs[3], params)
+		B_s = get_constant(inputs[4], params).data.numpy().item()
+		B_z = get_constant(inputs[5], params)
+		Y_s = get_constant(inputs[6], params).data.numpy().item()
+		Y_z = get_constant(inputs[7], params)
 
 		M = relax.const((A_s*B_s)/Y_s)
 		matmul = do_matmul(A, A_z, B, B_z)
@@ -293,10 +262,10 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 	def _impl_v1(cls, bb, inputs, attr, params):
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearGlobalAveragePool
 		x = inputs[0]
-		x_s = get_data(inputs[1], params[1])
-		x_z = get_arg(inputs[2], params[1])
-		y_s = get_data(inputs[3], params[1])
-		y_z = get_arg(inputs[4], params[1])
+		x_s = get_constant(inputs[1], params).data.numpy().item()
+		x_z = get_constant(inputs[2], params)
+		y_s = get_constant(inputs[3], params).data.numpy().item()
+		y_z = get_constant(inputs[4], params)
 
 		M = relax.const(x_s/y_s)
 		# NOTE: that astype("int32") is needed because for some reason Relax

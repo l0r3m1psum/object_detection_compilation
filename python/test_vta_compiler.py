@@ -56,7 +56,7 @@ def test_blocked_load_store():
     sch.annotate(sch.get_loops(block)[2], env.dma_copy, 0)
 
     mod = sch.mod
-    ex = tir.build(mod, target, vtar.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array((rng.uniform(size=shape)*10).astype(env.acc_dtype), dev)
     B = tvm.nd.array(numpy.zeros(shape, dtype=env.out_dtype), dev)
     ex(A, B)
@@ -98,7 +98,7 @@ def test_simple_vta_alu():
     # This optimization is done automatically by tir.transform.StorageRewrite
     # mod = vtar.tir.transform.ReplaceVarOcurrence("C_local.acc_buffer", "A_local.acc_buffer")(mod)
 
-    ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
+    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
@@ -168,7 +168,7 @@ def test_simple_vta_gemm():
     B_pack = B_orig.reshape(m, env.BLOCK_OUT, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
     C_pack = C_orig.reshape(o, env.BATCH, m, env.BLOCK_OUT).transpose((0, 2, 1, 3))
 
-    ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
+    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array(A_pack, dev)
     B = tvm.nd.array(B_pack, dev)
     C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dtype), dev)
@@ -221,7 +221,7 @@ def test_blocked_vta_alu():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
+    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
@@ -323,7 +323,7 @@ def test_blocked_vta_gemm():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
+    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
 
     data_np = rng.integers(-128, 128, size=(batch_size, in_chann)).astype(data.dtype)
     weight_np = rng.integers(-128, 128, size=(out_chann, in_chann)).astype(weight.dtype)
@@ -519,7 +519,7 @@ def test_blocked_vta_conv2d():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.get_vtar_tir_transform())
+    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
 
     data_np = rng.integers(
         -128, 128, size=(batch_size, in_channels, height, width)
@@ -704,7 +704,7 @@ def test_trivial_end2end_compilation():
         dl.ApplyDefaultSchedule(
             vtar.dlight.ALU(),
         ),
-        vtar.get_vtar_tir_transform(),
+        vtar.tir.get_vtar_tir_transform(),
     ])
 
     with target:
@@ -1049,6 +1049,12 @@ def test_onnx_import_simple_bottleneck():
     res = time_f(*params)
     print(print(rt_mod["stats"]()))
     print(res)
+
+def test_onnx_import_keep_params_in_input_or_not():
+    onnx_model = onnx.parser.parse_model(onnx_text_quantized_bottleneck)
+    onnx.checker.check_model(onnx_model)
+    _ = vtar.relax.frontend.onnx.from_onnx(onnx_model, keep_params_in_input=False)
+    _ = vtar.relax.frontend.onnx.from_onnx(onnx_model, keep_params_in_input=True)
 
 # Misc. tests ##################################################################
 
