@@ -16,12 +16,32 @@ import onnx
 
 # From the ONNX model zoo there are already quantized models available they all
 # use per channel scale and zero_point. YOLOv3 has the pesky quantized leaky
-# ReLU.
+# ReLU. YOLO cant be supported because relax.op.all_class_non_max_suppression is
+# not available in TVM 0.20.0 and the ONNX Loop operator is also not supported.
+# https://github.com/apache/tvm/issues/17767
+# LocalResponseNormalization (LRN) is needed by inception and it is available in
+# future versions of TVM
+# Supportable
 # https://huggingface.co/onnxmodelzoo
 # https://huggingface.co/onnxmodelzoo/mnist-12-int8/resolve/main/mnist-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/vgg16-12-int8/resolve/main/vgg16-12-int8.onnx
 # https://huggingface.co/onnxmodelzoo/resnet50-v1-12-int8/resolve/main/resnet50-v1-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/densenet-12-int8/resolve/main/densenet-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/squeezenet1.0-12-int8/resolve/main/squeezenet1.0-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/shufflenet-v2-12-int8/resolve/main/shufflenet-v2-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/mobilenetv2-12-int8/resolve/main/mobilenetv2-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/efficientnet-lite4-11-int8/resolve/main/efficientnet-lite4-11-int8.onnx
+# Supported in future version of TVM
+# https://huggingface.co/onnxmodelzoo/caffenet-12-int8/resolve/main/caffenet-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/googlenet-12-int8/resolve/main/googlenet-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/zfnet512-12-int8/resolve/main/zfnet512-12-int8.onnx
 # https://huggingface.co/onnxmodelzoo/inception-v1-12-int8/resolve/main/inception-v1-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/ssd-12-int8/resolve/main/ssd-12-int8.onnx
+# Can it run???
+# https://huggingface.co/onnxmodelzoo/shufflenet-v2-12-int8/resolve/main/shufflenet-v2-12-int8.onnx
+# Has Loop
 # https://huggingface.co/onnxmodelzoo/yolov3-12-int8/resolve/main/yolov3-12-int8.onnx
+# https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12-int8/resolve/main/ssd_mobilenet_v1_12-int8.onnx
 
 class MyCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_loader):
