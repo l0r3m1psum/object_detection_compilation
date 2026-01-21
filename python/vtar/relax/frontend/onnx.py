@@ -279,6 +279,40 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 		res = requantize(M, res, y_z)
 		return res
 
+class QLinearAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearAveragePool
+		breakpoint()
+		pass
+
+# NOTE: QLinearSplit does not exits...
+# Concatenation and Split as linear operations
+# c(x, y) = [I 0]' x + [0 I]' y
+# s(x) = [I 0] x, [0 I] x
+class QLinearConcat(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearConcat
+		breakpoint()
+		pass
+
+class QLinearLeakyRelu(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearLeakyRelu
+		x = inputs[0]
+		relax.op.nn.leakyrelu
+		breakpoint()
+		pass
+
+class QLinearMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearMul
+		breakpoint()
+		pass
+
 convert_map = {
 	"QuantizeLinear": QuantizeLinear,
 	"DequantizeLinear": DequantizeLinear,
@@ -287,6 +321,10 @@ convert_map = {
 	"QLinearMatMul": QLinearMatMul,
 	"QLinearAdd": QLinearAdd,
 	"QLinearGlobalAveragePool": QLinearGlobalAveragePool,
+	"QLinearAveragePool": QLinearAveragePool,
+	"QLinearConcat": QLinearConcat,
+	"QLinearLeakyRelu": QLinearLeakyRelu,
+	"QLinearMul": QLinearMul,
 }
 
 def from_onnx(
