@@ -23,16 +23,15 @@ class ImagePreprocessing:
 				end=(240, 240) # (256 + 224)//2 == 240
 			)
 			x_f32 = R.astype(crop, dtype="float32")
-			x_scaled = R.divide(x_f32, R.const(255.0, dtype="float32"))
+			x_scaled = x_f32/R.const(255.0, dtype="float32")
 			imagenet_mean = R.const(numpy.array((0.485, 0.456, 0.406), dtype="float32"))
 			imagenet_std = R.const(numpy.array((0.229, 0.224, 0.225), dtype="float32"))
-			x_sub = R.subtract(x_scaled, imagenet_mean)
-			x_norm = R.divide(x_sub, imagenet_std)
+			x_norm = (x_scaled - imagenet_mean)/imagenet_std
 			output = R.permute_dims(x_norm, axes=(0, 3, 1, 2))
 			R.output(output)
 		return output
 
-if False:
+if True:
 	mod = ImagePreprocessing
 	mod.show()
 
@@ -61,12 +60,40 @@ vta_fsim = ctypes.CDLL("vta_fsim")
 env = vtar.get_env()
 target = tvm.target.Target(env.target, host=env.target_host)
 
-onnx_model = onnx.load("build/resnet18_int8.onnx")
-mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+seq = tvm.transform.Sequential([
+	vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
+	# Constant folding in TVM has some serious limitations. It can
+	# only fold code by executing it hence if x is not know at
+	# compile time even simple expressions like x + 0 are not
+	# simplified.
+	vtar.relax.transform.SimplifyConstAstype(),
+	relax.transform.CanonicalizeBindings(), # necessary
+	vtar.relax.transform.SimplifyRing(),
+	# Some constant folding needs to be performed before graphpack
+	# because TVM does not now how to execute NCHWnc convolution
+	relax.transform.FoldConstant(),
+	vtar.relax.transform.GraphPack(bitpack_end="relax.mean"),
+	# GraphPack inserts some reshape, permute and pad that can be
+	# folded away.
+	relax.transform.FoldConstant(),
+	vtar.relax.transform.AddChainSimplify(),
+	relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
+	# TODO: write transform to put ReLU before astype
+])
+
+if not os.path.exists("build/resnet18_int8.json")
+	onnx_model = onnx.load("build/resnet18_int8.onnx")
+	mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+	mod = seq(mod)
+	mod.show()
+	with open("build/resnet18_int8.json", "w") as f:
+		f.write(ir.save_json(mod))
+else:
+	with open("build/resnet18_int8.json") as f:
+		mod = ir.load_json(f.read())
+
 mod = vtar.relax.vtar_actual_pipeline()(mod)
 mod.show()
-with open("build/resnet18_int8.json", "w") as f:
-    f.write(ir.save_json(mod))
 
 ex = tvm.compile(
 	mod,

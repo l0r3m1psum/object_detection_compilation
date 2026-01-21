@@ -107,25 +107,6 @@ def vtar_actual_pipeline():
 	def _pipeline(mod: tvm.ir.IRModule, _ctx: tvm.transform.PassContext) -> tvm.ir.IRModule:
 		patterns = relax.backend.get_patterns_with_prefix("vtar")
 		seq = tvm.transform.Sequential([
-			vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
-			# Constant folding in TVM has some serious limitations. It can
-			# only fold code by executing it hence if x is not know at
-			# compile time even simple expressions like x + 0 are not
-			# simplified.
-			vtar.relax.transform.SimplifyConstAstype(),
-			relax.transform.CanonicalizeBindings(), # necessary
-			vtar.relax.transform.SimplifyRing(),
-			# Some constant folding needs to be performed before graphpack
-			# because TVM does not now how to execute NCHWnc convolution
-			relax.transform.FoldConstant(),
-			vtar.relax.transform.GraphPack(),
-			# GraphPack inserts some reshape, permute and pad that can be
-			# folded away.
-			relax.transform.FoldConstant(),
-			vtar.relax.transform.AddChainSimplify(),
-			relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
-		    # TODO: write transform to put ReLU before astype
-
 			# At this point the graph has hopefully been normalized and
 			# simplified enough that most of it can be fused in known
 			# patterns.

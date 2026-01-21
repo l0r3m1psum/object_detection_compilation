@@ -83,10 +83,10 @@ def is_broadcastable(shp1, shp2):
 
 @relax.expr_functor.mutator
 class GraphPacker(relax.expr_functor.PyExprMutator):
-	def __init__(self, mod: tvm.IRModule) -> None:
+	def __init__(self, mod: tvm.IRModule, bitpack_start: str = "relax.nn.max_pool2d", bitpack_end: str = "relax.nn.avg_pool2d") -> None:
 		super().__init__(mod)
-		self.bitpack_start = "relax.nn.max_pool2d"
-		self.bitpack_end = "relax.mean" # "relax.nn.avg_pool2d"
+		self.bitpack_start = bitpack_start
+		self.bitpack_end = bitpack_end
 		self.start_pack = False
 
 		self.bfactor = 1 # env.BATCH
@@ -195,13 +195,17 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 # TODO: assert that the Module contains only the main function.
 @tvm.transform.module_pass(opt_level=0)
 class GraphPack:
+	def __init__(self, bitpack_start: str = "relax.nn.max_pool2d", bitpack_end: str = "relax.nn.avg_pool2d") -> None:
+		self.bitpack_start = bitpack_start
+		self.bitpack_end = bitpack_end
+
 	def transform_module(self, mod: tvm.IRModule, _ctx: tvm.transform.PassContext) -> tvm.IRModule:
 		"""IRModule-level transformation"""
 
 		# https://matt.might.net/articles/a-normalization/
 		mod = relax.transform.Normalize()(mod) # should remove nested relax calls
 
-		rewriter = GraphPacker(mod)
+		rewriter = GraphPacker(mod, self.bitpack_start, self.bitpack_end)
 		for g_var, func in mod.functions_items():
 			if isinstance(func, relax.Function):
 				func = rewriter.visit_expr(func)
