@@ -633,13 +633,14 @@ def test_trivial_graphpack():
                 R.output(gv)
             return gv
 
-    ir.assert_structural_equal(
-        ir.transform.Sequential([
-            vtar.relax.transform.GraphPack(),
-            relax.transform.CanonicalizeBindings(), # removes redundant assignments
-        ])(ConvModel),
-        ConvModelPacked
-    )
+    mod1 = ir.transform.Sequential([
+        vtar.relax.transform.GraphPack(),
+        relax.transform.CanonicalizeBindings(), # removes redundant assignments
+    ])(ConvModel)
+    mod2 = ConvModelPacked
+    mod1.show()
+    mod2.show()
+    ir.assert_structural_equal(mod1, mod2)
 
 def test_trivial_remove_unnecessary_dequantize_quantize_wrapping():
     @I.ir_module
