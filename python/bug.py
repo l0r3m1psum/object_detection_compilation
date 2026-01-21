@@ -31,3 +31,6 @@ with tvm.target.Target('cuda'):
 exec = tvm.compile(gpu_mod, target='cuda')
 dev = tvm.device('cuda', 0)
 vm = relax.VirtualMachine(exec, dev)
+
+# NULL pointer dereference
+relax.op.reshape(None, (1,2,3))
