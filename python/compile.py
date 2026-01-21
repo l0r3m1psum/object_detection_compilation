@@ -81,7 +81,7 @@ seq = tvm.transform.Sequential([
 	# TODO: write transform to put ReLU before astype
 ])
 
-if not os.path.exists("build/resnet18_int8.json")
+if not os.path.exists("build/resnet18_int8.json"):
 	onnx_model = onnx.load("build/resnet18_int8.onnx")
 	mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
 	mod = seq(mod)
