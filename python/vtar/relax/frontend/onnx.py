@@ -5,18 +5,23 @@ import tvm.relax.frontend.onnx
 from tvm.relax.frontend.onnx.onnx_frontend import get_constant
 
 import onnx
+import numpy
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import warnings
 import math
 
-def clamp(data, min, max):
+def clamp(data: relax.Expr, min, max) -> relax.Expr:
 	res = relax.op.minimum(data, relax.const(max))
 	res = relax.op.maximum(relax.const(min), res)
 	return res
 
-def requantize(s, x, z):
-	return clamp(relax.op.round(s*x + z.astype("float32")), -128., 127.).astype("int8")
+def const_astype(x: relax.Constant, dtype: str) -> relax.Constant:
+	# TODO: check that conversion is safe to do
+	return relax.const(x.data.numpy().astype(dtype))
+
+def requantize(s: relax.Constant, x: relax.Expr, z: relax.Constant) -> relax.Expr:
+	return clamp(relax.op.round(s*x + const_astype(z, "float32")), -128., 127.).astype("int8")
 
 # TODO: implement custom relax function for quantization and dequantization with
 # non 'int8' zero_point.
@@ -28,54 +33,49 @@ def requantize(s, x, z):
 # TODO: what is the difference between using get_constant(inputs[n], params) and
 # just inputs[n]?
 
-# FIXME: using .data.numpy().item() prevents from having per channel quantization.
+def convert_zero_point_for_relax(zero_point: relax.Constant) -> relax.Constant:
+	"""Input and output type are relax.Constant because quantize and dequantize
+	only support immediate values for scale and zero point."""
+	zero_point_dtype = zero_point.struct_info.dtype
+	if zero_point_dtype != "int8":
+		if not (0 <= zero_point.data.numpy() < 128):
+			warnings.warn("Relax only supports signed integers types for "
+				"zero points. The values of this particular zero_point "
+				"cannot be safely casted to int8. Clipping is going to be "
+				"performed.")
+		zero_point = relax.const(numpy.clip(zero_point.data.numpy(), -128, 127), dtype="int8")
+	return zero_point
 
 class QuantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
-	def _impl_v10(cls, bb, inputs, attr, params: List[Dict[str, relax.Var]]):
-		# https://onnx.ai/onnx/operators/onnx__QuantizeLinear.html#quantizelinear-10
+	def _impl_v13(cls, bb, inputs, attr, params: List[Dict[str, relax.Var]]):
+		# https://onnx.ai/onnx/operators/onnx__QuantizeLinear.html#quantizelinear-13
 		x = inputs[0]
 		y_scale = get_constant(inputs[1], params)
 		y_zero_point = get_constant(inputs[2], params)
+		axis = attr.get("axis", 1)
 
-		y_zero_point_dtype = y_zero_point.struct_info.dtype
-		if y_zero_point_dtype != "int8":
-			warnings.warn("Unsupported zero_point dtype for quantization '%s' casting it to 'int8" % y_zero_point_dtype)
-			# TODO: add check for cast to not lose precision
-			y_zero_point = y_zero_point.astype("int8")
+		y_zero_point  = convert_zero_point_for_relax(y_zero_point)
 
-		return relax.op.quantize(x, y_scale, y_zero_point)
+		return relax.op.quantize(x, y_scale, y_zero_point, axis)
 
 class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
-	def _impl_v10(cls, bb, inputs, attr, params):
-		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#dequantizelinear-10
+	def _impl_v13(cls, bb, inputs, attr, params):
+		# https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html#dequantizelinear-13
 		params_var, params_val = params
 		x = inputs[0]
 		x_scale = get_constant(inputs[1], params)
 		x_zero_point = get_constant(inputs[2], params)
-		assert len(x_scale.data.shape) == len(x_zero_point.data.shape)
+		axis = attr.get("axis", 1)
 
-		x_zero_point_dtype = x_zero_point.struct_info.dtype
-		if x_zero_point.struct_info.shape:
-			warnings.warn("Non scalar zero_point is supported at the Relax "
-				"level but it will fail when calling "
-				"relax.transform.LegalizeOps")
-		if x_zero_point_dtype != "int8":
-			warnings.warn("Unsupported zero_point dtype for dequantization '%s' casting it to 'int8" % x_zero_point_dtype)
-			# TODO: add check for cast to not lose precision
-			x_zero_point = x_zero_point.astype("int8")
+		x_zero_point  = convert_zero_point_for_relax(x_zero_point)
 
-		# NOTE: this is very best effort we assume that the data is a
-		# convolution kernel in OIHW, we do not know how to drop this
-		# assumption. The axis to is the first because we assume per-tensor
-		# dequantization.
-		is_conv_kernel = len(x_scale.data.shape) != 0
-		axis = 0 if is_conv_kernel else -1
-		# TODO: add check for cast to not loose precision
 		return relax.op.dequantize(x, x_scale, x_zero_point, axis)
 
-def integer_only_arithmetic(M: relax.Expr, s_w: float, q_w: relax.Expr, z_w: relax.expr):
+# Bilinear operators ###########################################################
+
+def integer_only_arithmetic(M: relax.Constant, s_w: float, q_w: relax.Constant, z_w: relax.Constant):
 	"""From "Speed up integer-arithmetic-only inference via bit-shifting" """
 	M = M.data.numpy().item()
 	n = int(math.floor(-math.log2(M)))
@@ -87,122 +87,145 @@ def integer_only_arithmetic(M: relax.Expr, s_w: float, q_w: relax.Expr, z_w: rel
 	s_star_w = M_star/M * s_w
 	assert s_star_w >= s_w
 	if True:
-		q_star_w = (q_w.astype("int32") - z_w.astype("int32")).astype("float32")
+		q_star_w = (const_astype(q_w, "int32") - const_astype(z_w, "int32")).astype("float32")
 		q_star_w = requantize(relax.const(s_w/s_star_w), q_star_w , z_w)
 	else:
 		q_star_w = relax.op.quantize(relax.op.dequantize(q_w, relax.const(s_w), z_w), relax.const(s_star_w), z_w)
 	return n, q_star_w
+
+def reshape_if_needed(x: relax.Constant, shape: Tuple[int, int, int, int]) -> relax.Constant:
+	x_np = x.data.numpy()
+	# FIXME: GrapPhack breaks if scalar are reshaped to (1, 1, 1, 1)...
+	res = relax.const(x_np.reshape(shape)) if x_np.shape else x
+	return res
 
 class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__QLinearConv.html#qlinearconv-10
 		X   = inputs[0]
-		X_s = get_constant(inputs[1], params).data.numpy().item()
+		X_s = get_constant(inputs[1], params).data.numpy()
 		X_z = get_constant(inputs[2], params)
 		W   = get_constant(inputs[3], params)
-		W_s = get_constant(inputs[4], params).data.numpy().item()
+		W_s = get_constant(inputs[4], params).data.numpy()
 		W_z = get_constant(inputs[5], params)
-		Y_s = get_constant(inputs[6], params).data.numpy().item()
+		Y_s = get_constant(inputs[6], params).data.numpy()
 		Y_z = get_constant(inputs[7], params)
 		B   = get_constant(inputs[8], params)
 		assert len(X.struct_info.shape) == 4
 		assert len(W.struct_info.shape) == 4
 		# assert get_constant(inputs[5], params) == 0
 
+		auto_pad = attr.get("auto_pad", b"NOTSET").decode()
+
+		# NOTE: LLM generated but it seems good
+		ih, iw = topi.utils.get_const_tuple(relax.get_shape_of(X))[2:]
+		kh, kw = topi.utils.get_const_tuple(relax.get_shape_of(W))[2:]
+		sh, sw = attr.get("strides", (1, 1))
+		dh, dw = attr.get("dilations", (1, 1))
+		# 1. Calculate Effective Kernel Size (accounting for dilation)
+		k_eff_h = dh * (kh - 1) + 1
+		k_eff_w = dw * (kw - 1) + 1
+		# 2. Calculate Output Size (Ceil mode for SAME)
+		oh = math.ceil(ih / sh)
+		ow = math.ceil(iw / sw)
+		# 3. Calculate Total Padding needed
+		pad_h_total = max(0, (oh - 1) * sh + k_eff_h - ih)
+		pad_w_total = max(0, (ow - 1) * sw + k_eff_w - iw)
+
+
+		if auto_pad == "NOTSET":
+			pad_left, pad_right, pad_top, pad_bottom = attr.get("pads", (0, 0, 0, 0))
+		elif auto_pad == "SAME_UPPER":
+			pad_left = pad_w_total // 2
+			pad_right = pad_w_total - pad_left
+			pad_top = pad_h_total // 2
+			pad_bottom = pad_h_total - pad_top
+		elif auto_pad == "SAME_LOWER":
+			pad_right = pad_w_total // 2
+			pad_left = pad_w_total - pad_right
+			pad_bottom = pad_h_total // 2
+			pad_top = pad_h_total - pad_bottom
+		elif auto_pad == "VALID":
+			pad_left, pad_right, pad_top, pad_bottom = 0, 0, 0, 0
+		else:
+			raise ValueError("Invalid auto_pad attribute '%s'" % auto_pad)
+		padding = pad_left, pad_right, pad_top, pad_bottom
+
 		M = relax.const((X_s*W_s)/Y_s)
 		kwargs = dict(
 			strides=attr.get("strides", 1),
-			padding=attr.get("pads", 0),
+			padding=padding,
 			dilation=attr.get("dilations", 1),
 			groups=attr.get("group", 1),
 			data_layout="NCHW",
 			kernel_layout="OIHW",
 			out_dtype="int32",
 		)
-		N, W = integer_only_arithmetic(M, W_s, W, W_z)
+		# N, W = integer_only_arithmetic(M, W_s, W, W_z)
 		W = bb.normalize(W)
+		X_z = reshape_if_needed(X_z, (1, -1, 1, 1))
+		W_z = reshape_if_needed(W_z, (1, -1, 1, 1))
 		if False:
+			# FIXME: here W_z = reshape_if_needed(W_z, (-1, 1, 1, 1))
 			conv = relax.op.nn.conv2d(
-				data=(X.astype("int32") - X_z.astype("int32")),
-				weight=(W.astype("int32") - W_z.astype("int32")),
+				data=(X.astype("int32") - const_astype(X_z, "int32")),
+				weight=(const_astype(W, "int32") - const_astype(W_z, "int32")),
 				**kwargs
 			)
 		else:
 			O, I, H, W_ = topi.utils.get_const_tuple(relax.get_shape_of(W))
 			n = relax.const(I*H*W_)
+			# TODO: based on kwargs some of those terms can be drastically
+			# simplified.
+			# TODO: implement "scalarization" of tensors with all the same value.
 			conv = (
-				# If there is padding the output of the convolution is not made entirely of n
-				# n*X_z.astype("int32")*W_z.astype("int32")
-				X_z.astype("int32")*W_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), relax.op.ones_like(W), **kwargs)
-				- W_z.astype("int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
-				# TVM can't lower it down to a scalar, hence also the bias later
-				# is promoted to a full tensor if X_z is not zero.
-				- X_z.astype("int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
+				const_astype(X_z, "int32")*const_astype(W_z, "int32")*relax.op.nn.conv2d(relax.op.ones_like(X), relax.op.ones_like(W), **kwargs)
+				- const_astype(W_z, "int32")*relax.op.nn.conv2d(X, relax.op.ones_like(W), **kwargs)
+				- const_astype(X_z, "int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
-		res = (conv + relax.op.reshape(B, (1, -1, 1, 1)))
+		if B:
+			B = reshape_if_needed(B, (1, -1, 1, 1))
+			res = (conv + B)
+		else:
+			res = conv
 		# This is horrible. N is the inverted exponent of 2 to perform the
 		# multiplication in IOA i.e. M_star = 2**(-n).
 		if False:
-			tmp = res * relax.const(2**(-N)) if -N >= 0 else res / relax.const(2**N)
-		else:
-			tmp = relax.op.left_shift(res, relax.const(-N)) \
-				if -N >= 0 else relax.op.right_shift(res, relax.const(N))
-		return clamp(tmp + Y_z.astype("int32"), -128, 127).astype("int8")
-		# res = requantize(M, res.astype("float32"), Y_z)
-		# return res
-
-class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
-	@classmethod
-	def _impl_v1(cls, bb, inputs, attr, params):
-		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearAdd
-		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/micro/kernels/add_common.cc#L48C62-L48C64
-		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L211
-		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L204
-		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L180
-		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/common.h#L269
-		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/common.cc#L22
-
-		# C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
-		A   = inputs[0]
-		A_s = get_constant(inputs[1], params).data.numpy().item()
-		A_z = get_constant(inputs[2], params)
-		B   = inputs[3]
-		B_s = get_constant(inputs[4], params).data.numpy().item()
-		B_z = get_constant(inputs[5], params)
-		C_s = get_constant(inputs[6], params).data.numpy().item()
-		C_z = get_constant(inputs[7], params)
-
-		M_1 = relax.const(A_s/C_s)
-		M_2 = relax.const(B_s/C_s)
-		res = M_1*(A.astype("int32") - A_z.astype("int32")).astype("float32") \
-			+ M_2*(B.astype("int32") - B_z.astype("int32")).astype("float32")
-		res = requantize(relax.const(1.0), res, C_z)
+			if True:
+				tmp = res * relax.const(2**(-N)) if -N >= 0 else res / relax.const(2**N)
+			else:
+				tmp = relax.op.left_shift(res, relax.const(-N)) \
+					if -N >= 0 else relax.op.right_shift(res, relax.const(N))
+			return clamp(tmp + const_astype(Y_z, "int32"), -128, 127).astype("int8")
+		M = reshape_if_needed(M, (1, -1, 1, 1))
+		Y_z = reshape_if_needed(Y_z, (1, -1, 1, 1))
+		res = requantize(M, res.astype("float32"), Y_z)
 		return res
 
-def do_matmul(A: ir.expr.RelaxExpr, A_z: ir.expr.RelaxExpr, B: ir.expr.RelaxExpr, B_z: ir.expr.RelaxExpr) -> ir.expr.RelaxExpr:
+def do_matmul(A: relax.Expr, A_z: relax.Constant, B: relax.Constant, B_z: relax.Constant) -> relax.Expr:
 	n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(A))[1])
 	rows, cols = 0, 1
 	if False:
 		matmul = relax.op.matmul(
-			(A.astype("int32") - A_z.astype("int32")),
-			(B.astype("int32") - B_z.astype("int32")),
+			(A.astype("int32") - const_astype(A_z, "int32")),
+			(const_astype(B, "int32") - const_astype(B_z, "int32")),
 		)
 	elif False:
 		matmul = (
-			n*A_z.astype("int32")*B_z.astype("int32")
-			- B_z.astype("int32")*relax.op.matmul(A, relax.op.ones_like(B), out_dtype="int32")
-			- A_z.astype("int32")*relax.op.matmul(relax.op.ones_like(A), B, out_dtype="int32")
+			const_astype(A_z, "int32")*const_astype(B_z, "int32")*relax.op.matmul(relax.op.ones_like(A), relax.op.ones_like(B), out_dtype="int32")
+			- const_astype(B_z, "int32")*relax.op.matmul(A, relax.op.ones_like(B), out_dtype="int32")
+			- const_astype(A_z, "int32")*relax.op.matmul(relax.op.ones_like(A), B, out_dtype="int32")
 			+ relax.op.matmul(A, B, out_dtype="int32")
 		)
 	else:
 		# From "Quantization and Training of Neural Networks for Efficient
 		# Integer-Arithmetic-Only Inference"
 		matmul = (
-			n*A_z.astype("int32")*B_z.astype("int32")
-			- B_z.astype("int32")*relax.op.sum(A.astype("int32"), axis=cols, keepdims=True)
-			- A_z.astype("int32")*relax.op.sum(B.astype("int32"), axis=rows, keepdims=True)
+			n*const_astype(A_z, "int32")*const_astype(B_z, "int32")
+			- const_astype(B_z, "int32")*relax.op.sum(A.astype("int32"), axis=cols, keepdims=True)
+			- const_astype(A_z, "int32")*relax.op.sum(const_astype(B, "int32"), axis=rows, keepdims=True)
 			+ relax.op.matmul(A, B, out_dtype="int32")
 		)
 	return matmul
@@ -220,13 +243,13 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		assert alpha == 1.0, "alpha != 1.0 requires some work to keep it integer only"
 
 		A   = inputs[0]
-		A_s = get_constant(inputs[1], params).data.numpy().item()
+		A_s = get_constant(inputs[1], params).data.numpy()
 		A_z = get_constant(inputs[2], params)
 		B   = get_constant(inputs[3], params)
-		B_s = get_constant(inputs[4], params).data.numpy().item()
+		B_s = get_constant(inputs[4], params).data.numpy()
 		B_z = get_constant(inputs[5], params)
 		C   = get_constant(inputs[6], params)
-		Y_s = get_constant(inputs[7], params).data.numpy().item()
+		Y_s = get_constant(inputs[7], params).data.numpy()
 		Y_z = get_constant(inputs[8], params)
 		AT = bb.normalize(relax.op.permute_dims(A) if transA else A)
 		BT = relax.op.permute_dims(B) if transB else B
@@ -243,13 +266,19 @@ class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	def _impl_v10(cls, bb, inputs, attr, params):
 		# https://onnx.ai/onnx/operators/onnx__QLinearMatMul.html#qlinearmatmul-10
 		A = inputs[0]
-		A_s = get_constant(inputs[1], params).data.numpy().item()
+		A_s = get_constant(inputs[1], params).data.numpy()
 		A_z = get_constant(inputs[2], params)
 		B = get_constant(inputs[3], params)
-		B_s = get_constant(inputs[4], params).data.numpy().item()
+		B_s = get_constant(inputs[4], params).data.numpy()
 		B_z = get_constant(inputs[5], params)
-		Y_s = get_constant(inputs[6], params).data.numpy().item()
+		Y_s = get_constant(inputs[6], params).data.numpy()
 		Y_z = get_constant(inputs[7], params)
+
+		if len(relax.get_shape_of(A)) == 1:
+			A = bb.normalize(relax.op.expand_dims(A, axis=0))
+
+		if len(relax.get_shape_of(B)) == 1:
+			B = bb.normalize(relax.op.expand_dims(B, axis=1))
 
 		M = relax.const((A_s*B_s)/Y_s)
 		matmul = do_matmul(A, A_z, B, B_z)
@@ -257,15 +286,107 @@ class QLinearMatMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		res = requantize(M, res, Y_z)
 		return res
 
+class QLinearMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearMul
+		A = inputs[0]
+		A_s = get_constant(inputs[1], params).data.numpy()
+		A_z = get_constant(inputs[2], params)
+		B = get_constant(inputs[3], params)
+		B_s = get_constant(inputs[4], params).data.numpy()
+		B_z = get_constant(inputs[5], params)
+		C_s = get_constant(inputs[6], params).data.numpy()
+		C_z = get_constant(inputs[7], params)
+
+		M = relax.const((A_s*B_s)/C_s)
+		if False:
+			mul = (A.astype("int32") - const_astype(A_z, "int32"))*(const_astype(B, "int32") - const_astype(B_z, "int32"))
+		else:
+			# This version can be performed by VTA loading from int8 and
+			# outputing int32 using the GEMM core with diagonal matrices in 1
+			# clock cycle.
+			mul = (
+				const_astype(A_z, "int32")*const_astype(B_z, "int32")
+				- const_astype(B_z, "int32")*A.astype("int32")
+				- const_astype(A_z, "int32")*const_astype(B, "int32")
+				+ A.astype("int32")*const_astype(B, "int32")
+			)
+		res = mul.astype("float32")
+		res = requantize(M, res, C_z)
+		return res
+
+# Linear Operators #############################################################
+
+class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls, bb, inputs, attr, params):
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearAdd
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/micro/kernels/add_common.cc#L48C62-L48C64
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L211
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L204
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/reference/integer_ops/add.h#L180
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/common.h#L269
+		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/common.cc#L22
+
+		# C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
+		A   = inputs[0]
+		A_s = get_constant(inputs[1], params).data.numpy()
+		A_z = get_constant(inputs[2], params)
+		B   = inputs[3]
+		B_s = get_constant(inputs[4], params).data.numpy()
+		B_z = get_constant(inputs[5], params)
+		C_s = get_constant(inputs[6], params).data.numpy()
+		C_z = get_constant(inputs[7], params)
+
+		M_1 = relax.const(A_s/C_s)
+		M_2 = relax.const(B_s/C_s)
+		res = M_1*(A.astype("int32") - const_astype(A_z, "int32")).astype("float32") \
+			+ M_2*(B.astype("int32") - const_astype(B_z, "int32")).astype("float32")
+		res = requantize(relax.const(1.0), res, C_z)
+		return res
+
+# NOTE: QLinearSplit does not exits...
+# Concatenation and Split as linear operations
+# c(x, y) = [I 0]' x + [0 I]' y
+# s(x) = [I 0] x, [0 I] x
+# c(x, y) = [I 0]' (s_x/s_c)(x - z_x) + [0 I]' (s_y/s_c)(y - z_y) + z_c
+class QLinearConcat(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
+	@classmethod
+	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
+		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearConcat
+		y_s = get_constant(inputs[0], params).data.numpy()
+		y_z = get_constant(inputs[1], params)
+		xs = [get_constant(input, params) for i, input in enumerate(inputs[2:]) if i % 3 == 0]
+		xs_s = [get_constant(input, params).data.numpy() for i, input in enumerate(inputs[2:]) if i % 3 == 1]
+		xs_z = [get_constant(input, params) for i, input in enumerate(inputs[2:]) if i % 3 == 2]
+
+		axis = attr['axis']
+		# Scales and zero_zeropoint needs to be rasheped based on the axis?
+
+		Ms = [relax.const(x_s/y_s) for x_s in xs_s]
+
+		res = relax.op.concat(
+			[M*(x.astype("int32") - const_astype(x_z, "int32")).astype("float32")
+			for M, x, x_z in zip(Ms, xs, xs_z)],
+			axis
+		)
+
+		res = requantize(relax.const(1.0), res, y_z)
+		return res
+
+# Single Argument Operators ####################################################
+
 class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v1(cls, bb, inputs, attr, params):
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearGlobalAveragePool
 		x = inputs[0]
-		x_s = get_constant(inputs[1], params).data.numpy().item()
+		x_s = get_constant(inputs[1], params).data.numpy()
 		x_z = get_constant(inputs[2], params)
-		y_s = get_constant(inputs[3], params).data.numpy().item()
+		y_s = get_constant(inputs[3], params).data.numpy()
 		y_z = get_constant(inputs[4], params)
+		# channels_last = attr["channels_last"]
 
 		M = relax.const(x_s/y_s)
 		# NOTE: that astype("int32") is needed because for some reason Relax
@@ -274,7 +395,7 @@ class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter
 		avg_pool2d = relax.op.nn.avg_pool2d(
 			data=(x).astype("int32"),
 			pool_size=x.struct_info.shape.values[2:],
-		).astype("int32") - x_z.astype("int32")
+		).astype("int32") - const_astype(x_z, "int32")
 		res = avg_pool2d.astype("float32")
 		res = requantize(M, res, y_z)
 		return res
@@ -283,19 +404,32 @@ class QLinearAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
 	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearAveragePool
-		breakpoint()
-		pass
+		x = inputs[0]
+		x_s = get_constant(inputs[1], params).data.numpy()
+		x_z = get_constant(inputs[2], params)
+		y_s = get_constant(inputs[3], params).data.numpy()
+		y_z = get_constant(inputs[4], params)
 
-# NOTE: QLinearSplit does not exits...
-# Concatenation and Split as linear operations
-# c(x, y) = [I 0]' x + [0 I]' y
-# s(x) = [I 0] x, [0 I] x
-class QLinearConcat(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
-	@classmethod
-	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
-		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearConcat
-		breakpoint()
-		pass
+		auto_pad = attr['auto_pad']
+		ceil_mode = attr['ceil_mode']
+		# channels_last = attr['channels_last']
+		count_include_pad = attr['count_include_pad']
+		kernel_shape = attr['kernel_shape']
+		pads = attr.get("pads", [0])
+		strides = attr['strides']
+
+		M = relax.const(x_s/y_s)
+		avg_pool2d = relax.op.nn.avg_pool2d(
+			data=x.astype("int32"),
+			pool_size=kernel_shape,
+			strides=strides,
+			padding=pads,
+			ceil_mode=ceil_mode,
+			count_include_pad=count_include_pad
+		).astype("int32") - const_astype(x_z, "int32")
+		res = avg_pool2d.astype("float32")
+		res = requantize(M, res, y_z)
+		return res
 
 class QLinearLeakyRelu(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
@@ -303,13 +437,6 @@ class QLinearLeakyRelu(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearLeakyRelu
 		x = inputs[0]
 		relax.op.nn.leakyrelu
-		breakpoint()
-		pass
-
-class QLinearMul(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
-	@classmethod
-	def _impl_v1(cls: type, bb: relax.BlockBuilder, inputs: relax.frontend.onnx.onnx_frontend.onnx_input, attr: dict, params: List[Dict[str, relax.Var]]) -> relax.Expr:
-		# https://github.com/microsoft/onnxruntime/blob/6ee4ea3b05423aaa3ecd3698a56b83eb45f4b2ad/docs/ContribOperators.md#com.microsoft.QLinearMul
 		breakpoint()
 		pass
 
