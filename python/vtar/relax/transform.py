@@ -5,6 +5,7 @@ from tvm import relax
 from tvm import topi
 
 from typing import List, Tuple, Dict
+from collections import defaultdict
 
 # TVM supports data layouts for convolutions with "factors" i.e.
 # NCHW([1-9][0-9]*n)?([1-9][0-9]*w)?([1-9][0-9]*h)?([1-9][0-9]*w)?
@@ -517,3 +518,50 @@ class BindScalarToFunctions:
 				rewriter.builder_.update_func(global_var, updated_func)
 
 		return rewriter.builder_.get()
+
+@relax.expr_functor.visitor
+class OpAttrCounter(relax.PyExprVisitor):
+	def __init__(self):
+		super().__init__()
+		self.counts = defaultdict(int)
+
+	def visit_call_(self, call: relax.Call) -> None:
+		is_non_module_method = isinstance(call.op, ir.Op)
+		if is_non_module_method:
+			op_name = call.op.name
+			# TODO: some attributes can be "compressed" thing of
+			# stride=1 vs stride=(1,1), also integers are printed as
+			# T.int64...
+
+			if call.attrs is None:
+				dict_attrs = {}
+			if isinstance(call.attrs, (ir.Attrs, ir.DictAttrs)):
+				dict_attrs = dict(call.attrs)
+			elif isinstance(call.attrs, tvm.runtime.Object):
+				# FIXME: how do I discriminate over non QuantizeAttrs?
+				dict_attrs = {
+					"axis": call.attrs.axis,
+					"out_dtype": call.attrs.out_dtype,
+				}
+			attrs_key = str(dict_attrs)
+
+			self.counts[(op_name, attrs_key)] += 1
+
+	def print_report(self) -> None:
+		print("%-30s | %-5s | Attributes" % ('Operation', 'Count'))
+		print("-" * 80)
+
+		sorted_counts = sorted(self.counts.items(), key=lambda x: x[1], reverse=True)
+
+		for (op, attrs), count in sorted_counts:
+			attr_display = (attrs[:75] + '..') if len(attrs) > 75 else attrs
+
+			print("%-30s | %-5d | %s" % (op, count, attr_display))
+
+@ir.transform.module_pass(opt_level=0)
+def print_report(mod, ctx):
+	counter = OpAttrCounter()
+	for function in mod.functions.values():
+		counter.visit_expr(function)
+	counter.print_report()
+	return mod
