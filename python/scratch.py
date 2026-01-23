@@ -354,7 +354,73 @@ def main2(
                     T.writes(res[v_bo, v_co, v_i, v_j, v_bi, v_ci])
                     res[v_bo, v_co, v_i, v_j, v_bi, v_ci] = T.Cast("int8", res_min[v_bo, v_co, v_i, v_j, v_bi, v_ci])
 
+@I.ir_module
+class BidirectionalShiftModule:
+    @R.function
+    def main(data: R.Tensor((4,), "int32"), shift_map: R.Tensor((4,), "int32")) -> R.Tensor((4,), "int32"):
+        with R.dataflow():
+            is_positive = shift_map > R.const(0, "int32")
+            is_negative = shift_map < R.const(0, "int32")
+            magnitude = R.where(is_negative, -shift_map, shift_map)
+            right_shifted = R.right_shift(data, magnitude)
+            left_shifted  = R.left_shift(data, magnitude)
+            result = R.where(is_positive, right_shifted, left_shifted)
+            R.output(result)
+        return result
+
 if __name__ == "__main__":
+    from vtar.relax.transform import print_report
+    convert_layout = relax.transform.ConvertLayout({
+        "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
+    })
+
+    onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/mnist-12-int8.onnx"))
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    # mod = relax.transform.FoldConstant()(mod)
+    mod = print_report(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+
+    # raise SystemExit(0)
+
+    onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/vgg16-12-int8.onnx"))
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod = print_report(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+
+    onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/resnet50-v1-12-int8.onnx"))
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod = print_report(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+
+    onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/densenet-12-int8.onnx"))
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod = print_report(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+
+    onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/squeezenet1.0-12-int8.onnx"))
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod = print_report(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+
+    # All of the above should go on VTA with no problems!
+
+    onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/mobilenetv2-12-int8.onnx"))
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod = print_report(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+
+    onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/efficientnet-lite4-11-int8.onnx"))
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod = print_report(mod)
+    mod = relax.transform.LegalizeOps()(mod)
+
+    raise SystemExit(0)
+
+    mod = relax.transform.FoldConstant()(mod)
+    mod.show()
+
+    raise SystemExit(0)
+
     # The "metadata" notation is used every time a Relax constant is not a
     # scalar as it can be seen by (which seem to be bugged but okay)
     program, metadata = relax.utils.metadata_partitioner(relax.const(numpy.ones(1)).script(show_meta=True))
@@ -370,7 +436,6 @@ if __name__ == "__main__":
 
     onnx_model = onnx.load("build/resnet18_int8.onnx")
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model, keep_params_in_input=True)
-    if False:
     scalar_params = {}
     non_scalar_attr = []
     for param, data in zip(mod['main'].params[1:], mod['main'].attrs['params']):

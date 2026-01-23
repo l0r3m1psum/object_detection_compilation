@@ -66,8 +66,6 @@ seq = tvm.transform.Sequential([
 	# only fold code by executing it hence if x is not know at
 	# compile time even simple expressions like x + 0 are not
 	# simplified.
-	vtar.relax.transform.SimplifyConstAstype(),
-	relax.transform.CanonicalizeBindings(), # necessary
 	vtar.relax.transform.SimplifyRing(),
 	# Some constant folding needs to be performed before graphpack
 	# because TVM does not now how to execute NCHWnc convolution
@@ -75,7 +73,7 @@ seq = tvm.transform.Sequential([
 	vtar.relax.transform.GraphPack(bitpack_end="relax.mean"),
 	# GraphPack inserts some reshape, permute and pad that can be
 	# folded away.
-	relax.transform.FoldConstant(),
+	relax.transform.FoldConstant(), # TODO: should be done in GraphPack
 	vtar.relax.transform.AddChainSimplify(),
 	relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
 	# TODO: write transform to put ReLU before astype
