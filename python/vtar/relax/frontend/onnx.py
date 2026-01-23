@@ -75,23 +75,46 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 # Bilinear operators ###########################################################
 
-def integer_only_arithmetic(M: relax.Constant, s_w: float, q_w: relax.Constant, z_w: relax.Constant):
+def integer_only_arithmetic(M: relax.Constant, s_w: numpy.ndarray, q_w: relax.Constant, z_w: relax.Constant) -> Tuple[numpy.ndarray, relax.Expr]:
 	"""From "Speed up integer-arithmetic-only inference via bit-shifting" """
-	M = M.data.numpy().item()
-	n = int(math.floor(-math.log2(M)))
-	if n < 0: print(n, M)
-	M_star = 2**(-n)
-	assert 2**(-(n + 1)) <= M <= M_star, "M = %f, n = %d" % (M, n)
-	assert 1 <= M_star/M < 2
+	M = M.data.numpy()
+	n = numpy.floor(-numpy.log2(M)).astype("int32")
+	# if (n < 0).any(): print(n, M)
+	M_star = 2.**(-n)
+	assert ((2.**(-(n + 1)) <= M) & (M <= M_star)).all(), "M = %s, n = %s" % (M, n)
+	assert ((1 <= M_star/M) & (M_star/M < 2)).all()
 
 	s_star_w = M_star/M * s_w
-	assert s_star_w >= s_w
+	assert (s_star_w >= s_w).all()
 	if True:
 		q_star_w = (const_astype(q_w, "int32") - const_astype(z_w, "int32")).astype("float32")
 		q_star_w = requantize(relax.const(s_w/s_star_w), q_star_w , z_w)
 	else:
+		# NOTE: axis is probably 0 and out_dtype should not be int8...
 		q_star_w = relax.op.quantize(relax.op.dequantize(q_w, relax.const(s_w), z_w), relax.const(s_star_w), z_w)
 	return n, q_star_w
+
+def ioa_requantize(N: numpy.ndarray, x: relax.Expr, z: relax.Constant) -> relax.Expr:
+	# This is horrible. N is the inverted exponent of 2 to perform the
+	# multiplication in IOA i.e. M_star = 2**(-n).
+	is_pos = -N > 0
+	is_neg = -N < 0
+	magnitude = relax.const(numpy.where(is_neg, -(-N), -N))
+	# VTA should do this operation in a single ALU shift instruction when shift
+	# with register argument will be supported.
+	# https://docs.amd.com/r/en-US/ug1399-vitis-hls/Class-Methods-and-Operators#:~:text=b%2B1%3B%0A%7D-,Shift%20Operators,-Each%20shift%20operator
+	is_scalar = not is_pos.shape
+	if is_scalar:
+		res = relax.op.left_shift(x, magnitude) if is_pos \
+			else relax.op.right_shift(x, magnitude)
+	else:
+		res = relax.op.where(
+			relax.const(is_pos),
+			relax.op.left_shift(x, magnitude),
+			relax.op.right_shift(x, magnitude),
+		)
+
+	return clamp(res + const_astype(z, "int32"), -128, 127).astype("int8")
 
 def reshape_if_needed(x: relax.Constant, shape: Tuple[int, int, int, int]) -> relax.Constant:
 	x_np = x.data.numpy()
@@ -162,7 +185,12 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			kernel_layout="OIHW",
 			out_dtype="int32",
 		)
-		# N, W = integer_only_arithmetic(M, W_s, W, W_z)
+		N, W = integer_only_arithmetic(
+			reshape_if_needed(M, (-1, 1, 1, 1)),
+			W_s.reshape((-1, 1, 1, 1)),
+			W,
+			reshape_if_needed(W_z, (-1, 1, 1, 1))
+		)
 		W = bb.normalize(W)
 		X_z = reshape_if_needed(X_z, (1, -1, 1, 1))
 		W_z = reshape_if_needed(W_z, (1, -1, 1, 1))
@@ -185,22 +213,13 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 				- const_astype(X_z, "int32")*relax.op.nn.conv2d(relax.op.ones_like(X), W, **kwargs)
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
-		if B:
-			B = reshape_if_needed(B, (1, -1, 1, 1))
-			res = (conv + B)
-		else:
-			res = conv
-		# This is horrible. N is the inverted exponent of 2 to perform the
-		# multiplication in IOA i.e. M_star = 2**(-n).
-		if False:
-			if True:
-				tmp = res * relax.const(2**(-N)) if -N >= 0 else res / relax.const(2**N)
-			else:
-				tmp = relax.op.left_shift(res, relax.const(-N)) \
-					if -N >= 0 else relax.op.right_shift(res, relax.const(N))
-			return clamp(tmp + const_astype(Y_z, "int32"), -128, 127).astype("int8")
+		res = conv + reshape_if_needed(B, (1, -1, 1, 1)) if B else conv
 		M = reshape_if_needed(M, (1, -1, 1, 1))
 		Y_z = reshape_if_needed(Y_z, (1, -1, 1, 1))
+		# The conditional reshape is needed because the dlight schedule is
+		# fragile (also the transform that binds scalars does not recognize
+		# tensors of shape (1, 1, 1, 1) as equivalent to scalars)
+		return ioa_requantize(N.reshape(1, -1, 1, 1) if N.shape else N, res, Y_z)
 		res = requantize(M, res.astype("float32"), Y_z)
 		return res
 
@@ -252,7 +271,7 @@ class QGemm(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		Y_s = get_constant(inputs[7], params).data.numpy()
 		Y_z = get_constant(inputs[8], params)
 		AT = bb.normalize(relax.op.permute_dims(A) if transA else A)
-		BT = relax.op.permute_dims(B) if transB else B
+		BT = relax.const(B.data.numpy().transpose()) if transB else B
 
 		M = relax.const((A_s*B_s)/Y_s)
 		# TODO: add support for relax.linear
