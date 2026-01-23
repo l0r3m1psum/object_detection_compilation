@@ -85,12 +85,12 @@ if not os.path.exists("build/resnet18_int8.json"):
 	onnx_model = onnx.load("build/resnet18_int8.onnx")
 	mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
 	mod = seq(mod)
-	mod.show()
 	with open("build/resnet18_int8.json", "w") as f:
 		f.write(ir.save_json(mod))
 else:
 	with open("build/resnet18_int8.json") as f:
 		mod = ir.load_json(f.read())
+mod.show()
 
 mod = vtar.relax.vtar_actual_pipeline()(mod)
 mod.show()
