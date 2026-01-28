@@ -1,18 +1,41 @@
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 from torchvision.models import resnet18, ResNet18_Weights
-from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, QuantFormat, CalibrationMethod, quant_pre_process
-import numpy
-import onnxruntime as ort
 from torchvision import datasets, transforms
+
+import onnx
+from onnx import numpy_helper
+import onnxruntime
+from onnxruntime.quantization import (
+    quantize_static, CalibrationDataReader, QuantType, QuantFormat,
+    CalibrationMethod, quant_pre_process,
+    QuantizationMode,
+)
+from onnxruntime.quantization.registry import QLinearOpsRegistry, QDQRegistry
+from onnxruntime.quantization.quant_utils import (
+    save_and_reload_model_with_shape_infer,
+    load_model_with_shape_infer,
+    model_has_pre_process_metadata,
+    update_opset_version,
+)
+from onnxruntime.quantization.quantize import check_static_quant_arguments
+from onnxruntime.quantization.onnx_quantizer import ONNXQuantizer
+from onnxruntime.quantization.qdq_quantizer import QDQQuantizer
+from onnxruntime.quantization.calibrate import (
+    MinMaxCalibrater, create_calibrator, CalibrationMethod, TensorsData
+)
+
+import numpy
+
 import os
 import sys
-from torch.utils.data import DataLoader
-import torch.nn as nn
-import vtar.relax.frontend.onnx
-import vtar.relax.transform
+import pathlib
+import tempfile
+
 import tvm
 from tvm import relax
-import onnx
+import vtar.relax.frontend.onnx
 
 # From the ONNX model zoo there are already quantized models available they all
 # use per channel scale and zero_point. YOLOv3 has the pesky quantized leaky
@@ -59,6 +82,185 @@ def run_inference(session, input_tensor):
     ort_inputs = {session.get_inputs()[0].name: input_tensor.numpy()}
     ort_outs = session.run(None, ort_inputs)
     return numpy.array(ort_outs[0])
+
+def quantize_relay_for_vta(
+    model_input: str | pathlib.Path | onnx.ModelProto,
+    model_output: str | pathlib.Path,
+    calibration_data_reader: CalibrationDataReader,
+    quant_format=QuantFormat.QDQ,
+    op_types_to_quantize=None,
+    nodes_to_quantize=None,
+    nodes_to_exclude=None,
+    use_external_data_format=False,
+    calibration_providers=None,
+):
+    """Performs per-network symmetric quantization for the activations using
+    MinMax calibration and power of two symmetric quantization for the weights
+    (the biases are quantized according to the ONNX specification).
+
+    Implementation stolen and adapted from onnxruntime.quantization.quantize_static
+
+    https://github.com/apache/tvm/blob/v0.18.0/python/tvm/relay/quantize/quantize.py
+    """
+
+    per_channel = False
+    reduce_range = False
+    activation_type = QuantType.QInt8
+    weight_type = QuantType.QInt8
+    calibrate_method = CalibrationMethod.MinMax
+    nodes_to_exclude = nodes_to_exclude or []
+    nodes_to_quantize = nodes_to_quantize or []
+    op_types_to_quantize = op_types_to_quantize or []
+    mode = QuantizationMode.QLinearOps
+
+    if not op_types_to_quantize or len(op_types_to_quantize) == 0:
+        q_linear_ops = list(QLinearOpsRegistry.keys())
+        qdq_ops = list(QDQRegistry.keys())
+        op_types_to_quantize = list(set(q_linear_ops + qdq_ops))
+
+    model = (
+        save_and_reload_model_with_shape_infer(model_input)
+        if isinstance(model_input, onnx.ModelProto)
+        else load_model_with_shape_infer(pathlib.Path(model_input))
+    )
+
+    pre_processed: bool = model_has_pre_process_metadata(model)
+    if not pre_processed:
+        logging.warning(
+            "Please consider to run pre-processing before quantization. Refer to example: "
+            "https://github.com/microsoft/onnxruntime-inference-examples/blob/main/quantization/image_classification"
+            "/cpu/ReadMe.md "
+        )
+
+    extra_options = extra_options={
+        "ActivationSymmetric": True,
+        "WeightSymmetric": True,
+    }
+
+    calib_extra_options_keys = [
+        ("CalibTensorRangeSymmetric", "symmetric"), # ???
+    ]
+    calib_extra_options = {
+        # key: extra_options.get(name) for (name, key) in calib_extra_options_keys if name in extra_options
+    }
+
+    updated_model = update_opset_version(model, weight_type)
+    is_model_updated = updated_model is not model
+    if is_model_updated:
+        model = updated_model
+
+    with tempfile.TemporaryDirectory(prefix="ort.quant.") as quant_tmp_dir:
+        if is_model_updated:
+            # Update model_input and avoid to use the original one
+            model_input = copy.deepcopy(model)
+
+        if isinstance(model_input, onnx.ModelProto):
+            output_path = pathlib.Path(quant_tmp_dir).joinpath("model_input.onnx").as_posix()
+            onnx.save_model(
+                model_input,
+                output_path,
+                save_as_external_data=True,
+            )
+            model_input = output_path
+
+        calibrator = create_calibrator(
+            pathlib.Path(model_input),
+            op_types_to_quantize,
+            augmented_model_path=pathlib.Path(quant_tmp_dir).joinpath("augmented_model.onnx").as_posix(),
+            calibrate_method=calibrate_method,
+            use_external_data_format=use_external_data_format,
+            providers=calibration_providers,
+            extra_options=calib_extra_options,
+        )
+
+        calibrator.collect_data(calibration_data_reader)
+        tensors_range = calibrator.compute_data()
+        if not isinstance(tensors_range, TensorsData):
+            raise TypeError(
+                f"Unexpected type {type(tensors_range)} for tensors_range and calibrator={type(calibrator)}."
+            )
+        del calibrator
+
+    global_min = float("+inf")
+    global_max = float("-inf")
+    for tensor, data in tensors_range.items():
+        global_min = min(global_min, data.lowest)
+        global_max = max(global_max, data.highest)
+    # global_scale = max(abs(global_min), abs(global_max)) / 127.0
+    for data in tensors_range.values():
+        data.lowest = global_min
+        data.highest = global_max
+
+
+    overrides = {}
+    initializer_map = {
+        init.name: init
+        for init in model.graph.initializer
+    }
+    for node in model.graph.node:
+        if (node.op_type in ["Conv", "Gemm"]
+            and len(node.input) > 2
+            and node.input[1] in initializer_map
+            and node.input[2] in initializer_map):
+
+            weight = numpy_helper.to_array(initializer_map[node.input[1]])
+            # bias = numpy_helper.to_array(initializer_map[node.input[2]])
+            weight_scale = 2.**(numpy.ceil(numpy.log2(numpy.max(numpy.abs(weight)))) - (8-1))
+
+            overrides[node.input[1]] = [{
+                "quant_type": QuantType.QInt8,
+                "scale": weight_scale,
+                "zero_point": 0,
+            }]
+
+            # This should be done automatically
+            # overrides[node.input[2]] = [{
+            #     "quant_type": QuantType.QInt8,
+            #     "scale": weight_scale*global_scale,
+            #     "zero_point": 0,
+            # }]
+
+    extra_options["TensorQuantOverrides"] = overrides
+
+    check_static_quant_arguments(quant_format, activation_type, weight_type)
+
+    if quant_format is QuantFormat.QOperator:
+        quantizer = ONNXQuantizer(
+            model,
+            per_channel,
+            reduce_range,
+            mode,
+            True,  # static
+            weight_type,
+            activation_type,
+            tensors_range,
+            nodes_to_quantize,
+            nodes_to_exclude,
+            op_types_to_quantize,
+            extra_options,
+        )
+    else:
+        quantizer = QDQQuantizer(
+            model,
+            per_channel,
+            reduce_range,
+            weight_type,
+            activation_type,
+            tensors_range,
+            nodes_to_quantize,
+            nodes_to_exclude,
+            op_types_to_quantize,
+            extra_options,
+        )
+
+    quantizer.quantize_model()
+    quantizer.model.save_model_to_file(model_output, use_external_data_format)
+    if not pre_processed:
+        logging.warning(
+            "Please consider pre-processing before quantization. See "
+            "https://github.com/microsoft/onnxruntime-inference-examples/blob/main/quantization/image_classification"
+            "/cpu/ReadMe.md "
+        )
 
 def main():
 
@@ -112,53 +314,51 @@ def main():
                         input_names=["input"], output_names=["output"],
                         opset_version=11)
 
-    if not os.path.exists("build/resnet18_int8.onnx"):
+    not_resnet_per_tensor = not os.path.exists("build/resnet18_int8_per_tensor.onnx")
+    not_resnet_per_network = not os.path.exists("build/resnet18_int8_per_network.onnx")
+    if not_resnet_per_tensor or not_resnet_per_network:
         calib_dataset = datasets.Imagenette(root='build/dataset', split='train', download=False, transform=transform)
         calib_data_loader = DataLoader(calib_dataset, batch_size=1, shuffle=False)
-        calib_data_reader = MyCalibrationDataReader(calib_data_loader)
 
-        # TODO: make arguments of this function explicit (and understand them)
-        quant_pre_process("build/resnet18.onnx", "build/resnet18_pre_proc.onnx")
-        quantize_static(
-            model_input="build/resnet18_pre_proc.onnx",
-            model_output="build/resnet18_int8.onnx",
-            calibration_data_reader=calib_data_reader,
-            quant_format=QuantFormat.QOperator,
-            op_types_to_quantize=None,
-            per_channel=False,
-            reduce_range=False,
-            activation_type=QuantType.QInt8,
-            weight_type=QuantType.QInt8,
-            nodes_to_quantize=None,
-            nodes_to_exclude=None,
-            use_external_data_format=False,
-            calibrate_method=CalibrationMethod.MinMax,
-            calibration_providers=None,
-            extra_options={
-                "ActivationSymmetric": True,
-                "WeightSymmetric": True,
-                "QDQKeepRemovableActivations": False,
-            },
-
-        )
+        if not os.path.exists("build/resnet18_pre_proc.onnx"):
+            # TODO: make arguments of this function explicit (and understand them)
+            quant_pre_process("build/resnet18.onnx", "build/resnet18_pre_proc.onnx")
+        if not_resnet_per_tensor:
+            quantize_static(
+                model_input="build/resnet18_pre_proc.onnx",
+                model_output="build/resnet18_int8_per_tensor.onnx",
+                calibration_data_reader=MyCalibrationDataReader(calib_data_loader),
+                quant_format=QuantFormat.QOperator,
+                op_types_to_quantize=None,
+                per_channel=False,
+                reduce_range=False,
+                activation_type=QuantType.QInt8,
+                weight_type=QuantType.QInt8,
+                nodes_to_quantize=None,
+                nodes_to_exclude=None,
+                use_external_data_format=False,
+                calibrate_method=CalibrationMethod.MinMax,
+                calibration_providers=None,
+                extra_options={
+                    "ActivationSymmetric": True,
+                    "WeightSymmetric": True,
+                    "QDQKeepRemovableActivations": False,
+                },
+            )
+        if not_resnet_per_network:
+            quantize_relay_for_vta(
+                "build/resnet18_pre_proc.onnx",
+                "build/resnet18_int8_per_network.onnx",
+                MyCalibrationDataReader(calib_data_loader),
+                QuantFormat.QOperator,
+            )
 
     import ctypes
     vta_fsim = ctypes.CDLL("vta_fsim")
     env = vtar.get_env()
     target = tvm.target.Target(env.target, host=env.target_host)
     dev = tvm.device(str(env.target))
-    # dev = tvm.runtime.device('cpu')
-    if not os.path.exists("build/resnet18_int8.dll"):
-        onnx_model = onnx.load("build/resnet18_int8.onnx")
-        mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
-        mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
-        mod = vtar.relax.transform.GraphPack()(mod)
-        mod = relax.get_pipeline('vtar_zero')(mod)
-        target = tvm.target.Target.from_device(dev)
-        ex = relax.build(mod, target)
-        ex.export_library("build/resnet18_int8.dll")
-    else:
-        ex = tvm.runtime.load_module("build/resnet18_int8.dll")
+    ex = tvm.runtime.load_module("build/resnet18_int8_per_tensor.dll")
 
     vm = relax.VirtualMachine(ex, dev)
 
@@ -166,11 +366,13 @@ def main():
     test_dataset = torch.utils.data.Subset(test_dataset, torch.randperm(len(test_dataset))[:200])
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    sess_fp32 = ort.InferenceSession("build/resnet18.onnx")
-    sess_int8 = ort.InferenceSession("build/resnet18_int8.onnx")
+    sess_fp32 = onnxruntime.InferenceSession("build/resnet18.onnx")
+    sess_int8_pt = onnxruntime.InferenceSession("build/resnet18_int8_per_tensor.onnx")
+    sess_int8_pn = onnxruntime.InferenceSession("build/resnet18_int8_per_network.onnx")
 
     correct_fp32 = 0
-    correct_int8 = 0
+    correct_int8_pt = 0
+    correct_int8_pn = 0
     correct_tvm = 0
     total = 0
 
@@ -180,23 +382,28 @@ def main():
         outputs_fp32 = run_inference(sess_fp32, images)
         pred_fp32 = numpy.argmax(outputs_fp32, axis=1)
 
-        outputs_int8 = run_inference(sess_int8, images)
-        pred_int8 = numpy.argmax(outputs_int8, axis=1)
+        outputs_int8_pt = run_inference(sess_int8_pt, images)
+        pred_int8_pt = numpy.argmax(outputs_int8_pt, axis=1)
 
-        outputs_tvm = vm["main"](tvm.nd.array(images.numpy(), dev)).numpy()
-        pred_tvm = numpy.argmax(outputs_tvm, axis=1)
+        outputs_int8_pn = run_inference(sess_int8_pn, images)
+        pred_int8_pn = numpy.argmax(outputs_int8_pn, axis=1)
+
+        # outputs_tvm = vm["main"](tvm.nd.array(images.numpy(), dev)).numpy()
+        # pred_tvm = numpy.argmax(outputs_tvm, axis=1)
 
         correct_fp32 += (pred_fp32 == labels.numpy()).sum()
-        correct_int8 += (pred_int8 == labels.numpy()).sum()
-        correct_tvm += (pred_tvm == labels.numpy()).sum()
+        correct_int8_pt += (pred_int8_pt == labels.numpy()).sum()
+        correct_int8_pn += (pred_int8_pn == labels.numpy()).sum()
+        # correct_tvm += (pred_tvm == labels.numpy()).sum()
         total += labels.size(0)
         print(".", end="")
         sys.stdout.flush()
     print("")
 
-    print(f"Accuracy FP32: {correct_fp32/total*100:.2f}%")
-    print(f"Accuracy INT8: {correct_int8/total*100:.2f}%")
-    print(f"Accuracy tvm: {correct_tvm/total*100:.2f}%")
+    print(f"Accuracy FP32:             {correct_fp32/total*100:.2f}%")
+    print(f"Accuracy INT8 per-tensor:  {correct_int8_pt/total*100:.2f}%")
+    print(f"Accuracy INT8 per-network: {correct_int8_pn/total*100:.2f}%")
+    print(f"Accuracy TVM:              {correct_tvm/total*100:.2f}%")
 
 if __name__ == "__main__":
     main()

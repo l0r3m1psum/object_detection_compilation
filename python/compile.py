@@ -79,14 +79,14 @@ seq = tvm.transform.Sequential([
 	# TODO: write transform to put ReLU before astype
 ])
 
-if not os.path.exists("build/resnet18_int8.json"):
-	onnx_model = onnx.load("build/resnet18_int8.onnx")
+if not os.path.exists("build/resnet18_int8_per_tensor.json"):
+	onnx_model = onnx.load("build/resnet18_int8_per_tensor.onnx")
 	mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
 	mod = seq(mod)
-	with open("build/resnet18_int8.json", "w") as f:
+	with open("build/resnet18_int8_per_tensor.json", "w") as f:
 		f.write(ir.save_json(mod))
 else:
-	with open("build/resnet18_int8.json") as f:
+	with open("build/resnet18_int8_per_tensor.json") as f:
 		mod = ir.load_json(f.read())
 mod.show()
 
@@ -101,7 +101,7 @@ ex = tvm.compile(
 )
 
 ex.export_library(
-	"build/resnet18_int8.dll",
+	"build/resnet18_int8_per_tensor.dll",
 	workspace_dir='build',
 	options=(
 		"-v", "-Wl,-verbose",
@@ -109,6 +109,6 @@ ex.export_library(
 		"-L", os.path.expandvars('%installdir%\\Programs\\TVM\\lib'),
 		"-l", "vta_fsim",
 		"-l", "tvm_runtime",
-		"-Wl,/DEBUG:FULL,/PDB:build\\resnet18_int8.pdb",
+		"-Wl,/DEBUG:FULL,/PDB:build\\resnet18_int8_per_tensor.pdb",
 	)
 )

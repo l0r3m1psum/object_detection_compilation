@@ -826,7 +826,7 @@ def test_constant_folding_patches():
 # ONNX tests ###################################################################
 
 # Generated and slightly edited from:
-# onnx_model = onnx.load("build/resnet18_int8.onnx")
+# onnx_model = onnx.load("build/resnet18_int8_per_tensor.onnx")
 # vtar.relax.frontend.onnx.convert_weights_to_inputs(onnx_model)
 onnx_text_quantized_resnet18 = """\
 <

@@ -438,7 +438,7 @@ if __name__ == "__main__":
     y = topi.nn.simulated_quantize(x, dtype, scale, zero_point)
     f = te.create_prim_func((x, y))
 
-    onnx_model = onnx.load("build/resnet18_int8.onnx")
+    onnx_model = onnx.load("build/resnet18_int8_per_tensor.onnx")
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model, keep_params_in_input=True)
     scalar_params = {}
     non_scalar_attr = []
