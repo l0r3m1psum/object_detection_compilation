@@ -358,6 +358,7 @@ def main():
     env = vtar.get_env()
     target = tvm.target.Target(env.target, host=env.target_host)
     dev = tvm.device(str(env.target))
+    # TODO: if not present emit warning and compile model that always answers with one class.
     ex = tvm.runtime.load_module("build/resnet18_int8_per_tensor.dll")
 
     vm = relax.VirtualMachine(ex, dev)
@@ -373,7 +374,7 @@ def main():
     correct_fp32 = 0
     correct_int8_pt = 0
     correct_int8_pn = 0
-    correct_tvm = 0
+    correct_tvm_pt = 0
     total = 0
 
     for images, labels in test_loader:
@@ -388,22 +389,23 @@ def main():
         outputs_int8_pn = run_inference(sess_int8_pn, images)
         pred_int8_pn = numpy.argmax(outputs_int8_pn, axis=1)
 
-        # outputs_tvm = vm["main"](tvm.nd.array(images.numpy(), dev)).numpy()
-        # pred_tvm = numpy.argmax(outputs_tvm, axis=1)
+        outputs_tvm_pt = vm["main"](tvm.nd.array(images.numpy(), dev)).numpy()
+        pred_tvm_pt = numpy.argmax(outputs_tvm_pt, axis=1)
 
         correct_fp32 += (pred_fp32 == labels.numpy()).sum()
         correct_int8_pt += (pred_int8_pt == labels.numpy()).sum()
         correct_int8_pn += (pred_int8_pn == labels.numpy()).sum()
-        # correct_tvm += (pred_tvm == labels.numpy()).sum()
+        correct_tvm_pt += (pred_tvm_pt == labels.numpy()).sum()
         total += labels.size(0)
         print(".", end="")
         sys.stdout.flush()
     print("")
 
-    print(f"Accuracy FP32:             {correct_fp32/total*100:.2f}%")
-    print(f"Accuracy INT8 per-tensor:  {correct_int8_pt/total*100:.2f}%")
-    print(f"Accuracy INT8 per-network: {correct_int8_pn/total*100:.2f}%")
-    print(f"Accuracy TVM:              {correct_tvm/total*100:.2f}%")
+    print(f"Accuracy FP32:               {correct_fp32/total*100:.2f}%")
+    print(f"Accuracy INT8 per-tensor:    {correct_int8_pt/total*100:.2f}%")
+    print(f"Accuracy INT8 per-network:   {correct_int8_pn/total*100:.2f}%")
+    print(f"Accuracy TVM IOA per-tensor: {correct_tvm_pt/total*100:.2f}%")
+    # print(f"Accuracy TVM IOA per-network: {correct_tvm_pn/total*100:.2f}%")
 
 if __name__ == "__main__":
     main()

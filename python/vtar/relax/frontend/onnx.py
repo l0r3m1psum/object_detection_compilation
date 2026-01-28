@@ -7,9 +7,32 @@ from tvm.relax.frontend.onnx.onnx_frontend import get_constant
 import onnx
 import numpy
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import warnings
 import math
+
+# TODO: write test for this function.
+def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    x = numpy.asanyarray(arr, dtype=numpy.float32)
+    x_bits = x.view(numpy.int32)
+
+    SIGN_MASK     = 0x80000000
+    EXPONENT_MASK = 0x7F800000
+    MANTISSA_MASK = 0x007FFFFF
+    EXPONENT_SIZE_MASK = 0xFF
+    MANTISSA_SIZE = 23
+    BIAS = 127
+
+    # https://it.wikipedia.org/wiki/IEEE_754#Precisione_singola_(32_bit)
+    not_inf_or_nan = (x_bits < EXPONENT_MASK)
+    not_neg_inf_or_nan = (x_bits > 0) & not_inf_or_nan
+    has_zero_mantissa = (x_bits & (MANTISSA_MASK | SIGN_MASK)) == 0
+    is_pow2 = not_inf_nan_or_neg & has_zero_mantissa
+
+    powers = ((x_bits >> MANTISSA_SIZE) & EXPONENT_SIZE_MASK) - BIAS
+
+    return is_pow2, powers
+    # return numpy.where(is_pow2, powers, numpy.nan)
 
 def clamp(data: relax.Expr, min, max) -> relax.Expr:
 	res = relax.op.minimum(data, relax.const(max))
@@ -75,7 +98,13 @@ class DequantizeLinear(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 
 # Bilinear operators ###########################################################
 
-def integer_only_arithmetic(M: relax.Constant, s_w: numpy.ndarray, q_w: relax.Constant, z_w: relax.Constant) -> Tuple[numpy.ndarray, relax.Expr]:
+def integer_only_arithmetic(
+	M: relax.Constant,
+	s_w: numpy.ndarray,
+	q_w: relax.Constant,
+	z_w: relax.Constant,
+	B: Optional[relax.Constant]
+) -> Tuple[numpy.ndarray, relax.Expr, Optional[relax.Constant]]:
 	"""From "Speed up integer-arithmetic-only inference via bit-shifting" """
 	M = M.data.numpy()
 	n = numpy.floor(-numpy.log2(M)).astype("int32")
@@ -86,13 +115,12 @@ def integer_only_arithmetic(M: relax.Constant, s_w: numpy.ndarray, q_w: relax.Co
 
 	s_star_w = M_star/M * s_w
 	assert (s_star_w >= s_w).all()
-	if True:
-		q_star_w = (const_astype(q_w, "int32") - const_astype(z_w, "int32")).astype("float32")
-		q_star_w = requantize(relax.const(s_w/s_star_w), q_star_w , z_w)
-	else:
-		# NOTE: axis is probably 0 and out_dtype should not be int8...
-		q_star_w = relax.op.quantize(relax.op.dequantize(q_w, relax.const(s_w), z_w), relax.const(s_star_w), z_w)
-	return n, q_star_w
+
+	q_star_w = (const_astype(q_w, "int32") - const_astype(z_w, "int32")).astype("float32")
+	q_star_w = requantize(relax.const(s_w/s_star_w), q_star_w , z_w)
+	if B:
+		B = relax.const(numpy.round(s_w/s_star_w*B.data.numpy()).astype("int32"))
+	return n, q_star_w, B
 
 def ioa_requantize(N: numpy.ndarray, x: relax.Expr, z: relax.Constant) -> relax.Expr:
 	# This is horrible. N is the inverted exponent of 2 to perform the
@@ -175,7 +203,12 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			raise ValueError("Invalid auto_pad attribute '%s'" % auto_pad)
 		padding = pad_left, pad_right, pad_top, pad_bottom
 
-		M = relax.const((X_s*W_s)/Y_s)
+		# Optimization for global scale.
+		if (X_s == Y_s).all():
+			M = relax.const(W_s)
+		else:
+			M = relax.const((X_s*W_s)/Y_s)
+		# TODO: check it M is a power of two
 		kwargs = dict(
 			strides=attr.get("strides", 1),
 			padding=padding,
@@ -185,11 +218,12 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			kernel_layout="OIHW",
 			out_dtype="int32",
 		)
-		N, W = integer_only_arithmetic(
+		N, W, B = integer_only_arithmetic(
 			reshape_if_needed(M, (-1, 1, 1, 1)),
 			W_s.reshape((-1, 1, 1, 1)),
 			W,
-			reshape_if_needed(W_z, (-1, 1, 1, 1))
+			reshape_if_needed(W_z, (-1, 1, 1, 1)),
+			B,
 		)
 		W = bb.normalize(W)
 		X_z = reshape_if_needed(X_z, (1, -1, 1, 1))
@@ -358,6 +392,7 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		C_s = get_constant(inputs[6], params).data.numpy()
 		C_z = get_constant(inputs[7], params)
 
+		# NOTE: In the case of global_scale this is also integer only...
 		M_1 = relax.const(A_s/C_s)
 		M_2 = relax.const(B_s/C_s)
 		res = M_1*(A.astype("int32") - const_astype(A_z, "int32")).astype("float32") \
@@ -395,6 +430,10 @@ class QLinearConcat(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		return res
 
 # Single Argument Operators ####################################################
+
+# TODO: Average pool performs the average by dividing by a constant n. This
+# means that it can be implemented without using an explicit integer division
+# using Chapter 10 of Hacker's Delight 2nd Edition.
 
 class QLinearGlobalAveragePool(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 	@classmethod
