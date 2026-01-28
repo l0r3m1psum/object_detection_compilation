@@ -660,7 +660,7 @@ def test_trivial_remove_unnecessary_dequantize_quantize_wrapping():
         @R.function
         def main(x: R.Tensor((1, 8), dtype="int8")):
             with R.dataflow():
-                lv = R.reshape(x, R.shape([8]))
+                lv = R.reshape(x, R.shape((8,)))
                 gv = lv
                 R.output(gv)
             return gv

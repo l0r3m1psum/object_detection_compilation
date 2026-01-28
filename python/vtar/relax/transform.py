@@ -227,6 +227,7 @@ class GraphPack:
 ################################################################################
 
 # https://mlc.ai/chapter_graph_optimization/index.html#fuse-linear-and-relu
+# TODO: rename in QDQPairSimplify
 @relax.expr_functor.mutator
 class UnnecessaryDequantizeQuantizeWrappingRemover(relax.PyExprMutator):
 	def __init__(self, mod: tvm.IRModule) -> None:

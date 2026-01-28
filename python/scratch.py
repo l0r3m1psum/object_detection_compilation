@@ -376,11 +376,15 @@ if __name__ == "__main__":
 
     onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/mnist-12-int8.onnx"))
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
-    # mod = relax.transform.FoldConstant()(mod)
+    # TODO: improve RemoveUnnecessaryDequantizeQuantizeWrapping
+    mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
+    mod = relax.transform.FoldConstant()(mod)
+    # mod = vtar.relax.transform.GraphPack(bitpack_start="relax.quantize", bitpack_end="relax.dequantize")
+    mod.show()
     mod = print_report(mod)
     mod = relax.transform.LegalizeOps()(mod)
 
-    # raise SystemExit(0)
+    raise SystemExit(0)
 
     onnx_model = onnx.load(os.path.expandvars("%installdir%/Zoo/vgg16-12-int8.onnx"))
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)

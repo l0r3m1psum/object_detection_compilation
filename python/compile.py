@@ -74,7 +74,7 @@ seq = tvm.transform.Sequential([
 	# GraphPack inserts some reshape, permute and pad that can be
 	# folded away.
 	relax.transform.FoldConstant(), # TODO: should be done in GraphPack
-	vtar.relax.transform.AddChainSimplify(),
+	vtar.relax.transform.AddChainSimplify(), # This should be CommutativeOpsSympolicSimplify
 	relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
 	# TODO: write transform to put ReLU before astype
 ])
