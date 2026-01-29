@@ -1,7 +1,7 @@
 from typing import Tuple, List
 
 import tvm
-from tvm import tir
+from tvm import tir, ir
 from ..environment import Environment
 
 def prod(iterable, /, start=1):
@@ -50,6 +50,25 @@ def get_alu_op(
 			error = RuntimeError(
 				"Function call not recognized %s" % (value.op.name)
 			)
+	elif isinstance(value, tir.Select):
+		cond = value.condition
+		true_val = value.true_value
+		false_val = value.false_value
+
+		assert isinstance(cond, tir.LT)
+		assert cond.a == 0
+		assert isinstance(true_val, tir.Call)
+		assert isinstance(false_val, tir.Call)
+		assert true_val.op.name == "tir.shift_right"
+		assert false_val.op.name == "tir.shift_left"
+		ir.assert_structural_equal(true_val.args[0], false_val.args[0])
+		ir.assert_structural_equal(true_val.args[1], false_val.args[1].a)
+		ir.assert_structural_equal(cond.b, true_val.args[1])
+		assert false_val.args[1].b == -1
+
+		alu_opcode = env.dev.ALU_OPCODE_SHR
+		lhs = true_val.args[0]
+		rhs = true_val.args[1]
 	elif isinstance(value, tir.BufferLoad):
 		alu_opcode = env.dev.ALU_OPCODE_SHR
 		lhs = value

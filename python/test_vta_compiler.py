@@ -565,6 +565,47 @@ def test_blocked_vta_conv2d():
     ).transpose((0, 2, 4, 5, 1, 3))
     tvm.testing.assert_allclose(res_ref, res_nd.numpy())
 
+def test_shift_bidirectional():
+    O, M = 1, 1024
+    o, m = O//env.BATCH, M//env.BLOCK_OUT
+    shape = (o, m, env.BATCH, env.BLOCK_OUT)
+
+    A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
+    B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
+    C = vtar.topi.shift_bidi(A, B)
+    D = te.compute(shape, lambda *i: C(*i).astype(env.out_dtype), "D")
+
+    alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "shift"})
+    mod = tvm.IRModule({"alu": alu})
+
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on('alu')
+
+    sch.mod.show()
+
+    C_block = sch.get_block("res")
+    A_cache = sch.cache_read(C_block, 0, env.acc_scope)
+    B_cache = sch.cache_read(C_block, 1, env.acc_scope)
+    sch.set_scope(C_block, 0, env.acc_scope)
+    sch.annotate(sch.get_loops(A_cache)[0], env.dma_copy, True)
+    sch.annotate(sch.get_loops(B_cache)[0], env.dma_copy, True)
+    sch.annotate(sch.get_loops(C_block)[0], env.alu, True)
+    sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
+
+    sch.mod.show()
+
+    mod = sch.mod
+
+    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    A = tvm.nd.array((rng.uniform(size=shape) * 10).astype("int32"), dev)
+    B = tvm.nd.array((rng.uniform(size=shape) * 10).astype("int32"), dev)
+    C = tvm.nd.array(numpy.zeros(shape, dtype="int8"), dev)
+    ex(A, B, C)
+    A_np = A.numpy()
+    B_np = B.numpy()
+    C_np = numpy.where(B_np > 0,  A_np >> B_np, A_np << -B_np).astype("int8")
+    numpy.testing.assert_equal(C.numpy(), C_np)
+
 # Relax tests ##################################################################
 
 def test_trivial_graphpack():
