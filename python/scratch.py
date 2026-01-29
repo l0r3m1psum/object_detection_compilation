@@ -177,10 +177,10 @@ def analyze_tensorir_func_automatic(func):
 
 @T.prim_func
 def main(
-        data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"),
-        kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"),
-        res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")
-    ):
+    data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"),
+    kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"),
+    res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")
+):
     T.func_attr({"tir.noalias": T.bool(True)})
     # with T.block("root"):
     data_buf = T.alloc_buffer((1, 16, 16, 16, 1, 16), "int8")
@@ -263,10 +263,10 @@ def main(
 
 @T.prim_func
 def main2(
-        data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"),
-        kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"),
-        res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")
-    ):
+    data: T.Buffer((1, 16, 14, 14, 1, 16), "int8"),
+    kernel: T.Buffer((16, 16, 3, 3, 16, 16), "int8"),
+    res: T.Buffer((1, 16, 14, 14, 1, 16), "int8")
+):
     T.func_attr({"tir.noalias": T.bool(True)})
     # with T.block("root"):
     data_buf = T.alloc_buffer((1, 16, 16, 16, 1, 16), "int8")
@@ -355,18 +355,20 @@ def main2(
                     res[v_bo, v_co, v_i, v_j, v_bi, v_ci] = T.Cast("int8", res_min[v_bo, v_co, v_i, v_j, v_bi, v_ci])
 
 @I.ir_module
-class BidirectionalShiftModule:
+class ShiftBidiModule:
     @R.function
     def main(data: R.Tensor((4,), "int32"), shift_map: R.Tensor((4,), "int32")) -> R.Tensor((4,), "int32"):
         with R.dataflow():
-            is_positive = shift_map > R.const(0, "int32")
-            is_negative = shift_map < R.const(0, "int32")
-            magnitude = R.where(is_negative, -shift_map, shift_map)
-            right_shifted = R.right_shift(data, magnitude)
-            left_shifted  = R.left_shift(data, magnitude)
-            result = R.where(is_positive, right_shifted, left_shifted)
-            R.output(result)
-        return result
+            gv = R.where(
+                shift_map > R.const(0, "int32"),
+                R.right_shift(data, shift_map),
+                R.left_shift(data, -shift_map)
+            )
+            R.output(gv)
+        return gv
+
+mod = ShiftBidiModule
+mod.show()
 
 if __name__ == "__main__":
     from vtar.relax.transform import print_report
@@ -380,6 +382,7 @@ if __name__ == "__main__":
     mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
     mod = relax.transform.FoldConstant()(mod)
     # mod = vtar.relax.transform.GraphPack(bitpack_start="relax.quantize", bitpack_end="relax.dequantize")
+    mod = tir.transform.ForceNarrowIndexToInt32()(mod)
     mod.show()
     mod = print_report(mod)
     mod = relax.transform.LegalizeOps()(mod)

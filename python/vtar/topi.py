@@ -7,15 +7,15 @@ from typing import Tuple
 # copied from vta.top.vta_conv2d
 # https://tvm.apache.org/docs/reference/api/python/topi.html#tvm.topi.nn.conv2d_NCHWc
 def conv2d_NCHWnc(
-		data: te.Tensor,
-		kernel: te.Tensor,
-		strides: Tuple[int, int],
-		padding: Tuple[int, int],
-		dilation: Tuple[int, int],
-		layout: str,
-		out_layout: str,
-		out_dtype='int32'
-	) -> te.Tensor:
+	data: te.Tensor,
+	kernel: te.Tensor,
+	strides: Tuple[int, int],
+	padding: Tuple[int, int],
+	dilation: Tuple[int, int],
+	layout: str,
+	out_layout: str,
+	out_dtype='int32'
+) -> te.Tensor:
 	# TODO: error checking
 	# TODO: add support for single int or list for strides ecc like the other operators topi
 
@@ -56,15 +56,15 @@ def conv2d_NCHWnc(
 	return res
 
 def avg_pool2d_int(
-		data: te.Tensor,
-		pool_size: Tuple[int, int],
-		strides: Tuple[int, int],
-		dilation: Tuple[int, int],
-		padding: Tuple[int, int],
-		count_include_pad: bool = False,
-		layout: str = "NCHW", # TODO: handle factored layouts
-		out_layout: str = "NCHW",
-	) -> te.Tensor:
+	data: te.Tensor,
+	pool_size: Tuple[int, int],
+	strides: Tuple[int, int],
+	dilation: Tuple[int, int],
+	padding: Tuple[int, int],
+	count_include_pad: bool = False,
+	layout: str = "NCHW", # TODO: handle factored layouts
+	out_layout: str = "NCHW",
+) -> te.Tensor:
 
 	# TODO: it should be trivial to add support for dilation
 	assert dilation == (1, 1)
@@ -127,4 +127,12 @@ def avg_pool2d_int(
 		name="res"
 	)
 
+	return res
+
+def shift_bidi(x1: te.Tensor, x2: te.Tensor) -> te.Tensor:
+	res = te.compute(
+		topi.utils.get_const_tuple(x1.shape),
+		lambda *i: tir.Select(x2[*i] > 0, x1[*i] >> x2[*i], x1[*i] << -x2[*i]),
+		"res",
+	)
 	return res

@@ -11,6 +11,8 @@ from typing import Dict, List, Tuple, Optional
 import warnings
 import math
 
+from ... import topi as mytopi
+
 # TODO: write test for this function.
 def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
     x = numpy.asanyarray(arr, dtype=numpy.float32)
@@ -122,25 +124,20 @@ def integer_only_arithmetic(
 		B = relax.const(numpy.round(s_w/s_star_w*B.data.numpy()).astype("int32"))
 	return n, q_star_w, B
 
-def ioa_requantize(N: numpy.ndarray, x: relax.Expr, z: relax.Constant) -> relax.Expr:
+def ioa_requantize(bb: relax.BlockBuilder, N: numpy.ndarray, x: relax.Expr, z: relax.Constant) -> relax.Expr:
 	# This is horrible. N is the inverted exponent of 2 to perform the
 	# multiplication in IOA i.e. M_star = 2**(-n).
 	is_pos = -N > 0
 	is_neg = -N < 0
 	magnitude = relax.const(numpy.where(is_neg, -(-N), -N))
-	# VTA should do this operation in a single ALU shift instruction when shift
-	# with register argument will be supported.
 	# https://docs.amd.com/r/en-US/ug1399-vitis-hls/Class-Methods-and-Operators#:~:text=b%2B1%3B%0A%7D-,Shift%20Operators,-Each%20shift%20operator
 	is_scalar = not is_pos.shape
 	if is_scalar:
 		res = relax.op.left_shift(x, magnitude) if is_pos \
 			else relax.op.right_shift(x, magnitude)
 	else:
-		res = relax.op.where(
-			relax.const(is_pos),
-			relax.op.left_shift(x, magnitude),
-			relax.op.right_shift(x, magnitude),
-		)
+		# FIXME: this is certainly wrong!
+		res = bb.call_te(mytopi.shift_bidi, bb.normalize(x), relax.const(N))
 
 	return clamp(res + const_astype(z, "int32"), -128, 127).astype("int8")
 
@@ -223,7 +220,7 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 			W_s.reshape((-1, 1, 1, 1)),
 			W,
 			reshape_if_needed(W_z, (-1, 1, 1, 1)),
-			B,
+			reshape_if_needed(B, (-1, 1, 1, 1)) if B else B,
 		)
 		W = bb.normalize(W)
 		X_z = reshape_if_needed(X_z, (1, -1, 1, 1))
@@ -253,7 +250,7 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# The conditional reshape is needed because the dlight schedule is
 		# fragile (also the transform that binds scalars does not recognize
 		# tensors of shape (1, 1, 1, 1) as equivalent to scalars)
-		return ioa_requantize(N.reshape(1, -1, 1, 1) if N.shape else N, res, Y_z)
+		return ioa_requantize(bb, N.reshape(1, -1, 1, 1) if N.shape else N, res, Y_z)
 		res = requantize(M, res.astype("float32"), Y_z)
 		return res
 

@@ -563,6 +563,7 @@ class OpAttrCounter(relax.PyExprVisitor):
 def print_report(mod, ctx):
 	counter = OpAttrCounter()
 	for function in mod.functions.values():
-		counter.visit_expr(function)
+		if isinstance(function, relax.Function):
+			counter.visit_expr(function)
 	counter.print_report()
 	return mod
