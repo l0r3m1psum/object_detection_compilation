@@ -55,7 +55,7 @@ def get_alu_op(
 		true_val = value.true_value
 		false_val = value.false_value
 
-		assert isinstance(cond, tir.LT)
+		assert isinstance(cond, tir.LE)
 		assert cond.a == 0
 		assert isinstance(true_val, tir.Call)
 		assert isinstance(false_val, tir.Call)

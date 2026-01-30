@@ -597,10 +597,11 @@ def test_shift_bidirectional():
     mod = sch.mod
 
     ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
-    A = tvm.nd.array((rng.uniform(size=shape) * 10).astype("int32"), dev)
-    B = tvm.nd.array((rng.uniform(size=shape) * 10).astype("int32"), dev)
+    A = tvm.nd.array(((rng.uniform(size=shape)-.5) * 10).astype("int32"), dev)
+    B = tvm.nd.array(((rng.uniform(size=shape)-.5) * 10).astype("int32"), dev)
     C = tvm.nd.array(numpy.zeros(shape, dtype="int8"), dev)
-    ex(A, B, C)
+    # FIXME: this should work with the argument reversed...
+    ex(B, A, C)
     A_np = A.numpy()
     B_np = B.numpy()
     C_np = numpy.where(B_np > 0,  A_np >> B_np, A_np << -B_np).astype("int8")

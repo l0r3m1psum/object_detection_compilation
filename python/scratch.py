@@ -360,7 +360,7 @@ class ShiftBidiModule:
     def main(data: R.Tensor((4,), "int32"), shift_map: R.Tensor((4,), "int32")) -> R.Tensor((4,), "int32"):
         with R.dataflow():
             gv = R.where(
-                shift_map > R.const(0, "int32"),
+                shift_map >= R.const(0, "int32"),
                 R.right_shift(data, shift_map),
                 R.left_shift(data, -shift_map)
             )
