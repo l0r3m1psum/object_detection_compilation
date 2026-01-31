@@ -76,7 +76,7 @@ seq = tvm.transform.Sequential([
 	relax.transform.FoldConstant(), # TODO: should be done in GraphPack
 	vtar.relax.transform.AddChainSimplify(), # This should be CommutativeOpsSympolicSimplify
 	relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
-	# TODO: write transform to put ReLU before astype
+	vtar.relax.transform.RemoveRelu(),
 ])
 
 if not os.path.exists("build/resnet18_int8_per_tensor.json"):

@@ -567,3 +567,42 @@ def print_report(mod, ctx):
 			counter.visit_expr(function)
 	counter.print_report()
 	return mod
+
+@tvm.ir.transform.module_pass(opt_level=0)
+class RemoveRelu:
+	def transform_module(self, mod, ctx):
+		pat_input = relax.dpl.wildcard()
+		pat_const = relax.dpl.is_const()
+
+		pattern = relax.dpl.is_op("relax.maximum")(pat_const, pat_input)
+		pattern = relax.dpl.is_op("relax.astype")(pattern)
+		pattern = relax.dpl.is_op("relax.nn.relu")(pattern)
+		# NOTE: this pattern matches only if used from relax.dpl.rewrite_call
+		# and not if used bear from a relax.PyExprVisitor.visit_call_
+		# the problem may be caused by the fact that if the operation is
+		# interleaved with other like so
+		# relax.maximum
+		# relax.add
+		# relax.astype
+		# relax.relu
+
+		def rewriter(call, match_map) -> relax.Expr:
+			const_expr = match_map[pat_const]
+			input_expr = match_map[pat_input]
+
+			const_np = const_expr.data.numpy()
+			if (const_np <= 0).all():
+				res = relax.op.maximum(relax.const(0, input_expr.struct_info.dtype), input_expr)
+				res = relax.op.astype(res, dtype=call.struct_info.dtype)
+			else:
+				res = call
+
+			return res
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				new_func = relax.dpl.rewrite_call(pattern, rewriter, func)
+				new_func = relax.analysis.remove_all_unused(new_func)
+				mod.update_func(global_var, new_func)
+
+		return mod

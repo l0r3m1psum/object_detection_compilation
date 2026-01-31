@@ -604,7 +604,7 @@ def test_shift_bidirectional():
     ex(B, A, C)
     A_np = A.numpy()
     B_np = B.numpy()
-    C_np = numpy.where(B_np > 0,  A_np >> B_np, A_np << -B_np).astype("int8")
+    C_np = numpy.where(B_np >= 0,  A_np >> B_np, A_np << -B_np).astype("int8")
     numpy.testing.assert_equal(C.numpy(), C_np)
 
 # Relax tests ##################################################################
