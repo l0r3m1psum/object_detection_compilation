@@ -26,10 +26,14 @@ set "PATH=%SystemRoot%\system32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SYSTEMR
 
 set "PATH=%gitpath%;%installdir%\Programs\TVM\lib;%installdir%\Programs\LLVM\bin;%installdir%\Programs\Python;%installdir%\Appdata\Roaming\Python\Python311\Scripts;%PATH%"
 
-FOR /F "tokens=*" %%a in ('"%PROGRAMFILES(X86)%\Microsoft Visual Studio\Installer\vswhere.exe" -property installationPath') do SET vspath=%%a
+FOR /F "tokens=*" %%a in ('"%PROGRAMFILES(X86)%\Microsoft Visual Studio\Installer\vswhere.exe" -version [17.0^,18.0^) -latest -property installationPath') do SET vspath=%%a
 if %errorlevel% neq 0 (
 	echo Can't find vswhere, probably Visual Studio is not installed. 1>&2
 	exit /b 1
+)
+if not defined vspath (
+    echo Can't find Visual Studio 2022 (Version 17^). 1>&2
+    exit /b 1
 )
 call "%vspath%\VC\Auxiliary\Build\vcvarsall.bat" x64 || exit /b 1
 
