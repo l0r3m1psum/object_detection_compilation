@@ -1,5 +1,5 @@
-torch==2.5.1
-torchvision==0.20.1
+torch==2.5.1+cu118
+torchvision==0.20.1+cu118
 onnx==1.18.0
 onnxruntime==1.23.2
 pytest==9.0.2
