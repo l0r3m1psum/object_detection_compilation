@@ -1158,7 +1158,7 @@ argmax(const float *data, size_t size) {
 static DLDataType
 dtype_to_DLDataType(safetensors::dtype dtype) {
   switch (dtype) {
-  case safetensors::dtype::kBOOL:     return DLDataType{ kDLBool, 8, 1 };
+  case safetensors::dtype::kBOOL:     return DLDataType{ kDLUInt, 1, 1 };
   case safetensors::dtype::kUINT8:    return DLDataType{ kDLUInt, 8, 1 };
   case safetensors::dtype::kINT8:     return DLDataType{ kDLInt ,8, 1 };
   case safetensors::dtype::kINT16:    return DLDataType{ kDLInt, 16, 1 };

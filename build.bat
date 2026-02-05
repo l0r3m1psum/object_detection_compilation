@@ -2,9 +2,23 @@
 
 setlocal
 
-call config.bat
-
 if not exist build mkdir build
+
+cl /LD /nologo /std:c++17 /ZI ^
+    /I %installdir%\Programs\TVM\include ^
+    /I %installdir%\Programs\dlpack\include ^
+    /I %installdir%\Programs\dmlc\include ^
+    src\my_device_api.cc ^
+    tvm.lib ^
+    /MDd ^
+    /wd4005 ^
+    /EHsc ^
+    /Fo".\build\my_device_api.obj" ^
+    /Fe".\build\my_device_api.dll" ^
+    /Fd".\build\my_device_api.pdb" ^
+    /link ^
+    "/LIBPATH:%installdir%\Programs\TVM\lib" ^
+    || goto :exit
 
 rem     /fsanitize=address /MTd ^
 REM https://learn.microsoft.com/en-us/cpp/build/reference/output-file-f-options
@@ -17,6 +31,7 @@ cl /nologo /std:c++17 /ZI ^
     tvm.lib ^
     safetensors_cpp.lib ^
     /MDd ^
+    /wd4005 ^
     /EHsc ^
     /Fo".\build\launcher.obj" ^
     /Fe".\build\launcher.exe" ^
@@ -26,11 +41,8 @@ cl /nologo /std:c++17 /ZI ^
     "/LIBPATH:%installdir%\Programs\safetensors\lib" ^
     || goto :exit
 
-set TVM_LOG_DEBUG=1
-python python\export_resnet_model_and_weights.py || goto :exit
-
 set "PATH=%installdir%\Programs\TVM\lib;%PATH%"
-build\launcher || goto :exit
+REM build\launcher || goto :exit
 
 endlocal
 
