@@ -3,7 +3,8 @@
 REM TODO: provide a way to restore the previous PATH
 set errorlevel=0
 call .\config.bat
-if %errorlevel% neq 0 (
+if not exist .\config.bat set errorlevel=1
+if %errorlevel% neq 0  (
 	echo Please create 'config.bat' file that sets the installdir environment variable. 1>&2
 	echo Example: 1>&2
 	echo set "installdir=D:" 1>&2
@@ -44,7 +45,10 @@ set "HOME=workaround_for_get_bitstream_path"
 where /q python
 if %ERRORLEVEL% equ 0 (
 	python -m pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt || exit /b 1
-	python -m pip install --no-index --find-links "%installdir%\Programs\wheelhouse" torch torchvision || exit /b 1
+	REM Optional dependencies
+	python -m pip install --no-index ^
+		--find-links "%installdir%\Programs\wheelhouse" ^
+		torch torchvision onnx onnxruntime pytest
 	python -m site
 	python -m sysconfig
 )

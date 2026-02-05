@@ -153,7 +153,7 @@ pushd submodules\tvm
 popd
 .\python.exe -m ensurepip
 .\python.exe -m pip download -r projreq.txt -d "%installdir%\Programs\wheelhouse"
-.\python.exe -m pip download torch torchvision --index-url https://download.pytorch.org/whl/cu118 -d "%installdir%\Programs\wheelhouse"
+.\python.exe -m pip download torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu118 -d "%installdir%\Programs\wheelhouse"
 REM On the offline PC
 pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt
 pip install --no-index --find-links "%installdir%\Programs\wheelhouse" torch torchvision
