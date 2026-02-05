@@ -46,9 +46,7 @@ where /q python
 if %ERRORLEVEL% equ 0 (
 	python -m pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq.txt || exit /b 1
 	REM Optional dependencies
-	python -m pip install --no-index ^
-		--find-links "%installdir%\Programs\wheelhouse" ^
-		torch torchvision onnx onnxruntime pytest
+	python -m pip install --no-index --find-links "%installdir%\Programs\wheelhouse" -r projreq2.txt
 	python -m site
 	python -m sysconfig
 )
