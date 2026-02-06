@@ -370,7 +370,39 @@ class ShiftBidiModule:
 mod = ShiftBidiModule
 mod.show()
 
+def virtual_threading():
+    # AKA unroll-and-jam
+    shape = (16, 16)
+    A = te.placeholder(shape, "float32", "A")
+    B = te.compute(shape, lambda i, j: A[i, j] + 1, "B")
+    func = te.create_prim_func((A, B))
+    func.show()
+
+    sch = tir.Schedule(func)
+    block = sch.get_block("B")
+    i, j = sch.get_loops(block)
+    ij = sch.fuse(i, j)
+    ijo, iji = sch.split(ij, factors=(2, None))
+    sch.bind(ijo, "vthread.x")
+    mod = sch.mod
+    mod.show()
+
+    transform_pass = ir.transform.Sequential([
+        # Turn TensorIR blocks into "opaque" blocks (removes dependency tracking)
+        tir.transform.ConvertBlocksToOpaque(),
+        # Remove the blocks entirely, resulting in flat TIR (like 'before_virtual_thread')
+        tir.transform.LowerOpaqueBlock(),
+        tir.transform.FlattenBuffer(),
+        tir.transform.InjectVirtualThread(),
+        tir.transform.Simplify(),
+    ])
+
+    mod = transform_pass(mod)
+    mod.show()
+
 if __name__ == "__main__":
+    # from tvm.contrib.download import download
+    virtual_threading()
     from vtar.relax.transform import print_report
     convert_layout = relax.transform.ConvertLayout({
         "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
@@ -433,6 +465,7 @@ if __name__ == "__main__":
     program, metadata = relax.utils.metadata_partitioner(relax.const(numpy.ones(1)).script(show_meta=True))
     # There is no "metatadata" attribute anywhere in the IRModule it is just
     # printed that way to serialize all the information in a printable format.
+    struct_info = ir.load_json(metadata.replace("\\\"", "\""))["relax.expr.Constant"][0].struct_info
 
     x = te.placeholder((16,), "float32", "x")
     dtype = te.const(topi.nn.SQNN_DTYPE_TO_CODE['int8'])
