@@ -1,4 +1,3 @@
-#include <dmlc/thread_local.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/runtime/device_api.h>
 

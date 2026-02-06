@@ -32,8 +32,9 @@ if %errorlevel% neq 0 (
 	exit /b 1
 )
 if not defined vspath (
-    echo Can't find Visual Studio 2022 (Version 17^). 1>&2
-    exit /b 1
+	echo Can't find Visual Studio 2022 (Version 17^). 1>&2
+	REM https://archive.org/details/vs_community__e8aae2bc1239469a8cb34a7eeb742747
+	exit /b 1
 )
 call "%vspath%\VC\Auxiliary\Build\vcvarsall.bat" x64 || exit /b 1
 
