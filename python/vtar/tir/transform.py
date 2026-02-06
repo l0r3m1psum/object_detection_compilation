@@ -17,12 +17,15 @@
 """Additional Transformation Passes. for VTA"""
 # pylint: disable=len-as-condition, no-else-return, unused-argument, invalid-name
 import tvm
-from tvm import te
+from tvm import te, tir, ir, arith
 from tvm.topi import utils
-from tvm.script import tir as T
+from tvm.script import tir as T # TODO: remove
+from tvm.tir.transform import _ffi_api
+
+from typing import List, Tuple
 
 from ..environment import get_env
-
+from .util import get_strides
 
 def _match_pragma(stmt, key):
     """Internal helper to match stmt to pragma stmt.
@@ -40,7 +43,6 @@ def _match_pragma(stmt, key):
         stmt.attr_key == "pragma_scope" and stmt.value.value == key
     )
 
-
 """
 NOTE: this may be wrong...
 Let a[I][J][K][L] be an array
@@ -51,10 +53,6 @@ BaseAddress + ( (i * I * J * K) +
             * ElementSize
 \\sum_i index_i * \\prod_{j=i}^{4-1} dim_j
 """
-
-from tvm import tir, ir
-from typing import List, Tuple
-from .util import get_strides
 
 def _check_compact(buf: tir.Buffer):
     """By compact they mean that the strides are exactly the cumprod of the
@@ -836,8 +834,6 @@ def my_get_2d_pattern(
 
     return x_size, y_size, x_stride, offset
 
-from tvm import arith
-
 # The visit is done in post-order i.e. bottom up
 # returning None leaves the state unchanged
 def do_inject_dma_intin3(stmt: tir.Stmt) -> tir.Stmt | None:
@@ -1341,24 +1337,11 @@ def InjectCoProcSync() -> tir.transform.PrimFuncPass:
         inject_coproc_sync, opt_level=0, name="tir.vta.InjectCoProcSync"
     )
 
-from tvm.tir.transform import _ffi_api
-
 def LiftAttrScope(s: str):
     return _ffi_api.LiftAttrScope(s)
 
 def CoProcSync():
     return _ffi_api.CoProcSync()
-
-def _inject_copy(src, dst, pad_before, pad_after, pad_value):
-    breakpoint()
-    return None
-
-def InjectCopyIntrin(pragma_key: str, flower_copy_fromto):
-    return _ffi_api.InjectCopyIntrin(pragma_key, flower_copy_fromto)
-
-def Test():
-    return InjectCopyIntrin("dma_copy", _inject_copy)
-
 
 def lift_alloc_to_scope_begin(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
     lift_stmt = [[]]
@@ -1468,7 +1451,6 @@ def _fold_outermost_loop(body):
             end = tvm.tir.call_extern("int32", "VTAUopLoopEnd")
             return [begin, ret, end]
     raise ValueError("Failed to fold the GEMM instructions..")
-
 
 def do_fold_uop_loop(stmt: tir.Stmt) -> tir.Stmt | None:
     """
@@ -1630,218 +1612,6 @@ def replace_vta_var(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.Pass
 def ReplaceVTAVar() -> tir.transform.PrimFuncPass:
     return tir.transform.prim_func_pass(
         replace_vta_var, opt_level=0, name="tir.vta.ReplaceVtaVar"
-    )
-
-def add_strides_pass(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
-    """
-    A transformation pass that adds symbolic strides to all buffers
-    in the PrimFunc using ir_transform.
-    """
-
-    # 1. Create a mapping from Old Buffer -> New Strided Buffer
-    buf_remap = {}
-    new_buffer_map = {}
-
-    # We iterate over the function's buffer_map (inputs/outputs)
-    for param, buf in func.buffer_map.items():
-        # Generate symbolic strides: stride_BufferName_0, stride_BufferName_1, etc.
-        # You could also calculate specific math (e.g., contiguous) here if preferred.
-        strides = [
-            tir.Var(f"s_{buf.name}_{i}", buf.shape[i].dtype)
-            for i in range(len(buf.shape))
-        ]
-
-        # Create a new buffer identical to the old one but with explicit strides
-        new_buf = tir.decl_buffer(
-            buf.shape,
-            buf.dtype,
-            buf.name,
-            buf.data,
-            get_strides(buf),
-            buf.elem_offset,
-            buf.scope,
-            buf.data_alignment,
-            buf.offset_factor
-        )
-
-        buf_remap[buf] = new_buf
-        new_buffer_map[param] = new_buf
-
-    # 2. Define a helper to mutate Expressions (BufferLoad)
-    # ir_transform only visits Stmts, so we need this to go deeper.
-    def visit_expr(expr):
-        if isinstance(expr, tir.BufferLoad):
-            # Remap the buffer if it's in our map
-            new_buf = buf_remap.get(expr.buffer, expr.buffer)
-            # Recursively visit indices
-            new_indices = [visit_expr(idx) for idx in expr.indices]
-            return tir.BufferLoad(new_buf, new_indices)
-
-        # Boilerplate recursion for common Ops (Add, Sub, etc.)
-        # In a production pass, you should use StmtExprMutator to catch all cases.
-        if isinstance(expr, tir.Add):
-            return tir.Add(visit_expr(expr.a), visit_expr(expr.b))
-        if isinstance(expr, tir.Sub):
-            return tir.Sub(visit_expr(expr.a), visit_expr(expr.b))
-        if isinstance(expr, tir.Mul):
-            return tir.Mul(visit_expr(expr.a), visit_expr(expr.b))
-        if isinstance(expr, tir.Cast):
-            return tir.Cast(expr.dtype, visit_expr(expr.value))
-
-        # Return the expression unchanged if no specific rule applies
-        return expr
-
-    # 3. Define the callback for ir_transform (Statements)
-    def postorder_transform(stmt):
-        # Case A: BufferStore - Update buffer and visit value/indices
-        if isinstance(stmt, tir.BufferStore):
-            new_buf = buf_remap.get(stmt.buffer, stmt.buffer)
-            new_value = visit_expr(stmt.value)
-            new_indices = [visit_expr(idx) for idx in stmt.indices]
-            return tir.BufferStore(new_buf, new_value, new_indices)
-
-        # Case B: Block - Update reads, writes, allocs, and match_buffers
-        if isinstance(stmt, tir.Block):
-            # Helper to update BufferRegions (used in reads/writes)
-            def update_regions(regions):
-                new_regions = []
-                for r in regions:
-                    nb = buf_remap.get(r.buffer, r.buffer)
-                    # Regions also contain ranges with exprs (min, extent)
-                    new_regions.append(tir.BufferRegion(nb, r.region))
-                return new_regions
-
-            new_reads = update_regions(stmt.reads)
-            new_writes = update_regions(stmt.writes)
-
-            # match_buffers and alloc_buffers also need checking in complex cases
-            # We recreate the block with updated attributes
-            return tir.Block(
-                stmt.iter_vars,
-                new_reads,
-                new_writes,
-                stmt.name_hint,
-                stmt.body,
-                stmt.init,
-                stmt.alloc_buffers,
-                stmt.match_buffers,
-                stmt.annotations
-            )
-
-        return None # Return None means "no change" for other statements
-
-    # 4. Apply the transform
-    # We pass None for preorder, and our function for postorder
-    new_body = tir.stmt_functor.ir_transform(
-        func.body,
-        None,
-        postorder_transform,
-        ["tir.BufferStore", "tir.Block"]
-    )
-
-    return tir.PrimFunc(func.params, new_body, func.ret_type, new_buffer_map, func.attrs)
-    # 5. Return a new PrimFunc with the new body and new buffer_map
-    return func.with_body(new_body, buffer_map=new_buffer_map)
-
-def AddStrideToBuffers() -> tir.transform.PrimFuncPass:
-    return tir.transform.prim_func_pass(
-        add_strides_pass, opt_level=0, name="tir.vta.AddStrideToBuffers"
-    )
-
-################################################################################
-
-def get_buffer_by_name(func, name):
-    """
-    Finds the buffer object instance in the IR matching the given name.
-    We need the exact object to perform identity checks (same_as).
-    """
-    found = []
-    def visit(op):
-        if isinstance(op, tir.Block):
-            for buf in op.alloc_buffers:
-                if buf.name == name:
-                    found.append(buf)
-
-    tir.stmt_functor.post_order_visit(func.body, visit)
-    if not found:
-        raise ValueError(f"Buffer {name} not found.")
-    return found[0]
-
-
-def replace_buffer_in_func(func, old_buf, new_buf):
-
-    def replace_region(buffer_region):
-        if buffer_region.buffer.same_as(old_buf):
-            return tir.BufferRegion(new_buf, buffer_region.region)
-        return buffer_region
-
-    def post_order_transform(op):
-        if isinstance(op, tir.BufferLoad):
-            if op.buffer.same_as(old_buf):
-                return tir.BufferLoad(new_buf, op.indices)
-        elif isinstance(op, tir.BufferStore):
-            if op.buffer.same_as(old_buf):
-                return tir.BufferStore(new_buf, op.value, op.indices)
-        elif isinstance(op, tir.Block):
-            new_allocs = [b for b in op.alloc_buffers if not b.same_as(old_buf)]
-
-            new_reads = [replace_region(r) for r in op.reads]
-            new_writes = [replace_region(w) for w in op.writes]
-
-            new_match_buffers = []
-            for mb in op.match_buffers:
-                source = mb.source
-                if source.buffer.same_as(old_buf):
-                    source = tir.BufferRegion(new_buf, source.region)
-                new_match_buffers.append(tir.MatchBufferRegion(mb.buffer, source))
-
-            return tir.Block(
-                op.iter_vars,
-                new_reads,
-                new_writes,
-                op.name_hint,
-                op.body, # The body is already transformed by ir_transform recursion
-                op.init,
-                new_allocs,
-                new_match_buffers,
-                op.annotations
-            )
-
-        return op
-
-    new_body = tir.stmt_functor.ir_transform(func.body, None, post_order_transform, None)
-
-    return func.with_body(new_body)
-
-def ReplaceVarOcurrence(from_name: str, to_name: str) -> tir.transform.PrimFuncPass:
-    def do_replace_var_occurrence(stmt: tir.Stmt) -> tir.Stmt | None:
-        if stmt.buffer.name == from_name:
-            return tir.stmt_functor.substitute(
-                stmt,
-                {stmt.buffer.data: tir.Var('A_local.acc_buffer', tvm.ir.PointerType(tvm.ir.Type('int32')))}
-            )
-            breakpoint()
-        # TODO: visitare buffer.value per trovare variabili
-        return stmt
-        res = stmt
-        node = stmt.node
-        if isinstance(node, tir.IterVar) and node.var.name == "vta":
-            attr_stmt = tir.AttrStmt(vta_axis, stmt.attr_key, stmt.value, stmt.body)
-            res = attr_stmt
-        return res
-
-
-    def replace_var_occurrence(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
-        buf_c = get_buffer_by_name(func, "C_local.acc_buffer")
-        buf_a = get_buffer_by_name(func, "A_local.acc_buffer")
-        new_func = replace_buffer_in_func(func, buf_c, buf_a)
-        return new_func
-        return func.with_body(
-            tvm.tir.stmt_functor.ir_transform(func.body, None, do_replace_var_occurrence, ["tir.BufferStore"])
-        )
-
-    return tir.transform.prim_func_pass(
-        replace_var_occurrence, opt_level=0, name="tir.vta.ReplaceVarOcurrence"
     )
 
 # TODO: check what this does...
