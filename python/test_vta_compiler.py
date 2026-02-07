@@ -95,8 +95,6 @@ def test_simple_vta_alu():
     sch.annotate(sch.get_loops(sch.get_block("D"))[0], env.dma_copy, True)
 
     mod = sch.mod
-    # This optimization is done automatically by tir.transform.StorageRewrite
-    # mod = vtar.tir.transform.ReplaceVarOcurrence("C_local.acc_buffer", "A_local.acc_buffer")(mod)
 
     ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
@@ -466,27 +464,10 @@ def test_blocked_vta_conv2d():
     v_threads = 2
     _, tx = sch.split(oc_out, (None, v_threads))
     sch.reorder(tx, b_out)
-    warnings.warn(UserWarning("skipping thread binding because it is not "
-        "supported in codegen_llvm.cc::GetThreadIndex"))
-    # TODO: what I need here is probably software pipeline but
-    # tir.transform.InjectSoftwarePipeline should be only for CUDA
-    # what I am probably looking for is tir.transform.InjectVirtualThread which
-    # should do the Unroll-and-Jam optimization but annotation with AttrStmt is
-    # required
-    if False:
-        T.attr(
-            T.iter_var(
-                vta, # v
-                None, # dom # Seem to be unused by InjectVirtualThread
-                "ThreadIndex", # iter_type # Seem to be unused by InjectVirtualThread
-                "vthread" # thread_tag
-            ), # node
-            "virtual_thread", # attr_key
-            v_threads # value
-        )
-        # Also te.thread_axis
-    if False:
-        sch.bind(tx, "cthread")
+    # This can't be used because InjectVirtualThread doubles memory usage
+    # (because v_threads=2) and than StorageRewrite fails because of the
+    # MemoryInfo node.
+    # sch.bind(tx, "vthread.x")
 
     conv_init = sch.decompose_reduction(res_conv_block, ic_out)
 

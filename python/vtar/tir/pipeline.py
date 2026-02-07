@@ -15,6 +15,9 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         tvm.tir.transform.Simplify(),
         tvm.tir.transform.LowerOpaqueBlock(), # This together with ConvertBlocksToOpaque removes Block and BlockRealize nodes.
         tvm.tir.transform.FlattenBuffer(),
+        tvm.tir.transform.InjectVirtualThread(),
+        tvm.tir.transform.Simplify(),
+        transform.LoopFission(),
         ########################################################################
         # transform.InjectConv2DTransposeSkip(), # TODO
         transform.InjectDMAIntrin2(),

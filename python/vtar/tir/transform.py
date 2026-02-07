@@ -25,7 +25,7 @@ from tvm.tir.transform import _ffi_api
 from typing import List, Tuple
 
 from ..environment import get_env
-from .util import get_strides
+from .util import get_strides, get_alu_op
 
 def _match_pragma(stmt, key):
     """Internal helper to match stmt to pragma stmt.
@@ -749,8 +749,8 @@ def InjectDMAIntrin2():
     return _ffi_api.InjectCopyIntrin("dma_copy", _inject_copy)
 
 def my_get_2d_pattern(
-        sram_buf, dram_buf, dram_buf_indices, loop_indices, loop_extents
-    ) -> Tuple[tir.PrimExpr, tir.PrimExpr, tir.PrimExpr, tir.PrimExpr]:
+    sram_buf, dram_buf, dram_buf_indices, loop_indices, loop_extents
+) -> Tuple[tir.PrimExpr, tir.PrimExpr, tir.PrimExpr, tir.PrimExpr]:
     # loop_indices = [ax0, ax1, ax2, ax3]
     # dram_buf_indices = [bo_0 * 4 + ax0, co_0 * 4 + ax1, ax2, ax3]
 
@@ -1077,8 +1077,6 @@ def _flatten_loop(
     rev_extents.reverse()
 
     return rev_src_coeff, rev_dst_coeff, rev_extents
-
-from .util import get_alu_op
 
 def do_inject_alu_intin_transform(stmt: tir.Stmt) -> tir.Stmt | None:
     """
@@ -1705,6 +1703,50 @@ def CPUAccessRewrite():
                 stmt,
             )
         return f.with_body(stmt)
+
+    return tvm.tir.transform.prim_func_pass(
+        _ftransform, opt_level=0, name="tir.vta.CPUAccessRewrite"
+    )
+
+def LoopFission() -> tir.transform.PrimFuncPass:
+    """
+    Distribute the loops over the sequence items
+    Loops(Seq(A_1, ..., A_n))
+    Seq(Loops(A_1), ..., Loops(A_n))
+    """
+
+    def _ftransform(func: tir.PrimFunc, mod: ir.IRModule, ctx: ir.transform.PassContext) -> tir.PrimFunc:
+
+        def _post_order(stmt: tir.Stmt) -> tir.Stmt | None:
+            if _match_pragma(stmt, "dma_copy") or _match_pragma(stmt, "alu"):
+
+                old_loops = [stmt]
+                curr_stmt = stmt.body
+                while isinstance(curr_stmt, tir.For):
+                    old_loops.append(curr_stmt)
+                    curr_stmt = curr_stmt.body
+
+                if isinstance(curr_stmt, tir.SeqStmt):
+                    new_loops = []
+                    for stmt in curr_stmt.seq:
+                        new_stmt = stmt
+                        for old_loop in reversed(old_loops):
+                            new_stmt = tir.For(
+                                old_loop.loop_var,
+                                old_loop.min,
+                                old_loop.extent,
+                                old_loop.kind,
+                                new_stmt,
+                                old_loop.thread_binding,
+                                old_loop.annotations,
+                            )
+                        new_loops.append(new_stmt)
+                    return tir.SeqStmt(new_loops)
+            return None
+
+        return func.with_body(
+            tvm.tir.stmt_functor.ir_transform(func.body, None, _post_order, ["tir.For"])
+        )
 
     return tvm.tir.transform.prim_func_pass(
         _ftransform, opt_level=0, name="tir.vta.CPUAccessRewrite"
