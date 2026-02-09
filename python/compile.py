@@ -1,5 +1,5 @@
 import tvm
-from tvm import ir
+from tvm import ir, relax
 from tvm.script import ir as I, relax as R
 
 import os
@@ -31,11 +31,10 @@ class ImagePreprocessing:
 			R.output(output)
 		return output
 
-if True:
+if False:
 	mod = ImagePreprocessing
 	mod.show()
 
-	from tvm import relax
 	target = tvm.target.Target("llvm")
 	# When compiling with dynamically shaped tensors R.match_cast and T.match_buffer
 	# and are generated to get the dimensions at runtime.
@@ -79,36 +78,40 @@ seq = tvm.transform.Sequential([
 	vtar.relax.transform.RemoveRelu(),
 ])
 
-if not os.path.exists("build/resnet18_int8_per_tensor.json"):
-	onnx_model = onnx.load("build/resnet18_int8_per_tensor.onnx")
-	mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
-	mod = seq(mod)
-	with open("build/resnet18_int8_per_tensor.json", "w") as f:
-		f.write(ir.save_json(mod))
-else:
-	with open("build/resnet18_int8_per_tensor.json") as f:
-		mod = ir.load_json(f.read())
-mod.show()
+def compile(name: str) -> None:
+	if not os.path.exists("build/%s.json" % name):
+		onnx_model = onnx.load("build/%s.onnx" % name)
+		mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+		mod = seq(mod)
+		with open("build/%s.json" % name, "w") as f:
+			f.write(ir.save_json(mod))
+	else:
+		with open("build/%s.json" % name) as f:
+			mod = ir.load_json(f.read())
+	mod.show()
 
-mod = vtar.relax.vtar_actual_pipeline()(mod)
-mod.show()
+	mod = vtar.relax.vtar_actual_pipeline()(mod)
+	mod.show()
 
-ex = tvm.compile(
-	mod,
-	target=target,
-	relax_pipeline=None,
-	tir_pipeline=vtar.tir.get_actual_pipeline(),
-)
-
-ex.export_library(
-	"build/resnet18_int8_per_tensor.dll",
-	workspace_dir='build',
-	options=(
-		"-v", "-Wl,-verbose",
-		"-g",
-		"-L", os.path.expandvars('%installdir%\\Programs\\TVM\\lib'),
-		"-l", "vta_fsim",
-		"-l", "tvm_runtime",
-		"-Wl,/DEBUG:FULL,/PDB:build\\resnet18_int8_per_tensor.pdb",
+	ex = tvm.compile(
+		mod,
+		target=target,
+		relax_pipeline=None,
+		tir_pipeline=vtar.tir.get_actual_pipeline(),
 	)
-)
+
+	ex.export_library(
+		"build/%s.dll" % name,
+		workspace_dir="build",
+		options=(
+			"-v", "-Wl,-verbose",
+			"-g",
+			"-L", os.path.expandvars("%installdir%\\Programs\\TVM\\lib"),
+			"-l", "vta_fsim",
+			"-l", "tvm_runtime",
+			"-Wl,/DEBUG:FULL,/PDB:build\\%s.pdb" % name,
+		)
+	)
+
+compile("resnet18_int8_per_tensor")
+compile("resnet18_int8_per_network")

@@ -18,7 +18,7 @@ def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
     x = numpy.asanyarray(arr, dtype=numpy.float32)
     x_bits = x.view(numpy.int32)
 
-    SIGN_MASK     = 0x80000000
+    SIGN_MASK     = numpy.asarray(-2147483648, dtype='int32') # 0x80000000
     EXPONENT_MASK = 0x7F800000
     MANTISSA_MASK = 0x007FFFFF
     EXPONENT_SIZE_MASK = 0xFF
@@ -29,7 +29,7 @@ def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
     not_inf_or_nan = (x_bits < EXPONENT_MASK)
     not_neg_inf_or_nan = (x_bits > 0) & not_inf_or_nan
     has_zero_mantissa = (x_bits & (MANTISSA_MASK | SIGN_MASK)) == 0
-    is_pow2 = not_inf_nan_or_neg & has_zero_mantissa
+    is_pow2 = not_neg_inf_or_nan & has_zero_mantissa
 
     powers = ((x_bits >> MANTISSA_SIZE) & EXPONENT_SIZE_MASK) - BIAS
 
@@ -108,6 +108,13 @@ def integer_only_arithmetic(
 	B: Optional[relax.Constant]
 ) -> Tuple[numpy.ndarray, relax.Expr, Optional[relax.Constant]]:
 	"""From "Speed up integer-arithmetic-only inference via bit-shifting" """
+
+	# Global scale optimization
+	is_pow2, powers = get_strictly_power_of_two(s_w)
+	if (M.data.numpy() == s_w).all() and is_pow2.all():
+		# Powers needs to be negated because... Look at ioa_requantize
+		return numpy.array(-powers.item()).astype("int32"), q_w, B
+
 	M = M.data.numpy()
 	n = numpy.floor(-numpy.log2(M)).astype("int32")
 	# if (n < 0).any(): print(n, M)
@@ -132,9 +139,14 @@ def ioa_requantize(bb: relax.BlockBuilder, N: numpy.ndarray, x: relax.Expr, z: r
 	magnitude = relax.const(numpy.where(is_neg, -(-N), -N))
 	# https://docs.amd.com/r/en-US/ug1399-vitis-hls/Class-Methods-and-Operators#:~:text=b%2B1%3B%0A%7D-,Shift%20Operators,-Each%20shift%20operator
 	is_scalar = not is_pos.shape
+	# This implements round to nearest after multiplication
+	# because the semantics of x >> n is floor(x >> n) and to get round(x >> n)
+	# we need to do x + 2^(n-1) >> n.
+	# TODO: implement this also in the non scalar case!
+	# TODO: check that for left_shift is right also
 	if is_scalar:
-		res = relax.op.left_shift(x, magnitude) if is_pos \
-			else relax.op.right_shift(x, magnitude)
+		res = relax.op.left_shift(x + relax.const(2**(magnitude.data.numpy().item()-1)), magnitude) if is_pos \
+			else relax.op.right_shift(x + relax.const(2**(magnitude.data.numpy().item()-1)), magnitude)
 	else:
 		# FIXME: this is certainly wrong!
 		res = bb.call_te(mytopi.shift_bidi, bb.normalize(x), relax.const(N))
@@ -233,8 +245,6 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 				**kwargs
 			)
 		else:
-			O, I, H, W_ = topi.utils.get_const_tuple(relax.get_shape_of(W))
-			n = relax.const(I*H*W_)
 			# TODO: based on kwargs some of those terms can be drastically
 			# simplified.
 			# TODO: implement "scalarization" of tensors with all the same value.
@@ -245,12 +255,12 @@ class QLinearConv(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 				+ relax.op.nn.conv2d(X, W, **kwargs)
 			)
 		res = conv + reshape_if_needed(B, (1, -1, 1, 1)) if B else conv
-		M = reshape_if_needed(M, (1, -1, 1, 1))
 		Y_z = reshape_if_needed(Y_z, (1, -1, 1, 1))
 		# The conditional reshape is needed because the dlight schedule is
 		# fragile (also the transform that binds scalars does not recognize
 		# tensors of shape (1, 1, 1, 1) as equivalent to scalars)
 		return ioa_requantize(bb, N.reshape(1, -1, 1, 1) if N.shape else N, res, Y_z)
+		M = reshape_if_needed(M, (1, -1, 1, 1))
 		res = requantize(M, res.astype("float32"), Y_z)
 		return res
 

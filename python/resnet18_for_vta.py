@@ -312,17 +312,40 @@ def main():
         dummy_input = torch.randn(1, 3, 224, 224)
         torch.onnx.export(model, dummy_input, "build/resnet18.onnx",
                         input_names=["input"], output_names=["output"],
-                        opset_version=11)
+                        opset_version=13)
 
+    not_resnet_per_channel = not os.path.exists("build/resnet18_int8_per_channel.onnx")
     not_resnet_per_tensor = not os.path.exists("build/resnet18_int8_per_tensor.onnx")
     not_resnet_per_network = not os.path.exists("build/resnet18_int8_per_network.onnx")
-    if not_resnet_per_tensor or not_resnet_per_network:
+    if not_resnet_per_tensor or not_resnet_per_network or not_resnet_per_channel:
         calib_dataset = datasets.Imagenette(root='build/dataset', split='train', download=False, transform=transform)
         calib_data_loader = DataLoader(calib_dataset, batch_size=1, shuffle=False)
 
         if not os.path.exists("build/resnet18_pre_proc.onnx"):
             # TODO: make arguments of this function explicit (and understand them)
             quant_pre_process("build/resnet18.onnx", "build/resnet18_pre_proc.onnx")
+        if not_resnet_per_channel:
+            quantize_static(
+                model_input="build/resnet18_pre_proc.onnx",
+                model_output="build/resnet18_int8_per_channel.onnx",
+                calibration_data_reader=MyCalibrationDataReader(calib_data_loader),
+                quant_format=QuantFormat.QDQ,
+                op_types_to_quantize=None,
+                per_channel=True,
+                reduce_range=False,
+                activation_type=QuantType.QInt8,
+                weight_type=QuantType.QInt8,
+                nodes_to_quantize=None,
+                nodes_to_exclude=None,
+                use_external_data_format=False,
+                calibrate_method=CalibrationMethod.MinMax,
+                calibration_providers=None,
+                extra_options={
+                    "ActivationSymmetric": True,
+                    "WeightSymmetric": True,
+                    "QDQKeepRemovableActivations": False,
+                },
+            )
         if not_resnet_per_tensor:
             quantize_static(
                 model_input="build/resnet18_pre_proc.onnx",
@@ -359,21 +382,25 @@ def main():
     target = tvm.target.Target(env.target, host=env.target_host)
     dev = tvm.device(str(env.target))
     # TODO: if not present emit warning and compile model that always answers with one class.
-    ex = tvm.runtime.load_module("build/resnet18_int8_per_tensor.dll")
-
-    vm = relax.VirtualMachine(ex, dev)
+    ex_pn = tvm.runtime.load_module("build/resnet18_int8_per_network.dll")
+    vm_pn = relax.VirtualMachine(ex_pn, dev)
+    ex_pt = tvm.runtime.load_module("build/resnet18_int8_per_tensor.dll")
+    vm_pt = relax.VirtualMachine(ex_pt, dev)
 
     test_dataset = datasets.Imagenette(root='build/dataset', split='val', download=False, transform=transform)
     test_dataset = torch.utils.data.Subset(test_dataset, torch.randperm(len(test_dataset))[:200])
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     sess_fp32 = onnxruntime.InferenceSession("build/resnet18.onnx")
+    sess_int8_pc = onnxruntime.InferenceSession("build/resnet18_int8_per_channel.onnx")
     sess_int8_pt = onnxruntime.InferenceSession("build/resnet18_int8_per_tensor.onnx")
     sess_int8_pn = onnxruntime.InferenceSession("build/resnet18_int8_per_network.onnx")
 
     correct_fp32 = 0
+    correct_int8_pc = 0
     correct_int8_pt = 0
     correct_int8_pn = 0
+    correct_tvm_pn = 0
     correct_tvm_pt = 0
     total = 0
 
@@ -383,29 +410,38 @@ def main():
         outputs_fp32 = run_inference(sess_fp32, images)
         pred_fp32 = numpy.argmax(outputs_fp32, axis=1)
 
+        outputs_int8_pc = run_inference(sess_int8_pc, images)
+        pred_int8_pc = numpy.argmax(outputs_int8_pc, axis=1)
+
         outputs_int8_pt = run_inference(sess_int8_pt, images)
         pred_int8_pt = numpy.argmax(outputs_int8_pt, axis=1)
 
         outputs_int8_pn = run_inference(sess_int8_pn, images)
         pred_int8_pn = numpy.argmax(outputs_int8_pn, axis=1)
 
-        outputs_tvm_pt = vm["main"](tvm.nd.array(images.numpy(), dev)).numpy()
+        outputs_tvm_pn = vm_pn["main"](tvm.nd.array(images.numpy(), dev)).numpy()
+        pred_tvm_pn = numpy.argmax(outputs_tvm_pn, axis=1)
+
+        outputs_tvm_pt = vm_pt["main"](tvm.nd.array(images.numpy(), dev)).numpy()
         pred_tvm_pt = numpy.argmax(outputs_tvm_pt, axis=1)
 
         correct_fp32 += (pred_fp32 == labels.numpy()).sum()
+        correct_int8_pc += (pred_int8_pc == labels.numpy()).sum()
         correct_int8_pt += (pred_int8_pt == labels.numpy()).sum()
         correct_int8_pn += (pred_int8_pn == labels.numpy()).sum()
+        correct_tvm_pn += (pred_tvm_pn == labels.numpy()).sum()
         correct_tvm_pt += (pred_tvm_pt == labels.numpy()).sum()
         total += labels.size(0)
         print(".", end="")
         sys.stdout.flush()
     print("")
 
-    print(f"Accuracy FP32:               {correct_fp32/total*100:.2f}%")
-    print(f"Accuracy INT8 per-tensor:    {correct_int8_pt/total*100:.2f}%")
-    print(f"Accuracy INT8 per-network:   {correct_int8_pn/total*100:.2f}%")
-    print(f"Accuracy TVM IOA per-tensor: {correct_tvm_pt/total*100:.2f}%")
-    # print(f"Accuracy TVM IOA per-network: {correct_tvm_pn/total*100:.2f}%")
+    print(f"Accuracy FP32:                {correct_fp32/total*100:.2f}%")
+    print(f"Accuracy INT8 per-channel:    {correct_int8_pc/total*100:.2f}%")
+    print(f"Accuracy INT8 per-tensor:     {correct_int8_pt/total*100:.2f}%")
+    print(f"Accuracy INT8 per-network:    {correct_int8_pn/total*100:.2f}%")
+    print(f"Accuracy TVM IOA per-tensor:  {correct_tvm_pt/total*100:.2f}%")
+    print(f"Accuracy TVM IOA per-network: {correct_tvm_pn/total*100:.2f}%")
 
 if __name__ == "__main__":
     main()
