@@ -32,6 +32,9 @@ import os
 import sys
 import pathlib
 import tempfile
+import collections
+import copy
+from typing import Container
 
 import tvm
 from tvm import relax
@@ -262,6 +265,136 @@ def quantize_relay_for_vta(
             "/cpu/ReadMe.md "
         )
 
+def is_input_or_initializer(name: str, map: Container[str]):
+    # assert name in init_map or node in input_map
+    return name not in map
+
+def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
+    """
+    All the names in an onnx graph are either in
+    input, output, initializer or node
+    """
+    # TODO: fuse also Gemm
+    graph: onnx.GraphProto = model.graph
+
+    node_map: Dict[str, onnx.NodeProto] = {node.output[0]: node for node in graph.node}
+    init_map: Dict[str, onnx.TensorProto] = {init.name: init for init in graph.initializer}
+
+    # Map output_name -> usage_count (for safety checks)
+    usage_count = collections.defaultdict(int)
+    for node in graph.node:
+        for input_name in node.input:
+            usage_count[input_name] += 1
+    for output in graph.output:
+        usage_count[output.name] += 1
+
+    nodes_to_remove = set()
+    nodes_to_add = []
+    initializer_to_remove = set()
+    # initializer_to_add = []
+
+    for node in graph.node:
+        # First we try to match the Q(DQ) pattern.
+
+        q_node = node
+        if node.op_type != "QuantizeLinear": continue
+
+        conv_output_name = q_node.input[0]
+        if is_input_or_initializer(conv_output_name, node_map): continue
+        conv_node = node_map[conv_output_name]
+        if conv_node.op_type != "Conv": continue
+
+        if usage_count[conv_output_name] > 1:
+            print(f"Skipping {conv_node.name}: Output used by multiple nodes.")
+            continue
+
+        if len(conv_node.input) < 2: continue
+
+        dq_x_name = conv_node.input[0]
+        if is_input_or_initializer(dq_x_name, node_map): continue
+        dq_x_node = node_map[dq_x_name]
+        if dq_x_node.op_type != "DequantizeLinear": continue
+
+        dq_w_name = conv_node.input[1]
+        if is_input_or_initializer(dq_w_name, node_map): continue
+        dq_w_node = node_map[dq_w_name]
+        if dq_w_node.op_type != "DequantizeLinear": continue
+
+        if len(conv_node.input) > 2:
+            dq_b_name = conv_node.input[2]
+            if is_input_or_initializer(dq_b_name, node_map): continue
+            dq_b_node = node_map[dq_b_name]
+            if dq_b_node.op_type != "DequantizeLinear": continue
+
+        # If we have matched the patter we try to create the fused node.
+
+        x, x_s, x_zp = dq_x_node.input[0], dq_x_node.input[1], dq_x_node.input[2]
+        w, w_s, w_zp = dq_w_node.input[0], dq_w_node.input[1], dq_w_node.input[2]
+        y_s, y_zp = q_node.input[1], q_node.input[2]
+        inputs = [x, x_s, x_zp, w, w_s, w_zp, y_s, y_zp]
+        if len(conv_node.input) > 2:
+            b, b_s, b_zp = dq_b_node.input[0], dq_b_node.input[1], dq_b_node.input[2]
+            if b_zp not in init_map:
+                pass
+                # TODO: emit warning that must be set to 0
+            initializer_to_remove.add(b_zp)
+            if not (numpy_helper.to_array(init_map[b_zp]) == 0).all():
+                print(f"Skipping {conv_node.name}: Bias zero point is not zero.")
+                continue
+
+            # TODO: check that:
+            numpy_helper.to_array(init_map[b_s]) == numpy_helper.to_array(init_map[x_s]) * numpy_helper.to_array(init_map[x_s])
+            # in some floating point robust way.
+            initializer_to_remove.add(b_s)
+            inputs.append(b)
+
+        qlinear_node = onnx.helper.make_node(
+            "QLinearConv",
+            inputs=inputs,
+            outputs=[q_node.output[0]],
+            name=conv_node.name + "_fused",
+            **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute}
+        )
+        nodes_to_add.append(qlinear_node)
+
+        # Now we can mark for removal the nodes we have fused.
+
+        nodes_to_remove.add(conv_node.name)
+        nodes_to_remove.add(q_node.name)
+
+        usage_count[dq_x_node.output[0]] -= 1
+        if usage_count[dq_x_node.output[0]] == 0:
+            nodes_to_remove.add(dq_x_node.name)
+
+        usage_count[dq_w_node.output[0]] -= 1
+        if usage_count[dq_w_node.output[0]] == 0:
+            nodes_to_remove.add(dq_w_node.name)
+
+        if len(conv_node.input) > 2:
+            usage_count[dq_b_node.output[0]] -= 1
+            if usage_count[dq_b_node.output[0]] == 0:
+                nodes_to_remove.add(dq_b_node.name)
+
+    # We create the new model.
+
+    new_model = copy.deepcopy(model)
+
+    new_node_list = [node for node in graph.node if node.name not in nodes_to_remove]
+    new_node_list.extend(nodes_to_add)
+
+    new_initializer_list = [initializer for initializer in graph.initializer if initializer.name not in initializer_to_remove]
+    # new_initializer_list.extend(initializer_to_add)
+
+    del new_model.graph.node[:]
+    del new_model.graph.initializer[:]
+    new_model.graph.node.extend(new_node_list)
+    new_model.graph.initializer.extend(new_initializer_list)
+
+    # TODO: sort nodes topologically.
+    # onnx.checker.check_model(new_model)
+
+    return new_model
+
 def main():
 
     # https://stackoverflow.com/q/58151507
@@ -391,8 +524,17 @@ def main():
     test_dataset = torch.utils.data.Subset(test_dataset, torch.randperm(len(test_dataset))[:200])
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
+    # For some reason this does not fuse all Q(DQ) convolutions.
+    sess_opts = onnxruntime.SessionOptions()
+    sess_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    sess_opts.optimized_model_filepath = "build/resnet18_int8_per_channel_opt.onnx"
+
+    m = onnx.load("build/resnet18_int8_per_channel.onnx")
+    m = fuse_qlinear_conv(m)
+    onnx.save(m, "build/resnet18_int8_per_channel_fused.onnx")
+
     sess_fp32 = onnxruntime.InferenceSession("build/resnet18.onnx")
-    sess_int8_pc = onnxruntime.InferenceSession("build/resnet18_int8_per_channel.onnx")
+    sess_int8_pc = onnxruntime.InferenceSession("build/resnet18_int8_per_channel_fused.onnx")
     sess_int8_pt = onnxruntime.InferenceSession("build/resnet18_int8_per_tensor.onnx")
     sess_int8_pn = onnxruntime.InferenceSession("build/resnet18_int8_per_network.onnx")
 
