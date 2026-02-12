@@ -46,6 +46,9 @@ set "VTA_HW_PATH=%cd%\submodules\tvm-vta"
 REM Needed by vtar.bitstream.get_bitstream_path
 set "VTA_CACHE_PATH=%installdir%\Programs\bitstreams"
 set "HOME=workaround_for_get_bitstream_path"
+REM Because tvm.contrib.get_cc does not add .exe at the end of the path
+set CXX=clang++
+set CC=clang
 
 where /q python
 if %ERRORLEVEL% equ 0 (

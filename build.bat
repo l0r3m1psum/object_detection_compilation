@@ -8,6 +8,22 @@ cl /LD /nologo /std:c++17 /ZI ^
     /I %installdir%\Programs\TVM\include ^
     /I %installdir%\Programs\dlpack\include ^
     /I %installdir%\Programs\dmlc\include ^
+    src\my_codegen.cc ^
+    tvm.lib ^
+    /MDd ^
+    /wd4005 ^
+    /EHsc ^
+    /Fo".\build\my_codegen.obj" ^
+    /Fe".\build\my_codegen.dll" ^
+    /Fd".\build\my_codegen.pdb" ^
+    /link ^
+    "/LIBPATH:%installdir%\Programs\TVM\lib" ^
+    || goto :exit
+
+cl /LD /nologo /std:c++17 /ZI ^
+    /I %installdir%\Programs\TVM\include ^
+    /I %installdir%\Programs\dlpack\include ^
+    /I %installdir%\Programs\dmlc\include ^
     src\my_device_api.cc ^
     tvm.lib ^
     /MDd ^

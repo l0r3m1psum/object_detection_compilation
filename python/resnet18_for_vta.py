@@ -69,6 +69,12 @@ import vtar.relax.frontend.onnx
 # https://huggingface.co/onnxmodelzoo/yolov3-12-int8/resolve/main/yolov3-12-int8.onnx
 # https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12-int8/resolve/main/ssd_mobilenet_v1_12-int8.onnx
 
+# Other model zoos
+# https://huggingface.co/opencv
+# https://github.com/STMicroelectronics/stm32ai-modelzoo/
+# This could be good for live real-time demo on face detection
+# https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar_int8.onnx
+
 class MyCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_loader):
         super().__init__()
@@ -280,11 +286,11 @@ def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
     node_map: Dict[str, onnx.NodeProto] = {node.output[0]: node for node in graph.node}
     init_map: Dict[str, onnx.TensorProto] = {init.name: init for init in graph.initializer}
 
-    # Map output_name -> usage_count (for safety checks)
     usage_count = collections.defaultdict(int)
     for node in graph.node:
         for input_name in node.input:
             usage_count[input_name] += 1
+    # NOTE: is this necessary?
     for output in graph.output:
         usage_count[output.name] += 1
 
