@@ -308,7 +308,7 @@ def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
         conv_output_name = q_node.input[0]
         if is_input_or_initializer(conv_output_name, node_map): continue
         conv_node = node_map[conv_output_name]
-        if conv_node.op_type != "Conv": continue
+        if conv_node.op_type != "Conv" and conv_node.op_type != "Gemm": continue
 
         if usage_count[conv_output_name] > 1:
             print(f"Skipping {conv_node.name}: Output used by multiple nodes.")
@@ -354,13 +354,27 @@ def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
             initializer_to_remove.add(b_s)
             inputs.append(b)
 
-        qlinear_node = onnx.helper.make_node(
-            "QLinearConv",
-            inputs=inputs,
-            outputs=[q_node.output[0]],
-            name=conv_node.name + "_fused",
-            **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute}
-        )
+        if conv_node.op_type == "Gemm":
+            # The bias goes in a different position...
+            if len(conv_node.input) > 2:
+                tmp = inputs.pop()
+                inputs.insert(6, tmp)
+            qlinear_node = onnx.helper.make_node(
+                "QGemm",
+                inputs=inputs,
+                outputs=[q_node.output[0]],
+                name=conv_node.name + "_fused",
+                domain="com.microsoft",
+                **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute if attr.name != "beta"}
+            )
+        else:
+            qlinear_node = onnx.helper.make_node(
+                "QLinearConv",
+                inputs=inputs,
+                outputs=[q_node.output[0]],
+                name=conv_node.name + "_fused",
+                **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute}
+            )
         nodes_to_add.append(qlinear_node)
 
         # Now we can mark for removal the nodes we have fused.
@@ -466,7 +480,7 @@ def main():
         if not_resnet_per_channel:
             quantize_static(
                 model_input="build/resnet18_pre_proc.onnx",
-                model_output="build/resnet18_int8_per_channel.onnx",
+                model_output="build/resnet18_int8_per_channel_qdq.onnx",
                 calibration_data_reader=MyCalibrationDataReader(calib_data_loader),
                 quant_format=QuantFormat.QDQ,
                 op_types_to_quantize=None,
@@ -485,6 +499,9 @@ def main():
                     "QDQKeepRemovableActivations": False,
                 },
             )
+            m = onnx.load("build/resnet18_int8_per_channel_qdq.onnx")
+            m = fuse_qlinear_conv(m)
+            onnx.save(m, "build/resnet18_int8_per_channel.onnx")
         if not_resnet_per_tensor:
             quantize_static(
                 model_input="build/resnet18_pre_proc.onnx",
@@ -530,17 +547,8 @@ def main():
     test_dataset = torch.utils.data.Subset(test_dataset, torch.randperm(len(test_dataset))[:200])
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    # For some reason this does not fuse all Q(DQ) convolutions.
-    sess_opts = onnxruntime.SessionOptions()
-    sess_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-    sess_opts.optimized_model_filepath = "build/resnet18_int8_per_channel_opt.onnx"
-
-    m = onnx.load("build/resnet18_int8_per_channel.onnx")
-    m = fuse_qlinear_conv(m)
-    onnx.save(m, "build/resnet18_int8_per_channel_fused.onnx")
-
     sess_fp32 = onnxruntime.InferenceSession("build/resnet18.onnx")
-    sess_int8_pc = onnxruntime.InferenceSession("build/resnet18_int8_per_channel_fused.onnx")
+    sess_int8_pc = onnxruntime.InferenceSession("build/resnet18_int8_per_channel.onnx")
     sess_int8_pt = onnxruntime.InferenceSession("build/resnet18_int8_per_tensor.onnx")
     sess_int8_pn = onnxruntime.InferenceSession("build/resnet18_int8_per_network.onnx")
 
