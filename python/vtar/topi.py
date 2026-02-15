@@ -129,10 +129,10 @@ def avg_pool2d_int(
 
 	return res
 
-def bidi_shift(x1: te.Tensor, x2: te.Tensor) -> te.Tensor:
+def bidi_shift(x: te.Tensor, a: te.Tensor) -> te.Tensor:
 	res = te.compute(
-		topi.utils.get_const_tuple(x1.shape),
-		lambda *i: tir.Select(x2[*i] >= 0, x1[*i] >> x2[*i], x1[*i] << -x2[*i]),
+		topi.utils.get_const_tuple(x.shape),
+		lambda *i: tir.Select(a[*i] >= 0, x[*i] >> a[*i], x[*i] << -a[*i]),
 		"res",
 	)
 	return res
