@@ -405,13 +405,40 @@ def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
     new_initializer_list = [initializer for initializer in graph.initializer if initializer.name not in initializer_to_remove]
     # new_initializer_list.extend(initializer_to_add)
 
+    # TODO: cleanup the topological sorting code...
+
+    # The ONNX graph has its edge directions from the producer node to the
+    # consumer node i.e. the edge is the used_by relation e.g. Conv -> Relu here
+    # the inverted (or transposed) graph is created i.e. the edge direction is
+    # from consumer to producer e.g. Conv <- Relu.
+    node_by_output: Dict[str, onnx.NodeProto] = {}
+    for node in new_node_list:
+        for output in node.output:
+            node_by_output[output] = node
+
+    topo: List[onnx.NodeProto] = []
+    visited = set()
+
+    def build_topo(n: onnx.NodeProto):
+        if id(n) not in visited:
+            visited.add(id(n))
+            # traverse inputs to find producer nodes
+            for input_name in n.input:
+                producer = node_by_output.get(input_name)
+                if producer is not None:
+                    build_topo(producer)
+            topo.append(n)
+
+    # Iterate over all nodes to ensure disconnected components are covered.
+    for node in new_node_list:
+        build_topo(node)
+
     del new_model.graph.node[:]
     del new_model.graph.initializer[:]
-    new_model.graph.node.extend(new_node_list)
+    new_model.graph.node.extend(topo)
     new_model.graph.initializer.extend(new_initializer_list)
 
-    # TODO: sort nodes topologically.
-    # onnx.checker.check_model(new_model)
+    onnx.checker.check_model(new_model)
 
     return new_model
 

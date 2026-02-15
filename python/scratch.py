@@ -354,21 +354,20 @@ def main2(
                     T.writes(res[v_bo, v_co, v_i, v_j, v_bi, v_ci])
                     res[v_bo, v_co, v_i, v_j, v_bi, v_ci] = T.Cast("int8", res_min[v_bo, v_co, v_i, v_j, v_bi, v_ci])
 
-@I.ir_module
-class ShiftBidiModule:
-    @R.function
-    def main(data: R.Tensor((4,), "int32"), shift_map: R.Tensor((4,), "int32")) -> R.Tensor((4,), "int32"):
-        with R.dataflow():
-            gv = R.where(
-                shift_map >= R.const(0, "int32"),
-                R.right_shift(data, shift_map),
-                R.left_shift(data, -shift_map)
-            )
-            R.output(gv)
-        return gv
-
-mod = ShiftBidiModule
-mod.show()
+@R.function
+def bidi_shift(
+    data: R.Tensor(dtype="int32"),
+    shift: R.Tensor(dtype="int32")
+) -> R.Tensor(dtype="int32"):
+    with R.dataflow():
+        gv = R.where(
+            shift >= R.const(0),
+            R.right_shift(data, shift),
+            R.left_shift(data, -shift)
+        )
+        R.output(gv)
+    return gv
+bidi_shift.show()
 
 def virtual_threading():
     # AKA unroll-and-jam

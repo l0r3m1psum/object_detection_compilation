@@ -1,6 +1,5 @@
-from tvm import relax
-from tvm import ir
-from tvm import topi
+from tvm import ir, topi, relax
+from tvm.script import relax as R
 import tvm.relax.frontend.onnx
 from tvm.relax.frontend.onnx.onnx_frontend import get_constant
 
@@ -15,26 +14,26 @@ from ... import topi as mytopi
 
 # TODO: write test for this function.
 def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
-    x = numpy.asanyarray(arr, dtype=numpy.float32)
-    x_bits = x.view(numpy.int32)
+	x = numpy.asanyarray(arr, dtype=numpy.float32)
+	x_bits = x.view(numpy.int32)
 
-    SIGN_MASK     = numpy.asarray(-2147483648, dtype='int32') # 0x80000000
-    EXPONENT_MASK = 0x7F800000
-    MANTISSA_MASK = 0x007FFFFF
-    EXPONENT_SIZE_MASK = 0xFF
-    MANTISSA_SIZE = 23
-    BIAS = 127
+	SIGN_MASK     = numpy.asarray(-2147483648, dtype='int32') # 0x80000000
+	EXPONENT_MASK = 0x7F800000
+	MANTISSA_MASK = 0x007FFFFF
+	EXPONENT_SIZE_MASK = 0xFF
+	MANTISSA_SIZE = 23
+	BIAS = 127
 
-    # https://it.wikipedia.org/wiki/IEEE_754#Precisione_singola_(32_bit)
-    not_inf_or_nan = (x_bits < EXPONENT_MASK)
-    not_neg_inf_or_nan = (x_bits > 0) & not_inf_or_nan
-    has_zero_mantissa = (x_bits & (MANTISSA_MASK | SIGN_MASK)) == 0
-    is_pow2 = not_neg_inf_or_nan & has_zero_mantissa
+	# https://it.wikipedia.org/wiki/IEEE_754#Precisione_singola_(32_bit)
+	not_inf_or_nan = (x_bits < EXPONENT_MASK)
+	not_neg_inf_or_nan = (x_bits > 0) & not_inf_or_nan
+	has_zero_mantissa = (x_bits & (MANTISSA_MASK | SIGN_MASK)) == 0
+	is_pow2 = not_neg_inf_or_nan & has_zero_mantissa
 
-    powers = ((x_bits >> MANTISSA_SIZE) & EXPONENT_SIZE_MASK) - BIAS
+	powers = ((x_bits >> MANTISSA_SIZE) & EXPONENT_SIZE_MASK) - BIAS
 
-    return is_pow2, powers
-    # return numpy.where(is_pow2, powers, numpy.nan)
+	return is_pow2, powers
+	# return numpy.where(is_pow2, powers, numpy.nan)
 
 def clamp(data: relax.Expr, min, max) -> relax.Expr:
 	res = relax.op.minimum(data, relax.const(max))
@@ -148,8 +147,13 @@ def ioa_requantize(bb: relax.BlockBuilder, N: numpy.ndarray, x: relax.Expr, z: r
 		res = relax.op.left_shift(x + relax.const(2**(magnitude.data.numpy().item()-1)), magnitude) if is_pos \
 			else relax.op.right_shift(x + relax.const(2**(magnitude.data.numpy().item()-1)), magnitude)
 	else:
-		# FIXME: this is certainly wrong!
-		res = bb.call_te(mytopi.shift_bidi, bb.normalize(x), relax.const(N))
+		# TODO: implement round-to-nearest shift as above...
+		A = relax.const(N)
+		res = relax.op.where(
+			A >= relax.const(0),
+			relax.op.right_shift(x, A),
+			relax.op.left_shift(x, -A)
+		)
 
 	return clamp(res + const_astype(z, "int32"), -128, 127).astype("int8")
 

@@ -139,7 +139,16 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 					# bb.emit infers the out_layout
 					out_dtype=call.attrs['out_dtype']
 				))
-			elif call.op.name == 'relax.add' or call.op.name == 'relax.multiply':
+			elif (
+				call.op.name == 'relax.add'
+				or call.op.name == 'relax.multiply'
+				or call.op.name == "relax.right_shift"
+				or call.op.name == "relax.left_shift"
+				or call.op.name == "greater_equal"
+				or call.op.name == "less_equal"
+				or call.op.name == "greater"
+				or call.op.name == "less"
+			):
 				# This code should work for all elementwise binary functions.
 				arg0_shape = _get_shape(packed_args[0])
 				arg1_shape = _get_shape(packed_args[1])
@@ -159,7 +168,6 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 					if len(bias_shape) != 6:
 						if (len(bias_shape) != 4 or
 							(bias_shape[0] != 1 or bias_shape[2] != 1 or bias_shape[3] != 1)):
-							breakpoint()
 							raise ValueError("Broadcasted %s is only supported channel dimension" % call.op.name)
 						bias = pad_channel(self.builder_, bias, self.cfactor)
 						bias = pack_nchw_to_NCHWnc(self.builder_, bias, 1, self.cfactor)
@@ -167,6 +175,29 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 					if len(data_shape) != 6:
 						data = pack_nchw_to_NCHWnc(self.builder_, data, 1, self.cfactor)
 					res = self.builder_.emit(relax.Call(call.op, (data, bias)))
+			elif call.op.name == "relax.where":
+				arg0_shape = _get_shape(packed_args[0])
+				arg1_shape = _get_shape(packed_args[1])
+				arg2_shape = _get_shape(packed_args[2])
+				if arg0_shape == arg1_shape == arg2_shape:
+					pass
+				elif is_broadcastable(arg0_shape, arg1_shape) and is_broadcastable(arg1_shape, arg2_shape):
+					pass
+				elif (
+					(not arg0_shape and not arg1_shape)
+					or (not arg1_shape and not arg2_shape)
+					or (not arg0_shape and not arg2_shape)
+				): # two of the three are a scalar
+					pass
+				else:
+					arg0, arg1, arg2 = packed_args
+					if len(arg0_shape) != 6:
+						arg0 = pack_nchw_to_NCHWnc(self.builder_, arg0, 1, self.cfactor)
+					if len(arg1_shape) != 6:
+						arg1 = pack_nchw_to_NCHWnc(self.builder_, arg1, 1, self.cfactor)
+					if len(arg2_shape) != 6:
+						arg2 = pack_nchw_to_NCHWnc(self.builder_, arg2, 1, self.cfactor)
+					res = self.builder_.emit(relax.Call(call.op, (arg0, arg1, arg2)))
 			elif call.op.name == 'relax.reshape':
 				# Data in packed_args is passed in pack_nchw_to_NCHWnc
 				(data, shape) = packed_args
@@ -311,7 +342,6 @@ class MaxpoolDequantizeQuantizeWrapper(relax.PyExprMutator):
 			except Exception as e:
 				raise ValueError("could not find quantization values") from e
 
-			# breakpoint()
 			res = self.builder_.emit(relax.op.dequantize(call.args[0], *quantize.args[1:]))
 			res = self.builder_.emit(relax.op.nn.max_pool2d(res, **to_dict(call.attrs)))
 			res = self.builder_.emit(relax.op.quantize(res, *quantize.args[1:]))
