@@ -113,5 +113,6 @@ def compile(name: str) -> None:
 		)
 	)
 
+compile("resnet18_int8_per_channel")
 compile("resnet18_int8_per_tensor")
 compile("resnet18_int8_per_network")

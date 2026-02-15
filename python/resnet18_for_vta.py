@@ -569,6 +569,8 @@ def main():
     vm_pn = relax.VirtualMachine(ex_pn, dev)
     ex_pt = tvm.runtime.load_module("build/resnet18_int8_per_tensor.dll")
     vm_pt = relax.VirtualMachine(ex_pt, dev)
+    ex_pc = tvm.runtime.load_module("build/resnet18_int8_per_channel.dll")
+    vm_pc = relax.VirtualMachine(ex_pc, dev)
 
     test_dataset = datasets.Imagenette(root='build/dataset', split='val', download=False, transform=transform)
     test_dataset = torch.utils.data.Subset(test_dataset, torch.randperm(len(test_dataset))[:200])
@@ -585,6 +587,7 @@ def main():
     correct_int8_pn = 0
     correct_tvm_pn = 0
     correct_tvm_pt = 0
+    correct_tvm_pc = 0
     total = 0
 
     for images, labels in test_loader:
@@ -608,12 +611,16 @@ def main():
         outputs_tvm_pt = vm_pt["main"](tvm.nd.array(images.numpy(), dev)).numpy()
         pred_tvm_pt = numpy.argmax(outputs_tvm_pt, axis=1)
 
+        outputs_tvm_pc = vm_pc["main"](tvm.nd.array(images.numpy(), dev)).numpy()
+        pred_tvm_pc = numpy.argmax(outputs_tvm_pc, axis=1)
+
         correct_fp32 += (pred_fp32 == labels.numpy()).sum()
         correct_int8_pc += (pred_int8_pc == labels.numpy()).sum()
         correct_int8_pt += (pred_int8_pt == labels.numpy()).sum()
         correct_int8_pn += (pred_int8_pn == labels.numpy()).sum()
         correct_tvm_pn += (pred_tvm_pn == labels.numpy()).sum()
         correct_tvm_pt += (pred_tvm_pt == labels.numpy()).sum()
+        correct_tvm_pc += (pred_tvm_pc == labels.numpy()).sum()
         total += labels.size(0)
         print(".", end="")
         sys.stdout.flush()
@@ -623,6 +630,7 @@ def main():
     print(f"Accuracy INT8 per-channel:    {correct_int8_pc/total*100:.2f}%")
     print(f"Accuracy INT8 per-tensor:     {correct_int8_pt/total*100:.2f}%")
     print(f"Accuracy INT8 per-network:    {correct_int8_pn/total*100:.2f}%")
+    print(f"Accuracy TVM IOA per-channel: {correct_tvm_pc/total*100:.2f}%")
     print(f"Accuracy TVM IOA per-tensor:  {correct_tvm_pt/total*100:.2f}%")
     print(f"Accuracy TVM IOA per-network: {correct_tvm_pn/total*100:.2f}%")
 
