@@ -553,7 +553,7 @@ def test_shift_bidirectional():
 
     A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
     B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
-    C = vtar.topi.shift_bidi(A, B)
+    C = vtar.topi.bidi_shift(A, B)
     D = te.compute(shape, lambda *i: C(*i).astype(env.out_dtype), "D")
 
     alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "shift"})
