@@ -47,5 +47,6 @@ def get_actual_pipeline():
         tvm.dlight.ApplyDefaultSchedule(
             dlight.Conv2D(),
         ),
+        transform.FixSelectCondition,
         get_vtar_tir_transform(),
     ])

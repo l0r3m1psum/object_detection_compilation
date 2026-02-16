@@ -8,6 +8,7 @@ import tvm
 from tvm import dlight as dl
 from tvm import tir
 from tvm import topi
+from tvm import ir
 
 import vtar.tir.util
 
@@ -278,4 +279,115 @@ class Conv2D(VTAScheduleRule):
 
         # sch.mod["main"].show()
 
+        return sch
+
+class Conv2DPrime(VTAScheduleRule):
+    def apply(
+        self,
+        func: tir.PrimFunc,
+        target: tvm.target.Target,
+        tunable: bool,
+    ) -> Union[None, tir.Schedule, List[tir.Schedule]]:
+        sch = tir.Schedule(func)
+        env = vtar.get_env()
+
+        root = sch.get_block("root")
+        output_rvs = sch.get_output_blocks(root)
+
+        if len(output_rvs) != 1:
+            return None
+
+        output_rv = output_rvs[0]
+
+        try:
+            conv2d_rv = sch.get_block("res")
+        except tir.ScheduleError:
+            return None
+
+        conv2d_prod_rvs = sch.get_producers(conv2d_rv)
+        if len(conv2d_prod_rvs) > 1:
+            # There can be at most one producer of the convolution block (i.e.
+            # the padding)
+            return None
+
+        # We look if there is a bidi shift operation and in case we inline it.
+        where_rvs = [
+            block_rv for block_rv in sch.get_child_blocks(root)
+            if isinstance(sch.get(block_rv).body.value, tir.Select)
+        ]
+        for where_rv in where_rvs:
+            less_equal_rv, shift_right_rv, shift_left_rv = [
+                producer
+                for producer in sch.get_producers(where_rv)
+            ]
+            less_equal = sch.get(less_equal_rv)
+            shift_right = sch.get(shift_right_rv)
+            shift_left = sch.get(shift_left_rv)
+            negate_prod = sch.get_producers(shift_left_rv)
+            is_ok = True
+            if len(negate_prod) == 2:
+                negate = sch.get(negate_prod[1])
+            else:
+                is_ok = False
+            # Tries to match for tir.Select(0 <= s, x >> s, x << -s)
+            is_ok = (
+                is_ok
+                # first level checks.
+                and isinstance(less_equal.body.value, tir.LE)
+                and isinstance(shift_right.body.value, tir.Call)
+                and isinstance(shift_left.body.value, tir.Call)
+                # second level checks
+                and less_equal.body.value.a == 0
+                and shift_right.body.value.op.name == "tir.shift_right"
+                and shift_left.body.value.op.name == "tir.shift_left"
+                and ir.structural_equal(less_equal.body.value.b, shift_right.body.value.args[1], True)
+                and ir.structural_equal(shift_right.body.value.args[0], shift_left.body.value.args[0], True)
+                # third level checks
+                and isinstance(negate.body.value, tir.Mul)
+                and negate.body.value.b == -1
+                and ir.structural_equal(shift_right.body.value.args[1], negate.body.value.a, True)
+            )
+            if is_ok:
+                sch.compute_inline(negate_prod[1])
+                sch.compute_inline(shift_left_rv)
+                sch.compute_inline(shift_right_rv)
+                sch.compute_inline(less_equal_rv)
+                # NOTE credo che annotino i blocchi invece dei cicli perché la
+                # normalizzazone e altre parti di TVM eliminano i clicli unitari.
+                sch.annotate(where_rv, env.alu, 0)
+
+        # From the output there should be one produces until the inputs...
+        producer_rvs = [output_rv]
+        while True:
+            if len(producer_rvs) == 0:
+                break
+            if len(producer_rvs) > 1:
+                # Only "directed path" operation are supported.
+                print("bad")
+                return None
+            producer_rv = producer_rvs[0]
+            producer = sch.get(producer_rv)
+            if not all(iter_var.iter_type == tir.IterVar.DataPar for iter_var in producer.iter_vars):
+                if not sch.get(producer_rv).same_as(sch.get(conv2d_rv)):
+                    # There must be only one reduction block and it must be the
+                    # convolution
+                    return None
+            producer_rvs = sch.get_producers(producer_rvs[0])
+
+        sch.annotate(output_rv, env.dma_copy, 0)
+
+        if conv2d_prod_rvs:
+            data_cache_rv = conv2d_prod_rvs[0]
+            sch.set_scope(data_cache_rv, 0, env.inp_scope)
+        else:
+            data_cache_rv = sch.cache_read(conv2d_rv, 0, env.inp_scope)
+        kernel_cache_rv = sch.cache_read(conv2d_rv, 1, env.wgt_scope)
+        sch.annotate(data_cache_rv, env.dma_copy, 0)
+        sch.annotate(kernel_cache_rv, env.dma_copy, 0)
+
+        # S  S    S  S  S    S    R    R    R    R
+        b_o, c_o, i, j, b_i, c_i, k_o, d_i, d_j, k_i = sch.get_loops(conv2d_rv)
+        # TODO: splits
+        # TODO: reverse_compute_at
+        # breakpoint()
         return sch

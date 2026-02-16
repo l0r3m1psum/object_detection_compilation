@@ -588,6 +588,64 @@ def test_shift_bidirectional():
     C_np = numpy.where(B_np >= 0,  A_np >> B_np, A_np << -B_np).astype("int8")
     numpy.testing.assert_equal(C.numpy(), C_np)
 
+def test_dlight_conv2d():
+    N, C, H, W = 1, 256, 14, 14
+    O, R, S = 256, 3, 3
+    strides = (1, 1)
+    padding = (1, 1)
+    dilation = (1, 1)
+
+    assert N % env.BATCH == 0
+    assert C % env.BLOCK_IN == 0
+    assert O % env.BLOCK_OUT == 0
+
+    data_shape = (N//env.BATCH, C//env.BLOCK_IN, H, W, env.BATCH, env.BLOCK_IN,)
+    kernel_shape = (O//env.BLOCK_OUT, C//env.BLOCK_IN, R, S, env.BLOCK_OUT, env.BLOCK_IN,)
+    ewise_shape = (1, O//env.BLOCK_OUT, 1, 1, 1, env.BLOCK_OUT,)
+
+    data = te.placeholder(data_shape, env.inp_dtype, "data")
+    kernel = te.placeholder(kernel_shape, env.wgt_dtype, "kernel")
+    bias = te.placeholder(ewise_shape, env.acc_dtype, "bias")
+    offset = te.placeholder(ewise_shape, env.acc_dtype, "offset")
+    shift = te.placeholder(ewise_shape, env.acc_dtype, "shift")
+
+    # convolution
+    conv = vtar.topi.conv2d_NCHWnc(data, kernel, strides, padding, dilation)
+    out_shape = topi.utils.get_const_tuple(conv.shape)
+    res_bias = te.compute(out_shape, lambda bo, co, i, j, bi, ci: conv[bo, co, i, j, bi, ci] + bias[1, co, 1, 1, 1, ci], "res_bias")
+    # mul_pow2_round_nst
+    # res_add = te.compute(out_shape, lambda *i: res_bias[*i] + (1 << (shift[*i]-1)), "res_add")
+    # res_add = te.compute(out_shape, lambda *i: res_bias[*i] + offset[*i], "res_add")
+    # TODO: the offset can be incorporated in the bias! if the bias is not
+    # present it become the bias (only at that moment it could make sense to
+    # make the 1 << (s-1))
+    res_add = res_bias
+    res_neg = te.compute(out_shape, lambda *i: -shift[*i], "res_neg")
+    res_shl = te.compute(out_shape, lambda *i: res_add[*i] << res_neg[*i], "res_shl")
+    res_shr = te.compute(out_shape, lambda *i: res_add[*i] >> shift[*i], "res_shr")
+    res_cond = te.compute(out_shape, lambda *i: shift[*i] >= 0, "res_cond")
+    res_where = te.compute(out_shape, lambda *i: tir.Select(res_cond[*i], res_shr[*i], res_shl[*i]), "res_where")
+    # saturate cast
+    res_min = te.compute(out_shape, lambda *i: te.min(res_where(*i), 127), "res_min")
+    res_max = te.compute(out_shape, lambda *i: te.max(-128, res_min(*i)), "res_max")
+    res = te.compute(out_shape, lambda *i: res_max(*i).astype(env.inp_dtype), "res")
+
+    conv2d = te.create_prim_func((data, kernel, bias, shift,  res))
+    mod = ir.IRModule.from_expr(conv2d)
+    mod.show()
+
+    seq = ir.transform.Sequential([
+        tir.transform.ForceNarrowIndexToInt32(),
+        dl.ApplyDefaultSchedule(
+            vtar.dlight.Conv2DPrime(),
+        ),
+        vtar.tir.transform.FixSelectCondition,
+        # vtar.tir.get_vtar_tir_transform(),
+    ])
+    with target:
+        mod = seq(mod)
+    mod.show()
+
 # Relax tests ##################################################################
 
 def test_trivial_graphpack():
@@ -897,7 +955,6 @@ def test_qconv2d_operator_fusion():
     mod = relax.transform.FuseOpsByPattern(patterns)(mod)
     mod.show()
     assert len(mod["qconv"].body.blocks[0].bindings) == 1
-
 
 # ONNX tests ###################################################################
 
