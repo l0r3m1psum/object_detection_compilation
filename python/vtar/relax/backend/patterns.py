@@ -83,13 +83,35 @@ def _get_patterns():
     sq_avg_pool2d = relax.dpl.is_op("relax.astype")(sq_avg_pool2d).has_dtype("int8")
     # TODO: add support for relax.nn.avg_pool2d
 
+    # conv = conv2d(*, *) +? *
+    # mul_round_nst = (conv +? c) (<<|>>) c
+    # clamp_cast = astype(max(c, min(mul_round_nst, c)))
+
+    # conv pattern
     ioa_qconv2d = relax.dpl.is_op("relax.nn.conv2d")(
         relax.dpl.wildcard().has_dtype("int8"),
         relax.dpl.wildcard().has_dtype("int8"),
     ).has_dtype("int32")
     ioa_qconv2d = relax.dpl.is_op("relax.add")(ioa_qconv2d, relax.dpl.wildcard()) | ioa_qconv2d
-    ioa_qconv2d = relax.dpl.is_op("relax.right_shift")(ioa_qconv2d, relax.dpl.is_const()) | ioa_qconv2d
+    # mul_round_nst pattern
     ioa_qconv2d = relax.dpl.is_op("relax.add")(ioa_qconv2d, relax.dpl.is_const()) | ioa_qconv2d
+    # This piece of the patter expect to match expression after FoldConstatn pass.
+    # Hence all the is_const().
+    ioa_qconv2d = (
+        # Scalar bidi shift pattern
+        (
+            relax.dpl.is_op("relax.right_shift")
+            | relax.dpl.is_op("relax.left_shift")
+        )(ioa_qconv2d, relax.dpl.is_const())
+        # Vector bidi shift pattern
+        | relax.dpl.is_op("relax.where")(
+            relax.dpl.is_const(),
+            relax.dpl.is_op("relax.right_shift")(ioa_qconv2d, relax.dpl.is_const()),
+            relax.dpl.is_op("relax.left_shift")(ioa_qconv2d, relax.dpl.is_const()),
+        )
+        | ioa_qconv2d
+    )
+    # clamp_cast pattern
     ioa_qconv2d = relax.dpl.is_op("relax.minimum")(ioa_qconv2d, relax.dpl.is_const()) | ioa_qconv2d
     ioa_qconv2d = relax.dpl.is_op("relax.maximum")(relax.dpl.is_const(), ioa_qconv2d) | ioa_qconv2d # not commutative for some reason...
     ioa_qconv2d = relax.dpl.is_op("relax.astype")(ioa_qconv2d).has_dtype("int8")

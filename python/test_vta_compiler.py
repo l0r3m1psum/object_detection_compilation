@@ -846,6 +846,59 @@ def test_constant_folding_patches():
 
     ir.assert_structural_equal(AfterModule, ReferenceModule)
 
+def test_qconv2d_operator_fusion():
+    @I.ir_module
+    class Module:
+        @R.function
+        def qconv(
+            x: R.Tensor((1, 1, 1, 1), dtype="int8"),
+            w: R.Tensor((1, 1, 1, 1), dtype="int8"),
+            b: R.Tensor((1, 1, 1, 1), dtype="int32"),
+        ):
+            with R.dataflow():
+                conv = (R.nn.conv2d(x, w, out_dtype="int32") + b)
+                mul_round_nst = R.left_shift(conv + R.const(2**3), R.const(2))
+                clamp_astype = R.maximum(R.const(-128), R.minimum(mul_round_nst, R.const(127))).astype("int8")
+                R.output(clamp_astype)
+            return clamp_astype
+
+    s = relax.const(numpy.ones(10, dtype="int32")*2)
+    @I.ir_module
+    class Module1:
+        @R.function
+        def qconv(
+            x: R.Tensor((1, 1, 1, 1), dtype="int8"),
+            w: R.Tensor((1, 1, 1, 1), dtype="int8"),
+            b: R.Tensor((1, 1, 1, 1), dtype="int32"),
+        ):
+            with R.dataflow():
+                conv = (R.nn.conv2d(x, w, out_dtype="int32") + b)
+                # Using the same constant for both addition and shift is wrong
+                # semantically but the pattern should match anyway.
+                x = conv + s
+                mul_round_nst = R.where(s >= R.const(0), R.right_shift(x, s), R.left_shift(x, -s))
+                clamp_astype = R.maximum(R.const(-128), R.minimum(mul_round_nst, R.const(127))).astype("int8")
+                R.output(clamp_astype)
+            return clamp_astype
+
+    patterns = relax.backend.get_patterns_with_prefix("vtar")
+    mod = Module
+    mod.show()
+    assert len(mod["qconv"].body.blocks[0].bindings) > 1
+    mod = relax.transform.FoldConstant()(mod)
+    mod = relax.transform.FuseOpsByPattern(patterns)(mod)
+    mod.show()
+    assert len(mod["qconv"].body.blocks[0].bindings) == 1
+
+    mod = Module1
+    mod.show()
+    assert len(mod["qconv"].body.blocks[0].bindings) > 1
+    mod = relax.transform.FoldConstant()(mod)
+    mod = relax.transform.FuseOpsByPattern(patterns)(mod)
+    mod.show()
+    assert len(mod["qconv"].body.blocks[0].bindings) == 1
+
+
 # ONNX tests ###################################################################
 
 # Generated and slightly edited from:
