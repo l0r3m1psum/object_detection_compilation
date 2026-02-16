@@ -12,12 +12,10 @@ def conv2d_NCHWnc(
 	strides: Tuple[int, int],
 	padding: Tuple[int, int],
 	dilation: Tuple[int, int],
-	layout: str,
-	out_layout: str,
 	out_dtype='int32'
 ) -> te.Tensor:
 	# TODO: error checking
-	# TODO: add support for single int or list for strides ecc like the other operators topi
+	# TODO: add support for single int or list for strides etc like the other operators topi
 
 	# if not is_packed_layout(layout):
 	# 	raise topi.InvalidShapeError()

@@ -141,6 +141,7 @@ def ioa_requantize(bb: relax.BlockBuilder, N: numpy.ndarray, x: relax.Expr, z: r
 	# This implements round to nearest after multiplication
 	# because the semantics of x >> n is floor(x >> n) and to get round(x >> n)
 	# we need to do x + 2^(n-1) >> n.
+	# Note that 2^(n-1) is 1 << (n-1) and could be calculated inside VTA.
 	# TODO: implement this also in the non scalar case!
 	# TODO: check that for left_shift is right also
 	if is_scalar:

@@ -33,8 +33,7 @@ def customize_legalize_conv2d(bb: relax.BlockBuilder, call: relax.Call) -> relax
 	elif re.match("^NCHW\\d+n\\d+c$", layout):
 		res = bb.call_te(
 			vtar.topi.conv2d_NCHWnc,
-			data, kernel, strides, padding, dilation, layout,
-			out_layout, out_dtype)
+			data, kernel, strides, padding, dilation, out_dtype)
 	else:
 		raise ValueError("Unsupported conv2d layout '%s', if if it matches "
 			"NCHW\\d+c it may be trivial to add support for it." % layout)
