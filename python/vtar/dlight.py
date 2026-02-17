@@ -235,12 +235,8 @@ class Conv2D(VTAScheduleRule):
             return None
         _, tx = sch.split(oc_out, (None, v_threads))
         sch.reorder(tx, b_out)
-        warnings.warn(UserWarning("skipping thread binding because it is not "
-            "supported in codegen_llvm.cc::GetThreadIndex"))
-        # TODO: what I need here is probably software pipeline but
-        # tir.transform.InjectSoftwarePipeline should be only for CUDA
         if False:
-            sch.bind(tx, "cthread")
+            sch.bind(tx, "vthread.x")
 
         conv_init = sch.decompose_reduction(res_conv_block, ic_out)
 
@@ -281,6 +277,79 @@ class Conv2D(VTAScheduleRule):
 
         return sch
 
+def is_reduction(sch: tir.Schedule, block_rv: tir.schedule.BlockRV) -> bool:
+    block = sch.get(block_rv)
+    res = any(
+        iter_var.iter_type == tir.IterVar.CommReduce
+        for iter_var in block.iter_vars
+    )
+    return res
+
+def is_injective(sch: tir.Schedule, block_rv: tir.schedule.BlockRV) -> bool:
+    block = sch.get(block_rv)
+    res = all(
+        iter_var.iter_type == tir.IterVar.DataPar
+        for iter_var in block.iter_vars
+    )
+    return res
+
+def is_conv2d(sch: tir.Schedule, block_rv: tir.schedule.BlockRV) -> bool:
+    block = sch.get(block_rv)
+    res = block.name_hint.startswith("conv2d_NCHWnc")
+    return res
+
+def normalize_bidi_shift(sch: tir.Schedule, child_rvs: List[tir.schedule.BlockRV]) -> None:
+    # We look if there is a bidi shift operation and in case we inline it.
+    where_rvs = [
+        child_rv for child_rv in child_rvs
+        if isinstance(sch.get(child_rv).body.value, tir.Select)
+    ]
+    for where_rv in where_rvs:
+        less_equal_rv, shift_right_rv, shift_left_rv = [
+            producer
+            for producer in sch.get_producers(where_rv)
+        ]
+        less_equal = sch.get(less_equal_rv)
+        shift_right = sch.get(shift_right_rv)
+        shift_left = sch.get(shift_left_rv)
+        negate_prod = sch.get_producers(shift_left_rv)
+        is_ok = True
+        if len(negate_prod) == 2:
+            negate = sch.get(negate_prod[1])
+        else:
+            is_ok = False
+        # Tries to match for tir.Select(0 <= s, x >> s, x << -s)
+        is_ok = (
+            is_ok
+            # first level checks.
+            and isinstance(less_equal.body.value, tir.LE)
+            and isinstance(shift_right.body.value, tir.Call)
+            and isinstance(shift_left.body.value, tir.Call)
+            # second level checks
+            and less_equal.body.value.a == 0
+            and shift_right.body.value.op.name == "tir.shift_right"
+            and shift_left.body.value.op.name == "tir.shift_left"
+            and ir.structural_equal(less_equal.body.value.b, shift_right.body.value.args[1], True)
+            and ir.structural_equal(shift_right.body.value.args[0], shift_left.body.value.args[0], True)
+            # third level checks
+            and isinstance(negate.body.value, tir.Mul)
+            and negate.body.value.b == -1
+            and ir.structural_equal(shift_right.body.value.args[1], negate.body.value.a, True)
+        )
+        if is_ok:
+            sch.compute_inline(negate_prod[1])
+            sch.compute_inline(shift_left_rv)
+            sch.compute_inline(shift_right_rv)
+            sch.compute_inline(less_equal_rv)
+            # sch.annotate(where_rv, env.alu, 0)
+
+def not_in(sch, block_rv: tir.schedule.BlockRV, rvs: List[tir.schedule.BlockRV]) -> bool:
+    """BlockRV works differently then SBlockRV..."""
+    block = sch.get(block_rv)
+    res = all(not block.same_as(sch.get(rv)) for rv in rvs)
+    return res
+
+# Modeled after https://github.com/apache/tvm/blob/v0.23.0/python/tvm/dlight/adreno/convolution.py
 class Conv2DPrime(VTAScheduleRule):
     def apply(
         self,
@@ -288,73 +357,133 @@ class Conv2DPrime(VTAScheduleRule):
         target: tvm.target.Target,
         tunable: bool,
     ) -> Union[None, tir.Schedule, List[tir.Schedule]]:
-        sch = tir.Schedule(func)
         env = vtar.get_env()
+        sch = tir.Schedule(func)
 
-        root = sch.get_block("root")
-        output_rvs = sch.get_output_blocks(root)
+        root_rv = dl.analysis.get_root_block(sch)
+        child_rvs = sch.get_child_blocks(root_rv)
+        normalize_bidi_shift(sch, child_rvs)
+        child_rvs = sch.get_child_blocks(root_rv)
 
-        if len(output_rvs) != 1:
-            return None
-
-        output_rv = output_rvs[0]
-
-        try:
-            conv2d_rv = sch.get_block("res")
-        except tir.ScheduleError:
-            return None
-
-        conv2d_prod_rvs = sch.get_producers(conv2d_rv)
-        if len(conv2d_prod_rvs) > 1:
-            # There can be at most one producer of the convolution block (i.e.
-            # the padding)
-            return None
-
-        # We look if there is a bidi shift operation and in case we inline it.
-        where_rvs = [
-            block_rv for block_rv in sch.get_child_blocks(root)
-            if isinstance(sch.get(block_rv).body.value, tir.Select)
+        reduction_block_rvs = [
+            child_rv for child_rv in child_rvs if is_reduction(sch, child_rv)
         ]
-        for where_rv in where_rvs:
-            less_equal_rv, shift_right_rv, shift_left_rv = [
-                producer
-                for producer in sch.get_producers(where_rv)
-            ]
-            less_equal = sch.get(less_equal_rv)
-            shift_right = sch.get(shift_right_rv)
-            shift_left = sch.get(shift_left_rv)
-            negate_prod = sch.get_producers(shift_left_rv)
-            is_ok = True
-            if len(negate_prod) == 2:
-                negate = sch.get(negate_prod[1])
-            else:
-                is_ok = False
-            # Tries to match for tir.Select(0 <= s, x >> s, x << -s)
-            is_ok = (
-                is_ok
-                # first level checks.
-                and isinstance(less_equal.body.value, tir.LE)
-                and isinstance(shift_right.body.value, tir.Call)
-                and isinstance(shift_left.body.value, tir.Call)
-                # second level checks
-                and less_equal.body.value.a == 0
-                and shift_right.body.value.op.name == "tir.shift_right"
-                and shift_left.body.value.op.name == "tir.shift_left"
-                and ir.structural_equal(less_equal.body.value.b, shift_right.body.value.args[1], True)
-                and ir.structural_equal(shift_right.body.value.args[0], shift_left.body.value.args[0], True)
-                # third level checks
-                and isinstance(negate.body.value, tir.Mul)
-                and negate.body.value.b == -1
-                and ir.structural_equal(shift_right.body.value.args[1], negate.body.value.a, True)
+
+        # Right now only one convolution is supported even though in the future
+        # it might be necessary to support two for asymmetric weight quantization.
+        if len(reduction_block_rvs) != 1 or not is_conv2d(sch, reduction_block_rvs[0]):
+            return None
+
+        conv2d_rv = reduction_block_rvs[0]
+        sch.set_scope(conv2d_rv, 0, env.acc_scope)
+        conv2d_prod_rvs = sch.get_producers(conv2d_rv)
+        if conv2d_prod_rvs:
+            data_cache_rv = conv2d_prod_rvs[0]
+            sch.set_scope(data_cache_rv, 0, env.inp_scope)
+        else:
+            data_cache_rv = sch.cache_read(conv2d_rv, 0, env.inp_scope)
+        kernel_cache_rv = sch.cache_read(conv2d_rv, 1, env.wgt_scope)
+        sch.annotate(data_cache_rv, env.dma_copy, 0) # FIXME: annotate loop
+        sch.annotate(kernel_cache_rv, env.dma_copy, 0) # FIXME: annotate loop
+        input_rvs = (data_cache_rv, kernel_cache_rv)
+
+        output_rvs = sch.get_output_blocks(root_rv)
+        for output_rv in output_rvs:
+            # No need to set_scope
+            sch.annotate(output_rv, env.dma_copy, 0) # FIXME: annotate loop
+
+        remaining_block_rvs = [
+            child_rv for child_rv in child_rvs if (
+                not_in(sch, child_rv, reduction_block_rvs)
+                and not_in(sch, child_rv, input_rvs)
+                and not_in(sch, child_rv, output_rvs)
             )
-            if is_ok:
-                sch.compute_inline(negate_prod[1])
-                sch.compute_inline(shift_left_rv)
-                sch.compute_inline(shift_right_rv)
-                sch.compute_inline(less_equal_rv)
-                # NOTE credo che annotino i blocchi invece dei cicli perché la
-                # normalizzazone e altre parti di TVM eliminano i clicli unitari.
-                sch.annotate(where_rv, env.alu, 0)
+        ]
+
+        from .tir.util import get_alu_op
+        from tvm import arith
+        analyzer = arith.Analyzer()
+        for remaining_block_rv in remaining_block_rvs:
+            if not is_injective(sch, remaining_block_rv):
+                return None
+            _, _, _, err = get_alu_op(env, analyzer, sch.get(remaining_block_rv).body.value)
+            if err:
+                return None
+
+        # data:   NCHWnc
+        # kernel: OIRSoi
+        # output: NOĤŴno
+        (
+            b_o, c_o, i, j, b_i, c_i, # NOĤŴno (all S)
+            k_o, d_i, d_j, k_i        # IRSi   (all R)
+        ) = sch.get_loops(conv2d_rv)
+        # TODO: determine this splits such that the maximum amount of SRAM is used.
+        b_block = 1 // env.BATCH
+        oc_block = 128 // env.BLOCK_OUT
+        ic_block = 16 // env.BLOCK_IN
+        h_block = 7
+        w_block = 14
+        b_out, b_inn = sch.split(b_o, (None, b_block))
+        oc_out, oc_inn = sch.split(c_o, (None, oc_block))
+        y_out, y_inn = sch.split(i, (None, h_block))
+        x_out, x_inn = sch.split(j, (None, w_block))
+        ic_out, ic_inn = sch.split(k_o, (None, ic_block))
+        sch.reorder(
+            b_out, oc_out, y_out, x_out,
+            ic_out, b_inn, oc_inn, # RSS
+            y_inn, ic_inn, d_i, d_j, x_inn, # SRRRS
+            b_i, c_i, k_i # SSR
+
+        )
+
+        # vthreads double the memory usage. Hence this must be taken into
+        # account.
+        v_threads = 2
+        # If it is not divisible T.where is generated which is then lowered to
+        # an "if" which we can't compile!
+        if sch.get(oc_out).extent % 2 != 0: return None # FIXME
+        _, tx = sch.split(oc_out, (None, v_threads))
+        sch.reorder(tx, b_out)
+        sch.bind(tx, "vthread.x")
+
+        conv2d_init_rv = sch.decompose_reduction(conv2d_rv, ic_out)
+        sch.compute_at(data_cache_rv, ic_out, preserve_unit_loops=True)
+        sch.compute_at(kernel_cache_rv, ic_out, preserve_unit_loops=True)
+
+        arg_buffers = set(func.buffer_map.values())
+        # Hopefully topologically sorted.
+        for remaining_block_rv in remaining_block_rvs:
+            block = sch.get(remaining_block_rv)
+            _, lhs, rhs, _ = get_alu_op(env, analyzer, sch.get(remaining_block_rv).body.value)
+            # tir.IntImm, tir.BufferLoad
+
+            lhs_idx, rhs_idx = 0, 1
+            if isinstance(block.body.value, tir.Select):
+                lhs_idx, rhs_idx = rhs_idx, lhs_idx
+            remaining_block_cache_rv = None
+            if isinstance(lhs, tir.BufferLoad):
+                if lhs.buffer in arg_buffers:
+                    remaining_block_cache_rv = sch.cache_read(remaining_block_rv, lhs_idx, env.acc_scope)
+            if isinstance(rhs, tir.BufferLoad):
+                if rhs.buffer in arg_buffers:
+                    remaining_block_cache_rv = sch.cache_read(remaining_block_rv, rhs_idx, env.acc_scope)
+
+
+            sch.get(remaining_block_rv).show()
+            if remaining_block_cache_rv:
+                sch.reverse_compute_at(remaining_block_cache_rv, x_out, preserve_unit_loops=True)
+            # TODO: split by hand...
+            # sch.reverse_compute_at(remaining_block_rv, x_out, preserve_unit_loops=True)
+            sch.set_scope(remaining_block_rv, 0, env.acc_scope)
+            sch.annotate(remaining_block_rv, env.alu, 0) # FIXME: annotate loop
+
+        # for output_rv in output_rvs:
+        #     sch.compute_at(output_rv, x_out)
+
+        return sch
+
+        # Schedule conv2d to use all the SRAM in inp e wgt
+        # Schedule ALU blocks (can optionally load to acc if arg is not scalar.)
 
         # From the output there should be one produces until the inputs...
         producer_rvs = [output_rv]
@@ -374,20 +503,4 @@ class Conv2DPrime(VTAScheduleRule):
                     return None
             producer_rvs = sch.get_producers(producer_rvs[0])
 
-        sch.annotate(output_rv, env.dma_copy, 0)
-
-        if conv2d_prod_rvs:
-            data_cache_rv = conv2d_prod_rvs[0]
-            sch.set_scope(data_cache_rv, 0, env.inp_scope)
-        else:
-            data_cache_rv = sch.cache_read(conv2d_rv, 0, env.inp_scope)
-        kernel_cache_rv = sch.cache_read(conv2d_rv, 1, env.wgt_scope)
-        sch.annotate(data_cache_rv, env.dma_copy, 0)
-        sch.annotate(kernel_cache_rv, env.dma_copy, 0)
-
-        # S  S    S  S  S    S    R    R    R    R
-        b_o, c_o, i, j, b_i, c_i, k_o, d_i, d_j, k_i = sch.get_loops(conv2d_rv)
-        # TODO: splits
-        # TODO: reverse_compute_at
-        # breakpoint()
         return sch

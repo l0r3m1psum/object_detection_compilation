@@ -47,7 +47,7 @@ def conv2d_NCHWnc(
 			* kernel[c_o, k_o, d_i, d_j, c_i, k_i].astype(out_dtype),
 			axis=[k_o, d_i, d_j, k_i],
 		),
-		name="res",
+		name="conv2d_NCHWnc",
 		tag="conv2d_dense",
 	)
 
