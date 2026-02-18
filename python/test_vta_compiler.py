@@ -606,25 +606,25 @@ def test_dlight_conv2d():
     data = te.placeholder(data_shape, env.inp_dtype, "data")
     kernel = te.placeholder(kernel_shape, env.wgt_dtype, "kernel")
     bias = te.placeholder(ewise_shape, env.acc_dtype, "bias")
-    offset = te.placeholder(ewise_shape, env.acc_dtype, "offset")
+    # offset = te.placeholder(ewise_shape, env.acc_dtype, "offset")
     shift = te.placeholder(ewise_shape, env.acc_dtype, "shift")
 
     # convolution
     conv = vtar.topi.conv2d_NCHWnc(data, kernel, strides, padding, dilation)
     out_shape = topi.utils.get_const_tuple(conv.shape)
-    res_bias = te.compute(out_shape, lambda bo, co, i, j, bi, ci: conv[bo, co, i, j, bi, ci] + bias[1, co, 1, 1, 1, ci], "res_bias")
+    res_bias = te.compute(out_shape, lambda bo, co, i, j, bi, ci: conv[bo, co, i, j, bi, ci] + bias[0, co, 0, 0, 0, ci], "res_bias")
     # mul_pow2_round_nst
-    # res_add = te.compute(out_shape, lambda *i: res_bias[*i] + (1 << (shift[*i]-1)), "res_add")
-    # res_add = te.compute(out_shape, lambda *i: res_bias[*i] + offset[*i], "res_add")
+    # res_add = te.compute(out_shape, lambda bo, co, i, j, bi, ci: res_bias[bo, co, i, j, bi, ci] + (1 << (shift[0, co, 0, 0, 0, c]-1)), "res_add")
+    # res_add = te.compute(out_shape, lambda bo, co, i, j, bi, ci: res_bias[bo, co, i, j, bi, ci] + offset[0, co, 0, 0, 0, c], "res_add")
     # TODO: the offset can be incorporated in the bias! if the bias is not
     # present it become the bias (only at that moment it could make sense to
-    # make the 1 << (s-1))
+    # make the 1 << (s-1) inside of VTA avoiding a memory load).
     res_add = res_bias
-    res_neg = te.compute(out_shape, lambda *i: -shift[*i], "res_neg")
-    res_shl = te.compute(out_shape, lambda *i: res_add[*i] << res_neg[*i], "res_shl")
-    res_shr = te.compute(out_shape, lambda *i: res_add[*i] >> shift[*i], "res_shr")
-    res_cond = te.compute(out_shape, lambda *i: shift[*i] >= 0, "res_cond")
-    res_where = te.compute(out_shape, lambda *i: tir.Select(res_cond[*i], res_shr[*i], res_shl[*i]), "res_where")
+    res_neg = te.compute(ewise_shape, lambda *i: -shift[*i], "res_neg")
+    res_cond = te.compute(ewise_shape, lambda *i: shift[*i] >= 0, "res_cond")
+    res_shl = te.compute(out_shape, lambda bo, co, i, j, bi, ci: res_add[bo, co, i, j, bi, ci] << res_neg[0, co, 0, 0, 0, ci], "res_shl")
+    res_shr = te.compute(out_shape, lambda bo, co, i, j, bi, ci: res_add[bo, co, i, j, bi, ci] >> shift[0, co, 0, 0, 0, ci], "res_shr")
+    res_where = te.compute(out_shape, lambda bo, co, i, j, bi, ci: tir.Select(res_cond[0, co, 0, 0, 0, ci], res_shr[bo, co, i, j, bi, ci], res_shl[bo, co, i, j, bi, ci]), "res_where")
     # saturate cast
     res_min = te.compute(out_shape, lambda *i: te.min(res_where(*i), 127), "res_min")
     res_max = te.compute(out_shape, lambda *i: te.max(-128, res_min(*i)), "res_max")

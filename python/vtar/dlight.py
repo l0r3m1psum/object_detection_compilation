@@ -321,20 +321,24 @@ def normalize_bidi_shift(sch: tir.Schedule, child_rvs: List[tir.schedule.BlockRV
         # Tries to match for tir.Select(0 <= s, x >> s, x << -s)
         is_ok = (
             is_ok
-            # first level checks.
+            # First Level Checks ###############################################
             and isinstance(less_equal.body.value, tir.LE)
             and isinstance(shift_right.body.value, tir.Call)
             and isinstance(shift_left.body.value, tir.Call)
-            # second level checks
+            # Second Level Checks ##############################################
             and less_equal.body.value.a == 0
             and shift_right.body.value.op.name == "tir.shift_right"
             and shift_left.body.value.op.name == "tir.shift_left"
-            and ir.structural_equal(less_equal.body.value.b, shift_right.body.value.args[1], True)
+            # Here we compare just the buffers assuming all indices are "correct"
+            # since one buffer is usually broadcasted.
+            and less_equal.body.value.b.buffer.same_as(shift_right.body.value.args[1].buffer)
             and ir.structural_equal(shift_right.body.value.args[0], shift_left.body.value.args[0], True)
-            # third level checks
+            # Third Level Checks ###############################################
             and isinstance(negate.body.value, tir.Mul)
             and negate.body.value.b == -1
-            and ir.structural_equal(shift_right.body.value.args[1], negate.body.value.a, True)
+            # Here we compare just the buffers assuming all indices are "correct"
+            # since one buffer is usually broadcasted.
+            and shift_right.body.value.args[1].buffer.same_as(negate.body.value.a.buffer)
         )
         if is_ok:
             sch.compute_inline(negate_prod[1])
@@ -469,16 +473,15 @@ class Conv2DPrime(VTAScheduleRule):
                     remaining_block_cache_rv = sch.cache_read(remaining_block_rv, rhs_idx, env.acc_scope)
 
 
-            sch.get(remaining_block_rv).show()
             if remaining_block_cache_rv:
                 sch.reverse_compute_at(remaining_block_cache_rv, x_out, preserve_unit_loops=True)
-            # TODO: split by hand...
-            # sch.reverse_compute_at(remaining_block_rv, x_out, preserve_unit_loops=True)
             sch.set_scope(remaining_block_rv, 0, env.acc_scope)
             sch.annotate(remaining_block_rv, env.alu, 0) # FIXME: annotate loop
+            sch.reverse_compute_at(remaining_block_rv, x_out, preserve_unit_loops=True)
 
-        # for output_rv in output_rvs:
-        #     sch.compute_at(output_rv, x_out)
+
+        for output_rv in output_rvs:
+            sch.reverse_compute_at(output_rv, x_out)
 
         return sch
 
