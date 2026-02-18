@@ -345,7 +345,6 @@ def normalize_bidi_shift(sch: tir.Schedule, child_rvs: List[tir.schedule.BlockRV
             sch.compute_inline(shift_left_rv)
             sch.compute_inline(shift_right_rv)
             sch.compute_inline(less_equal_rv)
-            # sch.annotate(where_rv, env.alu, 0)
 
 def not_in(sch, block_rv: tir.schedule.BlockRV, rvs: List[tir.schedule.BlockRV]) -> bool:
     """BlockRV works differently then SBlockRV..."""
@@ -387,14 +386,9 @@ class Conv2DPrime(VTAScheduleRule):
         else:
             data_cache_rv = sch.cache_read(conv2d_rv, 0, env.inp_scope)
         kernel_cache_rv = sch.cache_read(conv2d_rv, 1, env.wgt_scope)
-        sch.annotate(data_cache_rv, env.dma_copy, 0) # FIXME: annotate loop
-        sch.annotate(kernel_cache_rv, env.dma_copy, 0) # FIXME: annotate loop
         input_rvs = (data_cache_rv, kernel_cache_rv)
 
         output_rvs = sch.get_output_blocks(root_rv)
-        for output_rv in output_rvs:
-            # No need to set_scope
-            sch.annotate(output_rv, env.dma_copy, 0) # FIXME: annotate loop
 
         remaining_block_rvs = [
             child_rv for child_rv in child_rvs if (
@@ -423,10 +417,10 @@ class Conv2DPrime(VTAScheduleRule):
         ) = sch.get_loops(conv2d_rv)
         # TODO: determine this splits such that the maximum amount of SRAM is used.
         b_block = 1 // env.BATCH
-        oc_block = 128 // env.BLOCK_OUT
+        oc_block = 128 // env.BLOCK_OUT # TODO: test for 64
         ic_block = 16 // env.BLOCK_IN
         h_block = 7
-        w_block = 14
+        w_block = 14 # TODO: test for 7
         b_out, b_inn = sch.split(b_o, (None, b_block))
         oc_out, oc_inn = sch.split(c_o, (None, oc_block))
         y_out, y_inn = sch.split(i, (None, h_block))
@@ -440,19 +434,22 @@ class Conv2DPrime(VTAScheduleRule):
 
         )
 
-        # vthreads double the memory usage. Hence this must be taken into
-        # account.
-        v_threads = 2
-        # If it is not divisible T.where is generated which is then lowered to
-        # an "if" which we can't compile!
-        if sch.get(oc_out).extent % 2 != 0: return None # FIXME
-        _, tx = sch.split(oc_out, (None, v_threads))
-        sch.reorder(tx, b_out)
-        sch.bind(tx, "vthread.x")
+        if False:
+            # vthreads double the memory usage. Hence this must be taken into
+            # account.
+            v_threads = 2
+            # If it is not divisible T.where is generated which is then lowered to
+            # an "if" which we can't compile!
+            if sch.get(oc_out).extent % 2 != 0: return None # FIXME
+            _, tx = sch.split(oc_out, (None, v_threads))
+            sch.reorder(tx, b_out)
+            sch.bind(tx, "vthread.x")
 
         conv2d_init_rv = sch.decompose_reduction(conv2d_rv, ic_out)
         sch.compute_at(data_cache_rv, ic_out, preserve_unit_loops=True)
+        sch.annotate(sch.get_loops(data_cache_rv)[-4], env.dma_copy, 0)
         sch.compute_at(kernel_cache_rv, ic_out, preserve_unit_loops=True)
+        sch.annotate(sch.get_loops(kernel_cache_rv)[-5], env.dma_copy, 0)
 
         arg_buffers = set(func.buffer_map.values())
         # Hopefully topologically sorted.
@@ -460,10 +457,10 @@ class Conv2DPrime(VTAScheduleRule):
             block = sch.get(remaining_block_rv)
             _, lhs, rhs, _ = get_alu_op(env, analyzer, sch.get(remaining_block_rv).body.value)
             # tir.IntImm, tir.BufferLoad
-
             lhs_idx, rhs_idx = 0, 1
             if isinstance(block.body.value, tir.Select):
                 lhs_idx, rhs_idx = rhs_idx, lhs_idx
+
             remaining_block_cache_rv = None
             if isinstance(lhs, tir.BufferLoad):
                 if lhs.buffer in arg_buffers:
@@ -471,17 +468,25 @@ class Conv2DPrime(VTAScheduleRule):
             if isinstance(rhs, tir.BufferLoad):
                 if rhs.buffer in arg_buffers:
                     remaining_block_cache_rv = sch.cache_read(remaining_block_rv, rhs_idx, env.acc_scope)
-
-
             if remaining_block_cache_rv:
                 sch.reverse_compute_at(remaining_block_cache_rv, x_out, preserve_unit_loops=True)
-            sch.set_scope(remaining_block_rv, 0, env.acc_scope)
-            sch.annotate(remaining_block_rv, env.alu, 0) # FIXME: annotate loop
-            sch.reverse_compute_at(remaining_block_rv, x_out, preserve_unit_loops=True)
+                sch.annotate(sch.get_loops(remaining_block_cache_rv)[-5], env.dma_copy, 0)
 
+            sch.set_scope(remaining_block_rv, 0, env.acc_scope)
+            sch.reverse_compute_at(remaining_block_rv, x_out, preserve_unit_loops=True)
+            sch.annotate(sch.get_loops(remaining_block_rv)[-5], env.alu, 0)
 
         for output_rv in output_rvs:
-            sch.reverse_compute_at(output_rv, x_out)
+            # No need to set_scope
+            sch.reverse_compute_at(output_rv, x_out, preserve_unit_loops=True)
+            sch.annotate(sch.get_loops(output_rv)[-5], env.dma_copy, 0)
+
+        init_loops = sch.get_loops(conv2d_init_rv)
+        ij_init = sch.fuse(init_loops[-2], init_loops[-1])
+        sch.tensorize(ij_init, "vta_init_intrin1")
+        conv_loops = sch.get_loops(conv2d_rv)
+        ij_conv = sch.fuse(conv_loops[-3], conv_loops[-2])
+        sch.tensorize(ij_conv, "vta_gemm_intrin1")
 
         return sch
 

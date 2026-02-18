@@ -640,11 +640,11 @@ def test_dlight_conv2d():
             vtar.dlight.Conv2DPrime(),
         ),
         vtar.tir.transform.FixSelectCondition,
-        # vtar.tir.get_vtar_tir_transform(),
     ])
     with target:
         mod = seq(mod)
     mod.show()
+    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
 
 # Relax tests ##################################################################
 
