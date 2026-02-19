@@ -305,10 +305,8 @@ def normalize_bidi_shift(sch: tir.Schedule, child_rvs: List[tir.schedule.BlockRV
         if isinstance(sch.get(child_rv).body.value, tir.Select)
     ]
     for where_rv in where_rvs:
-        less_equal_rv, shift_right_rv, shift_left_rv = [
-            producer
-            for producer in sch.get_producers(where_rv)
-        ]
+        where_producer_rvs = sch.get_producers(where_rv)
+        less_equal_rv, shift_right_rv, shift_left_rv = where_producer_rvs
         less_equal = sch.get(less_equal_rv)
         shift_right = sch.get(shift_right_rv)
         shift_left = sch.get(shift_left_rv)
@@ -416,11 +414,14 @@ class Conv2DPrime(VTAScheduleRule):
             k_o, d_i, d_j, k_i        # IRSi   (all R)
         ) = sch.get_loops(conv2d_rv)
         # TODO: determine this splits such that the maximum amount of SRAM is used.
+        # Right now we are using numbers tuned ad-hoc for ResNet.
+        c_o_ext = int(sch.get(c_o).extent)
+        j_ext = int(sch.get(j).extent)
         b_block = 1 // env.BATCH
-        oc_block = 128 // env.BLOCK_OUT # TODO: test for 64
+        oc_block = 64 // env.BLOCK_OUT if c_o_ext % (128 // env.BLOCK_OUT) != 0 else 128 // env.BLOCK_OUT
         ic_block = 16 // env.BLOCK_IN
         h_block = 7
-        w_block = 14 # TODO: test for 7
+        w_block = 7 if j_ext % 14 != 0 else 14
         b_out, b_inn = sch.split(b_o, (None, b_block))
         oc_out, oc_inn = sch.split(c_o, (None, oc_block))
         y_out, y_inn = sch.split(i, (None, h_block))
@@ -446,8 +447,8 @@ class Conv2DPrime(VTAScheduleRule):
             sch.bind(tx, "vthread.x")
 
         conv2d_init_rv = sch.decompose_reduction(conv2d_rv, ic_out)
-        sch.compute_at(data_cache_rv, ic_out, preserve_unit_loops=True)
-        sch.annotate(sch.get_loops(data_cache_rv)[-4], env.dma_copy, 0)
+        sch.compute_at(data_cache_rv, ic_out, preserve_unit_loops=False)
+        sch.annotate(sch.get_loops(data_cache_rv)[-3], env.dma_copy, 0)
         sch.compute_at(kernel_cache_rv, ic_out, preserve_unit_loops=True)
         sch.annotate(sch.get_loops(kernel_cache_rv)[-5], env.dma_copy, 0)
 
@@ -479,7 +480,7 @@ class Conv2DPrime(VTAScheduleRule):
         for output_rv in output_rvs:
             # No need to set_scope
             sch.reverse_compute_at(output_rv, x_out, preserve_unit_loops=True)
-            sch.annotate(sch.get_loops(output_rv)[-5], env.dma_copy, 0)
+            sch.annotate(sch.get_loops(output_rv)[-4], env.dma_copy, 0)
 
         init_loops = sch.get_loops(conv2d_init_rv)
         ij_init = sch.fuse(init_loops[-2], init_loops[-1])
