@@ -142,13 +142,12 @@ def ioa_requantize(bb: relax.BlockBuilder, N: numpy.ndarray, x: relax.Expr, z: r
 	# because the semantics of x >> n is floor(x >> n) and to get round(x >> n)
 	# we need to do x + 2^(n-1) >> n.
 	# Note that 2^(n-1) is 1 << (n-1) and could be calculated inside VTA.
-	# TODO: implement this also in the non scalar case!
 	# TODO: check that for left_shift is right also
+	x = x + relax.const(2**(magnitude.data.numpy().item()-1))
 	if is_scalar:
-		res = relax.op.left_shift(x + relax.const(2**(magnitude.data.numpy().item()-1)), magnitude) if is_pos \
-			else relax.op.right_shift(x + relax.const(2**(magnitude.data.numpy().item()-1)), magnitude)
+		res = relax.op.left_shift(x, magnitude) if is_pos \
+			else relax.op.right_shift(x, magnitude)
 	else:
-		# TODO: implement round-to-nearest shift as above...
 		A = relax.const(N)
 		res = relax.op.where(
 			A >= relax.const(0),

@@ -550,7 +550,7 @@ def InjectDMAIntrin2():
             raise RuntimeError(
                 (
                     "Scope[%s]: cannot detect 2d pattern with elem_block=%d:"
-                    + " shape=%s, strides=%s"
+                     " shape=%s, strides=%s"
                 )
                 % (scope, elem_block, buf.shape, buf.strides)
             )
