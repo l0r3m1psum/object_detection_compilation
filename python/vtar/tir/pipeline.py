@@ -27,7 +27,7 @@ def get_vtar_tir_transform() -> tvm.ir.transform.Pass:
         # transform.LiftAllocToScopeBegin(), # NOTE: this "messes up" the allocated nodes and StorageRewrite fails because it can't find them
         transform.LiftAttrScope("coproc_scope"),
         transform.LiftAttrScope("extern_scope"),
-        transform.InjectCoProcSync(), # NOTE: this was probably just used for development
+        # transform.InjectCoProcSync(), # NOTE: this was probably just used for development
         transform.ReplaceVTAVar(),
         transform.CoProcSync(), # This inserts the coproc_(dep_push|dep_pop|sync|read_barrier|write_barrier)
         tvm.tir.transform.StorageRewrite(),
@@ -45,7 +45,7 @@ def get_actual_pipeline():
     return tvm.transform.Sequential([
         tvm.tir.transform.ForceNarrowIndexToInt32(),
         tvm.dlight.ApplyDefaultSchedule(
-            dlight.Conv2D(),
+            dlight.Conv2DPrime(),
         ),
         transform.FixSelectCondition,
         get_vtar_tir_transform(),

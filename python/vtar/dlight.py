@@ -418,7 +418,19 @@ class Conv2DPrime(VTAScheduleRule):
         c_o_ext = int(sch.get(c_o).extent)
         j_ext = int(sch.get(j).extent)
         b_block = 1 // env.BATCH
-        oc_block = 64 // env.BLOCK_OUT if c_o_ext % (128 // env.BLOCK_OUT) != 0 else 128 // env.BLOCK_OUT
+        # NOTE: For some reason If the number of output channels is too big the
+        # code outputs all -128 and 127 i.e. before clipping values with high
+        # absolute value are generated. To solve this problem we have make the
+        # oc_block bigger.
+        oc_block = (
+            64 // env.BLOCK_OUT
+            if c_o_ext % (128 // env.BLOCK_OUT) != 0 else
+            128 // env.BLOCK_OUT
+            if c_o_ext % (256 // env.BLOCK_OUT) != 0 else
+            256 // env.BLOCK_OUT
+            if c_o_ext % (512 // env.BLOCK_OUT) != 0 else
+            512 // env.BLOCK_OUT
+        )
         ic_block = 16 // env.BLOCK_IN
         h_block = 7
         w_block = 7 if j_ext % 14 != 0 else 14
@@ -471,17 +483,16 @@ class Conv2DPrime(VTAScheduleRule):
             sch.reverse_compute_at(output_rv, x_out, preserve_unit_loops=True)
             sch.annotate(sch.get_loops(output_rv)[-4], env.dma_copy, 0)
 
-        if False:
-            # vthreads double the memory usage. Hence this must be taken into
-            # account.
-            v_threads = 2
-            # If it is not divisible T.where is generated which is then lowered to
-            # an "if" which we can't compile!
-            if sch.get(oc_out).extent % v_threads == 0:
-                _, tx = sch.split(oc_out, (None, v_threads))
-                sch.reorder(tx, b_out)
-                if False:
-                    sch.bind(tx, "vthread.x")
+        # vthreads double the memory usage. Hence this must be taken into
+        # account.
+        v_threads = 2
+        # If it is not divisible T.where is generated which is then lowered to
+        # an "if" which we can't compile!
+        if sch.get(oc_out).extent % v_threads == 0:
+            _, tx = sch.split(oc_out, (None, v_threads))
+            sch.reorder(tx, b_out)
+            if False:
+                sch.bind(tx, "vthread.x")
 
         init_loops = sch.get_loops(conv2d_init_rv)
         ij_init = sch.fuse(init_loops[-2], init_loops[-1])
