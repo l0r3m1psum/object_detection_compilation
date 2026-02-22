@@ -134,3 +134,33 @@ def bidi_shift(x: te.Tensor, a: te.Tensor) -> te.Tensor:
 		"res",
 	)
 	return res
+
+def sq_ioa_conv2d_NCHWnc(
+	data: te.Tensor,
+	kernel: te.Tensor,
+	bias: te.Tensor,
+	scale: int,
+	strides: Tuple[int, int],
+	padding: Tuple[int, int],
+	dilation: Tuple[int, int],
+	acc_dtype: str = 'int32', # accumulator
+	out_dtype: str = 'int8',
+):
+	"""Symmetrically quantized, integer-only-arithmetic 2D convolution in packed
+	format."""
+
+	res = conv2d_NCHWnc(
+		data=data,
+		kernel=kernel,
+		padding=padding,
+		strides=strides,
+		dilation=dilation,
+		out_dtype=acc_dtype,
+	)
+	res = topi.add(res, bias)
+	# TODO: add support for bidi_shift
+	res = topi.right_shift(res, scale) if scale >= 0 else topi.left_shift(res, -scale)
+	res = topi.minimum(res, te.max_value(out_dtype))
+	res = topi.maximum(te.min_value(out_dtype), res)
+	res = topi.cast(res, out_dtype)
+	return res

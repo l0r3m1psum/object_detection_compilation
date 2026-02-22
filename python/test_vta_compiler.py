@@ -82,7 +82,7 @@ def test_simple_vta_alu():
     alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
     mod = tvm.IRModule({"alu": alu})
 
-    sch = tvm.tir.Schedule(mod)
+    sch = tir.Schedule(mod)
     sch.work_on('alu')
 
     C_block = sch.get_block("C")
@@ -96,7 +96,7 @@ def test_simple_vta_alu():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
@@ -136,7 +136,7 @@ def test_simple_vta_gemm():
     gemm = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "gemm"})
     mod = tvm.IRModule({"gemm": gemm})
 
-    sch = tvm.tir.Schedule(mod)
+    sch = tir.Schedule(mod)
     sch.work_on('gemm')
     C_block = sch.get_block("C")
     I, J, i, j, K, k = sch.get_loops(C_block)
@@ -166,7 +166,7 @@ def test_simple_vta_gemm():
     B_pack = B_orig.reshape(m, env.BLOCK_OUT, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
     C_pack = C_orig.reshape(o, env.BATCH, m, env.BLOCK_OUT).transpose((0, 2, 1, 3))
 
-    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array(A_pack, dev)
     B = tvm.nd.array(B_pack, dev)
     C = tvm.nd.array(numpy.zeros((o, m, env.BATCH, env.BLOCK_OUT), dtype=env.out_dtype), dev)
@@ -187,7 +187,7 @@ def test_blocked_vta_alu():
     alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "alu"})
     mod = tvm.IRModule({"alu": alu})
 
-    sch = tvm.tir.Schedule(mod)
+    sch = tir.Schedule(mod)
     sch.work_on('alu')
 
     # Loop names:
@@ -219,7 +219,7 @@ def test_blocked_vta_alu():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     B = tvm.nd.array((rng.uniform(size=(1, 64, 1, 16)) * 10).astype("int32"), dev)
     C = tvm.nd.array(numpy.zeros((1, 64, 1, 16), dtype="int8"), dev)
@@ -321,7 +321,7 @@ def test_blocked_vta_gemm():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
 
     data_np = rng.integers(-128, 128, size=(batch_size, in_chann)).astype(data.dtype)
     weight_np = rng.integers(-128, 128, size=(out_chann, in_chann)).astype(weight.dtype)
@@ -500,7 +500,7 @@ def test_blocked_vta_conv2d():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
 
     data_np = rng.integers(
         -128, 128, size=(batch_size, in_channels, height, width)
@@ -559,7 +559,7 @@ def test_shift_bidirectional():
     alu = te.create_prim_func([A, B, D]).with_attr({"global_symbol": "shift"})
     mod = tvm.IRModule({"alu": alu})
 
-    sch = tvm.tir.Schedule(mod)
+    sch = tir.Schedule(mod)
     sch.work_on('alu')
 
     sch.mod.show()
@@ -577,7 +577,7 @@ def test_shift_bidirectional():
 
     mod = sch.mod
 
-    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
     A = tvm.nd.array(((rng.uniform(size=shape)-.5) * 10).astype("int32"), dev)
     B = tvm.nd.array(((rng.uniform(size=shape)-.5) * 10).astype("int32"), dev)
     C = tvm.nd.array(numpy.zeros(shape, dtype="int8"), dev)
@@ -644,7 +644,103 @@ def test_dlight_conv2d():
     with target:
         mod = seq(mod)
     mod.show()
-    ex = tvm.tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+    ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
+
+from typing import Tuple
+import collections
+
+def test_resnet18_layers():
+
+    Workload = collections.namedtuple(
+        "Conv2DWorkload",
+        (
+            "batch",
+            "height", "width",
+            "in_filter", "out_filter",
+            "hkernel", "wkernel",
+            "hpad", "wpad",
+            "hstride", "wstride",
+        ),
+    )
+
+    # Workloads of resnet18 on imagenet
+    # topi.nn.Workload(in_dtype, out_dtype, height, width, in_filter, out_filter, kernel_h, kernel_w, padt, padl, padb, padr, dilation_h, dilation_w, stride_h, stride_w)
+    workloads = (
+        # Workload(1, 224, 224, 3,  64, 7, 7, 3, 3, 2, 2),
+        Workload(1, 56, 56,  64,  64, 3, 3, 1, 1, 1, 1),
+        Workload(1, 56, 56,  64, 128, 3, 3, 1, 1, 2, 2),
+        Workload(1, 56, 56,  64, 128, 1, 1, 0, 0, 2, 2),
+        Workload(1, 28, 28, 128, 128, 3, 3, 1, 1, 1, 1),
+        Workload(1, 28, 28, 128, 256, 3, 3, 1, 1, 2, 2), # !!!
+        Workload(1, 28, 28, 128, 256, 1, 1, 0, 0, 2, 2),
+        Workload(1, 14, 14, 256, 256, 3, 3, 1, 1, 1, 1),
+        Workload(1, 14, 14, 256, 512, 3, 3, 1, 1, 2, 2),
+        Workload(1, 14, 14, 256, 512, 1, 1, 0, 0, 2, 2),
+        Workload(1,  7,  7, 512, 512, 3, 3, 1, 1, 1, 1),
+    )
+
+    for idx, wl in enumerate(workloads):
+        print(idx, wl)
+        # Read in workload parameters
+        N = wl.batch
+        CI = wl.in_filter
+        H = wl.height
+        W = wl.width
+        CO = wl.out_filter
+        KH = wl.hkernel
+        KW = wl.wkernel
+        strides = (wl.hstride, wl.wstride)
+        padding = (wl.hpad, wl.wpad)
+        dilation = (1, 1)
+
+        data_shape   = (N // env.BATCH, CI // env.BLOCK_IN, H, W, env.BATCH, env.BLOCK_IN)
+        kernel_shape = (CO // env.BLOCK_OUT, CI // env.BLOCK_IN, KH, KW, env.BLOCK_OUT, env.BLOCK_IN)
+        bias_shape   = (1, CO // env.BLOCK_OUT, 1, 1, 1, env.BLOCK_OUT)
+
+        data   = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
+        kernel = te.placeholder(kernel_shape, name="kernel", dtype=env.wgt_dtype)
+        bias   = te.placeholder(bias_shape, name="bias", dtype=env.acc_dtype)
+
+        res = vtar.topi.sq_ioa_conv2d_NCHWnc(
+            data=data,
+            kernel=kernel,
+            bias=bias,
+            scale=3,
+            strides=strides,
+            padding=padding,
+            dilation=dilation,
+            acc_dtype=env.acc_dtype,
+            out_dtype=env.out_dtype,
+        )
+
+        func = te.create_prim_func((data, kernel, bias,  res))
+        ex_cpu = tir.build(func, tvm.target.Target("llvm"))
+        ex_vta = tir.build(func, target, vtar.tir.get_actual_pipeline())
+        data_np = rng.integers(-128, 128, data_shape).astype('int8')
+        kernel_np = rng.integers(-128, 128, kernel_shape).astype('int8')
+        bias_np = rng.integers(-128, 128, bias_shape).astype('int32')
+
+        res_shape = topi.utils.get_const_tuple(res.shape)
+        res_zeros = numpy.zeros(res_shape, dtype='int8')
+        cpu_dev = tvm.device('cpu')
+
+        res_cpu = tvm.nd.array(res_zeros, cpu_dev)
+        ex_cpu(
+            tvm.nd.array(data_np, cpu_dev),
+            tvm.nd.array(kernel_np, cpu_dev),
+            tvm.nd.array(bias_np, cpu_dev),
+            res_cpu
+        )
+
+        res_vta = tvm.nd.array(res_zeros, dev)
+        ex_vta(
+            tvm.nd.array(data_np, dev),
+            tvm.nd.array(kernel_np, dev),
+            tvm.nd.array(bias_np, dev),
+            res_vta
+        )
+
+        numpy.testing.assert_equal(res_cpu.numpy(), res_vta.numpy())
 
 # Relax tests ##################################################################
 
@@ -1211,7 +1307,7 @@ def test_can_prove_data_load_invariant_of_access_order():
                 B[vi, vj] = A[vi, vj]
 
     def get_access_region(func):
-        sch = tvm.tir.Schedule(func)
+        sch = tir.Schedule(func)
         block_rv = sch.get_block("root")
         block_stmt = sch.get(block_rv)
 

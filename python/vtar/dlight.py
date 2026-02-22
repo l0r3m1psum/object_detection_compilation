@@ -194,8 +194,8 @@ class Conv2D(VTAScheduleRule):
         if C % ic_block != 0:
             return None
 
-        N, C, H, W, n, c = topi.utils.get_const_tuple(func.struct_info.params[3].shape)
-        if N % b_block != 0 or C % oc_block != 0 or H % h_block != 0 or W % w_block:
+        N, C, H, W, n, c = topi.utils.get_const_tuple(func.struct_info.params[-1].shape)
+        if N % b_block != 0 or C % oc_block != 0 or H % h_block != 0 or W % w_block != 0:
             return None
 
         b, oc, y, x, b_tns, oc_tns = sch.get_loops(res_block)
@@ -231,7 +231,7 @@ class Conv2D(VTAScheduleRule):
         v_threads = 2
         # If it is not divisible T.where is generated which is then lowered to
         # an "if" which we can't compile!
-        if sch.get(oc_out).extent % 2 != 0:
+        if sch.get(oc_out).extent % v_threads != 0:
             return None
         _, tx = sch.split(oc_out, (None, v_threads))
         sch.reorder(tx, b_out)
@@ -435,17 +435,6 @@ class Conv2DPrime(VTAScheduleRule):
 
         )
 
-        if False:
-            # vthreads double the memory usage. Hence this must be taken into
-            # account.
-            v_threads = 2
-            # If it is not divisible T.where is generated which is then lowered to
-            # an "if" which we can't compile!
-            if sch.get(oc_out).extent % 2 != 0: return None # FIXME
-            _, tx = sch.split(oc_out, (None, v_threads))
-            sch.reorder(tx, b_out)
-            sch.bind(tx, "vthread.x")
-
         conv2d_init_rv = sch.decompose_reduction(conv2d_rv, ic_out)
         sch.compute_at(data_cache_rv, ic_out, preserve_unit_loops=False)
         sch.annotate(sch.get_loops(data_cache_rv)[-3], env.dma_copy, 0)
@@ -481,6 +470,18 @@ class Conv2DPrime(VTAScheduleRule):
             # No need to set_scope
             sch.reverse_compute_at(output_rv, x_out, preserve_unit_loops=True)
             sch.annotate(sch.get_loops(output_rv)[-4], env.dma_copy, 0)
+
+        if False:
+            # vthreads double the memory usage. Hence this must be taken into
+            # account.
+            v_threads = 2
+            # If it is not divisible T.where is generated which is then lowered to
+            # an "if" which we can't compile!
+            if sch.get(oc_out).extent % v_threads == 0:
+                _, tx = sch.split(oc_out, (None, v_threads))
+                sch.reorder(tx, b_out)
+                if False:
+                    sch.bind(tx, "vthread.x")
 
         init_loops = sch.get_loops(conv2d_init_rv)
         ij_init = sch.fuse(init_loops[-2], init_loops[-1])
