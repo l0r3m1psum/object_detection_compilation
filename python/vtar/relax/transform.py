@@ -144,10 +144,11 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 				or call.op.name == 'relax.multiply'
 				or call.op.name == "relax.right_shift"
 				or call.op.name == "relax.left_shift"
-				or call.op.name == "greater_equal"
-				or call.op.name == "less_equal"
-				or call.op.name == "greater"
-				or call.op.name == "less"
+				or call.op.name == "relax.greater_equal"
+				or call.op.name == "relax.less_equal"
+				or call.op.name == "relax.greater"
+				or call.op.name == "relax.less"
+				or call.op.name == "relax.bidi_shift"
 			):
 				# This code should work for all elementwise binary functions.
 				arg0_shape = _get_shape(packed_args[0])
@@ -626,6 +627,50 @@ class RemoveRelu:
 				res = relax.op.astype(res, dtype=call.struct_info.dtype)
 			else:
 				res = call
+
+			return res
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				new_func = relax.dpl.rewrite_call(pattern, rewriter, func)
+				new_func = relax.analysis.remove_all_unused(new_func)
+				mod.update_func(global_var, new_func)
+
+		return mod
+
+@tvm.ir.transform.module_pass(opt_level=0)
+class RewriteBidiShift:
+	def transform_module(self, mod, ctx):
+		data_pat = relax.dpl.wildcard()
+		shift_pat = relax.dpl.is_const()
+		zero_pat = relax.dpl.is_const()
+
+		pattern = relax.dpl.is_op("relax.where")(
+			(
+				relax.dpl.is_op("relax.greater_equal")
+				| relax.dpl.is_op("relax.greater")
+			)(shift_pat, zero_pat)
+			| (
+				relax.dpl.is_op("relax.less_equal")
+				| relax.dpl.is_op("relax.less")
+			)(zero_pat, shift_pat),
+			relax.dpl.is_op("relax.right_shift")(data_pat, shift_pat),
+			relax.dpl.is_op("relax.left_shift")(
+				data_pat,
+				relax.dpl.is_op("relax.negative")(shift_pat)
+			),
+		)
+
+		def rewriter(call, match_map) -> relax.Expr:
+			const_expr = match_map[zero_pat]
+
+			const_np = const_expr.data.numpy()
+			res = call
+			if (const_np == 0).all():
+				res = relax.Call(
+					ir.Op.get("relax.bidi_shift"),
+					(match_map[data_pat], match_map[shift_pat])
+				)
 
 			return res
 

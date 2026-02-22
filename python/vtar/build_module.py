@@ -20,6 +20,18 @@ import tvm
 from .tir import transform
 from .environment import get_env, Environment
 
+def infer_struct_info(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
+    right_shift_op = tvm.ir.Op.get("relax.right_shift")
+    infer_fn = right_shift_op.get_attr("FInferStructInfo")
+    return infer_fn(call, ctx)
+
+tvm.ir.register_op_attr("relax.bidi_shift", "FPurity", True)
+tvm.ir.register_op_attr("relax.bidi_shift", "FInferStructInfo", infer_struct_info)
+bidi_shift_op = tvm.ir.Op.get("relax.bidi_shift")
+bidi_shift_op.set_num_inputs(2)
+bidi_shift_op.add_argument("data", "Tensor", "The input tensor.")
+bidi_shift_op.add_argument("shift", "Tensor", "The direction and magnitude of the shift.")
+
 # Register key ops
 tvm.ir.register_op_attr("tir.vta.coproc_sync", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
 tvm.ir.register_op_attr("tir.vta.coproc_sync", "TScriptPrinterName", "tir.vta.coproc_sync")

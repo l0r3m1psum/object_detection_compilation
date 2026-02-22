@@ -102,13 +102,8 @@ def _get_patterns():
         (
             relax.dpl.is_op("relax.right_shift")
             | relax.dpl.is_op("relax.left_shift")
+            | relax.dpl.is_op("relax.bidi_shift")
         )(ioa_qconv2d, relax.dpl.is_const())
-        # Vector bidi shift pattern
-        | relax.dpl.is_op("relax.where")(
-            relax.dpl.is_const(),
-            relax.dpl.is_op("relax.right_shift")(ioa_qconv2d, relax.dpl.is_const()),
-            relax.dpl.is_op("relax.left_shift")(ioa_qconv2d, relax.dpl.is_const()),
-        )
         | ioa_qconv2d
     )
     # clamp_cast pattern

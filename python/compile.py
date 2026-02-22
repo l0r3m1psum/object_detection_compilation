@@ -68,6 +68,7 @@ seq = tvm.transform.Sequential([
 	vtar.relax.transform.SimplifyRing(),
 	# Some constant folding needs to be performed before graphpack
 	# because TVM does not now how to execute NCHWnc convolution
+	vtar.relax.transform.RewriteBidiShift(),
 	relax.transform.FoldConstant(),
 	vtar.relax.transform.GraphPack(bitpack_end="relax.mean"),
 	# GraphPack inserts some reshape, permute and pad that can be

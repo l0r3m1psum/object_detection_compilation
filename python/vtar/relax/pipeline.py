@@ -80,6 +80,10 @@ def customize_legalize_avg_pool2d(bb: relax.BlockBuilder, call: relax.Call) -> r
 
 	return res
 
+def customize_legalize_bidi_shift(bb: relax.BlockBuilder, call: relax.Call) -> relax.Expr:
+	res = bb.call_te(vtar.topi.bidi_shift, *call.args)
+	return res
+
 # This is what zero_pipeline does but wiht the custom LegalizeOps
 @tvm.relax.register_pipeline("vtar_zero")
 def vtar_zero_pipeline():
@@ -121,6 +125,7 @@ def vtar_actual_pipeline():
 				{
 					"relax.nn.conv2d": vtar.relax.pipeline.customize_legalize_conv2d,
 					"relax.nn.avg_pool2d": vtar.relax.pipeline.customize_legalize_avg_pool2d,
+					"relax.bidi_shift": customize_legalize_bidi_shift,
 				}, True
 			),
 			relax.transform.FuseTIR(),

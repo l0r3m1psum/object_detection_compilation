@@ -363,8 +363,8 @@ class Conv2DPrime(VTAScheduleRule):
 
         root_rv = dl.analysis.get_root_block(sch)
         child_rvs = sch.get_child_blocks(root_rv)
-        normalize_bidi_shift(sch, child_rvs)
-        child_rvs = sch.get_child_blocks(root_rv)
+        # normalize_bidi_shift(sch, child_rvs)
+        # child_rvs = sch.get_child_blocks(root_rv)
 
         reduction_block_rvs = [
             child_rv for child_rv in child_rvs if is_reduction(sch, child_rv)
