@@ -421,7 +421,8 @@ class Conv2DPrime(VTAScheduleRule):
         # NOTE: For some reason If the number of output channels is too big the
         # code outputs all -128 and 127 i.e. before clipping values with high
         # absolute value are generated. To solve this problem we have make the
-        # oc_block bigger.
+        # oc_block bigger. Maybe some sort of overflow or underflow of the
+        # accumulator?
         oc_block = (
             64 // env.BLOCK_OUT
             if c_o_ext % (128 // env.BLOCK_OUT) != 0 else

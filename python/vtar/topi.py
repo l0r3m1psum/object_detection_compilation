@@ -128,18 +128,34 @@ def avg_pool2d_int(
 	return res
 
 def bidi_shift(x: te.Tensor, a: te.Tensor) -> te.Tensor:
-	res = te.compute(
-		topi.utils.get_const_tuple(x.shape),
-		lambda *i: tir.Select(a[*i] >= 0, x[*i] >> a[*i], x[*i] << -a[*i]),
-		"res",
-	)
+	shape = topi.utils.get_const_tuple(x.shape)
+	if len(shape) == 4:
+		res = te.compute(
+			topi.utils.get_const_tuple(x.shape),
+			lambda n, c, h, w: tir.Select(
+				a[0, c, 0, 0] >= 0,
+				x[n, c, h, w] >>a[0, c, 0, 0],
+				x[n, c, h, w] << -a[0, c, 0, 0]
+			),
+			"res",
+		)
+	else:
+		res = te.compute(
+			topi.utils.get_const_tuple(x.shape),
+			lambda no, co, h, w, ni, ci: tir.Select(
+				a[0, co, 0, 0, 0, ci] >= 0,
+				x[no, co, h, w, ni, ci] >>a[0, co, 0, 0, 0, ci],
+				x[no, co, h, w, ni, ci] << -a[0, co, 0, 0, 0, ci]
+			),
+			"res",
+		)
 	return res
 
 def sq_ioa_conv2d_NCHWnc(
 	data: te.Tensor,
 	kernel: te.Tensor,
 	bias: te.Tensor,
-	scale: int,
+	scale: int | te.Tensor,
 	strides: Tuple[int, int],
 	padding: Tuple[int, int],
 	dilation: Tuple[int, int],
@@ -158,8 +174,10 @@ def sq_ioa_conv2d_NCHWnc(
 		out_dtype=acc_dtype,
 	)
 	res = topi.add(res, bias)
-	# TODO: add support for bidi_shift
-	res = topi.right_shift(res, scale) if scale >= 0 else topi.left_shift(res, -scale)
+	if isinstance(scale, te.Tensor):
+		res = bidi_shift(res, scale)
+	else:
+		res = topi.right_shift(res, scale) if scale >= 0 else topi.left_shift(res, -scale)
 	res = topi.minimum(res, te.max_value(out_dtype))
 	res = topi.maximum(te.min_value(out_dtype), res)
 	res = topi.cast(res, out_dtype)

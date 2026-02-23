@@ -143,11 +143,12 @@ def ioa_requantize(bb: relax.BlockBuilder, N: numpy.ndarray, x: relax.Expr, z: r
 	# we need to do x + 2^(n-1) >> n.
 	# Note that 2^(n-1) is 1 << (n-1) and could be calculated inside VTA.
 	# TODO: check that for left_shift is right also
-	x = x + relax.const(2**(magnitude.data.numpy().item()-1))
 	if is_scalar:
+		x = x + relax.const(2**(magnitude.data.numpy().item()-1))
 		res = relax.op.left_shift(x, magnitude) if is_pos \
 			else relax.op.right_shift(x, magnitude)
 	else:
+		x = x + relax.const(2**(magnitude.data.numpy()-1))
 		A = relax.const(N)
 		res = relax.op.where(
 			A >= relax.const(0),

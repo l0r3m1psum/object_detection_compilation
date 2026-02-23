@@ -697,15 +697,16 @@ def test_resnet18_layers():
         kernel_shape = (CO // env.BLOCK_OUT, CI // env.BLOCK_IN, KH, KW, env.BLOCK_OUT, env.BLOCK_IN)
         bias_shape   = (1, CO // env.BLOCK_OUT, 1, 1, 1, env.BLOCK_OUT)
 
-        data   = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
-        kernel = te.placeholder(kernel_shape, name="kernel", dtype=env.wgt_dtype)
-        bias   = te.placeholder(bias_shape, name="bias", dtype=env.acc_dtype)
+        data   = te.placeholder(data_shape, env.inp_dtype, "data")
+        kernel = te.placeholder(kernel_shape, env.wgt_dtype, "kernel")
+        bias   = te.placeholder(bias_shape, env.acc_dtype, "bias")
+        scale  = te.placeholder(bias_shape, env.acc_dtype, "scale")
 
         res = vtar.topi.sq_ioa_conv2d_NCHWnc(
             data=data,
             kernel=kernel,
             bias=bias,
-            scale=3,
+            scale=scale,
             strides=strides,
             padding=padding,
             dilation=dilation,
@@ -713,12 +714,14 @@ def test_resnet18_layers():
             out_dtype=env.out_dtype,
         )
 
-        func = te.create_prim_func((data, kernel, bias,  res))
+        func = te.create_prim_func((data, kernel, bias, scale,  res))
         ex_cpu = tir.build(func, tvm.target.Target("llvm"))
         ex_vta = tir.build(func, target, vtar.tir.get_actual_pipeline())
         data_np = rng.integers(-128, 128, data_shape).astype('int8')
         kernel_np = rng.integers(-128, 128, kernel_shape).astype('int8')
         bias_np = rng.integers(-128, 128, bias_shape).astype('int32')
+        # VTA can only shift by small values!
+        scale_np = rng.integers(-7, 8, bias_shape).astype('int32')
 
         res_shape = topi.utils.get_const_tuple(res.shape)
         res_zeros = numpy.zeros(res_shape, dtype='int8')
@@ -729,6 +732,7 @@ def test_resnet18_layers():
             tvm.nd.array(data_np, cpu_dev),
             tvm.nd.array(kernel_np, cpu_dev),
             tvm.nd.array(bias_np, cpu_dev),
+            tvm.nd.array(scale_np, cpu_dev),
             res_cpu
         )
 
@@ -737,6 +741,7 @@ def test_resnet18_layers():
             tvm.nd.array(data_np, dev),
             tvm.nd.array(kernel_np, dev),
             tvm.nd.array(bias_np, dev),
+            tvm.nd.array(scale_np, dev),
             res_vta
         )
 
