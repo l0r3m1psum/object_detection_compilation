@@ -72,6 +72,7 @@ import vtar.relax.frontend.onnx
 # Other model zoos
 # https://huggingface.co/opencv
 # https://github.com/STMicroelectronics/stm32ai-modelzoo/
+# https://aihub.qualcomm.com/models/resnet18
 # This could be good for live real-time demo on face detection
 # https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar_int8.onnx
 

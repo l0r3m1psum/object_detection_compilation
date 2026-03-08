@@ -139,6 +139,18 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 					# bb.emit infers the out_layout
 					out_dtype=call.attrs['out_dtype']
 				))
+			elif call.op.name == "relax.nn.avg_pool2d":
+				data, = packed_args
+				res = self.builder_.emit(relax.op.nn.avg_pool2d(
+					data,
+					call.attrs["pool_size"],
+					call.attrs['strides'],
+					call.attrs['padding'],
+					call.attrs['dilation'],
+					call.attrs['ceil_mode'],
+					call.attrs['count_include_pad'],
+					self.conv_data_layout,
+				))
 			elif (
 				call.op.name == 'relax.add'
 				or call.op.name == 'relax.multiply'

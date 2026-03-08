@@ -59,27 +59,29 @@ vta_fsim = ctypes.CDLL("vta_fsim")
 env = vtar.get_env()
 target = tvm.target.Target(env.target, host=env.target_host)
 
-seq = tvm.transform.Sequential([
-	vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
-	# Constant folding in TVM has some serious limitations. It can
-	# only fold code by executing it hence if x is not know at
-	# compile time even simple expressions like x + 0 are not
-	# simplified.
-	vtar.relax.transform.SimplifyRing(),
-	# Some constant folding needs to be performed before graphpack
-	# because TVM does not now how to execute NCHWnc convolution
-	vtar.relax.transform.RewriteBidiShift(),
-	relax.transform.FoldConstant(),
-	vtar.relax.transform.GraphPack(bitpack_end="relax.mean"),
-	# GraphPack inserts some reshape, permute and pad that can be
-	# folded away.
-	relax.transform.FoldConstant(), # TODO: should be done in GraphPack
-	vtar.relax.transform.AddChainSimplify(), # This should be CommutativeOpsSympolicSimplify
-	relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
-	vtar.relax.transform.RemoveRelu(),
-])
+def compile(name: str, end: str) -> None:
+	seq = tvm.transform.Sequential([
+		# In case there is a symbolic batch dimension.
+		relax.transform.BindSymbolicVars({"N": 1}),
+		vtar.relax.transform.RewriteBidiShift(),
+		vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
+		# Constant folding in TVM has some serious limitations. It can
+		# only fold code by executing it hence if x is not know at
+		# compile time even simple expressions like x + 0 are not
+		# simplified.
+		vtar.relax.transform.SimplifyRing(),
+		# Some constant folding needs to be performed before graphpack
+		# because TVM does not now how to execute NCHWnc convolution
+		relax.transform.FoldConstant(),
+		vtar.relax.transform.GraphPack(bitpack_end=end),
+		# GraphPack inserts some reshape, permute and pad that can be
+		# folded away.
+		relax.transform.FoldConstant(), # TODO: should be done in GraphPack
+		vtar.relax.transform.AddChainSimplify(), # This should be CommutativeOpsSympolicSimplify
+		relax.transform.CanonicalizeBindings(), # TODO: is this necessary?
+		vtar.relax.transform.RemoveRelu(),
+	])
 
-def compile(name: str) -> None:
 	if not os.path.exists("build/%s.json" % name):
 		onnx_model = onnx.load("build/%s.onnx" % name)
 		mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
@@ -114,6 +116,8 @@ def compile(name: str) -> None:
 		)
 	)
 
-compile("resnet18_int8_per_channel")
-compile("resnet18_int8_per_tensor")
-compile("resnet18_int8_per_network")
+compile("resnet50-v1-12-int8", "relax.nn.avg_pool2d")
+raise SystemExit(0)
+compile("resnet18_int8_per_channel", "relax.mean")
+compile("resnet18_int8_per_tensor", "relax.mean")
+compile("resnet18_int8_per_network", "relax.mean")

@@ -156,6 +156,10 @@ def ioa_requantize(bb: relax.BlockBuilder, N: numpy.ndarray, x: relax.Expr, z: r
 			relax.op.left_shift(x, -A)
 		)
 
+	# FIXME: handle y zero point when different from zero.
+	if not (z.data.numpy() == 0).all():
+		print("Non zero z_y = %f" % z.data.numpy())
+
 	return clamp(res + const_astype(z, "int32"), -128, 127).astype("int8")
 
 def reshape_if_needed(x: relax.Constant, shape: Tuple[int, int, int, int]) -> relax.Constant:

@@ -747,6 +747,63 @@ def test_resnet18_layers():
 
         numpy.testing.assert_equal(res_cpu.numpy(), res_vta.numpy())
 
+def test_broadcast():
+    # TODO: test also when w_z is a vector in the case of per-channel quantization.
+    N, C, H, W = 1, 256, 14, 14
+    O, R, S = 256, 3, 3
+    strides = (1, 1)
+    padding = (1, 1)
+    dilation = (1, 1)
+
+    assert N % env.BATCH == 0
+    assert C % env.BLOCK_IN == 0
+    assert O % env.BLOCK_OUT == 0
+
+    data_shape = (N//env.BATCH, C//env.BLOCK_IN, H, W, env.BATCH, env.BLOCK_IN,)
+    minimal_shape = (1, 1, 1, 1, env.BLOCK_OUT, env.BLOCK_IN,)
+    kernel_shape = (O//env.BLOCK_OUT, C//env.BLOCK_IN, R, S, env.BLOCK_OUT, env.BLOCK_IN,)
+
+    x = te.placeholder(data_shape, env.inp_dtype, "x")
+    # This is the minimal amount of data that VTA load in wgt memory. For us is
+    # going to contain only the w_z value the zero point of the weight.
+    w = te.placeholder(minimal_shape, env.wgt_dtype, "w")
+    # Broadcasting is used to obtain the correct dimension for the convolution.
+    wb = topi.broadcast_to(w, kernel_shape)
+    y = vtar.topi.conv2d_NCHWnc(x, wb, strides, padding, dilation)
+    out_shape = topi.utils.get_const_tuple(y.shape)
+    res = te.compute(out_shape, lambda *i: y(*i).astype(env.inp_dtype), "res")
+
+    f = te.create_prim_func((x, w, res))
+    sch = tir.Schedule(f)
+    broadcast_block_rv = sch.get_block("T_broadcast_to")
+    # Inlining the computation should allow to use the classic VTA compilation path.
+    sch.compute_inline(broadcast_block_rv)
+    mod = sch.mod
+    mod.show()
+
+    ex_cpu = tir.build(mod, tvm.target.Target("llvm"))
+    ex_vta = tir.build(mod, target, vtar.tir.get_actual_pipeline())
+    data_np = rng.integers(-128, 128, data_shape).astype('int8')
+    kernel_np = rng.integers(-128, 128, minimal_shape).astype('int8')
+    res_zeros = numpy.zeros(out_shape, dtype='int8')
+    cpu_dev = tvm.device('cpu')
+
+    res_cpu = tvm.nd.array(res_zeros, cpu_dev)
+    ex_cpu(
+        tvm.nd.array(data_np, cpu_dev),
+        tvm.nd.array(kernel_np, cpu_dev),
+        res_cpu
+    )
+
+    res_vta = tvm.nd.array(res_zeros, dev)
+    ex_vta(
+        tvm.nd.array(data_np, dev),
+        tvm.nd.array(kernel_np, dev),
+        res_vta
+    )
+
+    numpy.testing.assert_equal(res_cpu.numpy(), res_vta.numpy())
+
 # Relax tests ##################################################################
 
 def test_trivial_graphpack():

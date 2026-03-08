@@ -363,6 +363,13 @@ class Conv2DPrime(VTAScheduleRule):
 
         root_rv = dl.analysis.get_root_block(sch)
         child_rvs = sch.get_child_blocks(root_rv)
+        # If there is only one child block the function can't be compiled to
+        # VTA because you need at least one GEMM/ALU operation and a store one.
+        # For some reasons the code code throws an exception if there is only
+        # one convolution block... The code should just handle it no problem
+        # but this is a fine workaround for the above reason.
+        if len(child_rvs) == 1:
+            return None
         # normalize_bidi_shift(sch, child_rvs)
         # child_rvs = sch.get_child_blocks(root_rv)
 
