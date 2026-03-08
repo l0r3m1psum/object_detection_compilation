@@ -276,12 +276,179 @@ def is_input_or_initializer(name: str, map: Container[str]):
     # assert name in init_map or node in input_map
     return name not in map
 
-def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
+def try_fuse_conv_or_gemm(
+    node: onnx.NodeProto,
+    node_map,
+    init_map,
+    usage_count,
+    nodes_to_remove,
+    nodes_to_add,
+    initializer_to_remove
+) ->  None:
+    # First we try to match the Q(DQ) pattern.
+    q_node = node
+    if node.op_type != "QuantizeLinear": return
+
+    conv_output_name = q_node.input[0]
+    if is_input_or_initializer(conv_output_name, node_map): return
+    conv_node = node_map[conv_output_name]
+    if conv_node.op_type != "Conv" and conv_node.op_type != "Gemm": return
+
+    if usage_count[conv_output_name] > 1:
+        print(f"Skipping {conv_node.name}: Output used by multiple nodes.")
+        return
+
+    if len(conv_node.input) < 2: return
+
+    dq_x_name = conv_node.input[0]
+    if is_input_or_initializer(dq_x_name, node_map): return
+    dq_x_node = node_map[dq_x_name]
+    if dq_x_node.op_type != "DequantizeLinear": return
+
+    dq_w_name = conv_node.input[1]
+    if is_input_or_initializer(dq_w_name, node_map): return
+    dq_w_node = node_map[dq_w_name]
+    if dq_w_node.op_type != "DequantizeLinear": return
+
+    if len(conv_node.input) > 2:
+        dq_b_name = conv_node.input[2]
+        if is_input_or_initializer(dq_b_name, node_map): return
+        dq_b_node = node_map[dq_b_name]
+        if dq_b_node.op_type != "DequantizeLinear": return
+
+    # If we have matched the patter we try to create the fused node.
+
+    x, x_s, x_zp = dq_x_node.input[0], dq_x_node.input[1], dq_x_node.input[2]
+    w, w_s, w_zp = dq_w_node.input[0], dq_w_node.input[1], dq_w_node.input[2]
+    y_s, y_zp = q_node.input[1], q_node.input[2]
+    inputs = [x, x_s, x_zp, w, w_s, w_zp, y_s, y_zp]
+    if len(conv_node.input) > 2:
+        b, b_s, b_zp = dq_b_node.input[0], dq_b_node.input[1], dq_b_node.input[2]
+        if b_zp not in init_map:
+            pass
+            # TODO: emit warning that must be set to 0
+        initializer_to_remove.add(b_zp)
+        if not (onnx.numpy_helper.to_array(init_map[b_zp]) == 0).all():
+            print(f"Skipping {conv_node.name}: Bias zero point is not zero.")
+            return
+
+        # TODO: check that:
+        onnx.numpy_helper.to_array(init_map[b_s]) == onnx.numpy_helper.to_array(init_map[x_s]) * onnx.numpy_helper.to_array(init_map[x_s])
+        # in some floating point robust way.
+        initializer_to_remove.add(b_s)
+        inputs.append(b)
+
+    if conv_node.op_type == "Gemm":
+        # The bias goes in a different position...
+        if len(conv_node.input) > 2:
+            tmp = inputs.pop()
+            inputs.insert(6, tmp)
+        qlinear_node = onnx.helper.make_node(
+            "QGemm",
+            inputs=inputs,
+            outputs=[q_node.output[0]],
+            name=conv_node.name + "_fused",
+            domain="com.microsoft",
+            **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute if attr.name != "beta"}
+        )
+    else:
+        qlinear_node = onnx.helper.make_node(
+            "QLinearConv",
+            inputs=inputs,
+            outputs=[q_node.output[0]],
+            name=conv_node.name + "_fused",
+            **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute}
+        )
+    nodes_to_add.append(qlinear_node)
+
+    # Now we can mark for removal the nodes we have fused.
+
+    nodes_to_remove.add(conv_node.name)
+    nodes_to_remove.add(q_node.name)
+
+    usage_count[dq_x_node.output[0]] -= 1
+    if usage_count[dq_x_node.output[0]] == 0:
+        nodes_to_remove.add(dq_x_node.name)
+
+    usage_count[dq_w_node.output[0]] -= 1
+    if usage_count[dq_w_node.output[0]] == 0:
+        nodes_to_remove.add(dq_w_node.name)
+
+    if len(conv_node.input) > 2:
+        usage_count[dq_b_node.output[0]] -= 1
+        if usage_count[dq_b_node.output[0]] == 0:
+            nodes_to_remove.add(dq_b_node.name)
+
+def try_fuse_add(
+    node: onnx.NodeProto,
+    node_map,
+    init_map,
+    usage_count,
+    nodes_to_remove,
+    nodes_to_add,
+    initializer_to_remove
+) -> None:
+    # First we try to match the Q(DQ) pattern.
+    q_node = node
+    if node.op_type != "QuantizeLinear": return
+
+    add_output_name = q_node.input[0]
+    if is_input_or_initializer(add_output_name, node_map): return
+    add_node = node_map[add_output_name]
+    if add_node.op_type != "Add": return
+
+    if usage_count[add_output_name] > 1:
+        print(f"Skipping {add_node.name}: Output used by multiple nodes.")
+        return
+
+    if len(add_node.input) != 2: return
+
+    dq_a_name = add_node.input[0]
+    if is_input_or_initializer(dq_a_name, node_map): return
+    dq_a_node = node_map[dq_a_name]
+    if dq_a_node.op_type != "DequantizeLinear": return
+
+    dq_b_name = add_node.input[1]
+    if is_input_or_initializer(dq_b_name, node_map): return
+    dq_b_node = node_map[dq_b_name]
+    if dq_b_node.op_type != "DequantizeLinear": return
+
+    # If we have matched the pattern, we try to create the fused node.
+
+    a, a_s, a_zp = dq_a_node.input[0], dq_a_node.input[1], dq_a_node.input[2]
+    b, b_s, b_zp = dq_b_node.input[0], dq_b_node.input[1], dq_b_node.input[2]
+    c_s, c_zp = q_node.input[1], q_node.input[2]
+
+    inputs = [a, a_s, a_zp, b, b_s, b_zp, c_s, c_zp]
+
+    qlinear_add_node = onnx.helper.make_node(
+        "QLinearAdd",
+        inputs=inputs,
+        outputs=[q_node.output[0]],
+        name=add_node.name + "_fused",
+        domain="com.microsoft",
+        **{attr.name: onnx.helper.get_attribute_value(attr) for attr in add_node.attribute}
+    )
+    nodes_to_add.append(qlinear_add_node)
+
+    # Now we can mark for removal the nodes we have fused.
+
+    nodes_to_remove.add(add_node.name)
+    nodes_to_remove.add(q_node.name)
+
+    usage_count[dq_a_node.output[0]] -= 1
+    if usage_count[dq_a_node.output[0]] == 0:
+        nodes_to_remove.add(dq_a_node.name)
+
+    usage_count[dq_b_node.output[0]] -= 1
+    if usage_count[dq_b_node.output[0]] == 0:
+        nodes_to_remove.add(dq_b_node.name)
+
+def fuse_qoperators(model: onnx.ModelProto) -> onnx.ModelProto:
     """
     All the names in an onnx graph are either in
     input, output, initializer or node
     """
-    # TODO: fuse also Gemm
     graph: onnx.GraphProto = model.graph
 
     node_map: Dict[str, onnx.NodeProto] = {node.output[0]: node for node in graph.node}
@@ -301,100 +468,24 @@ def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
     # initializer_to_add = []
 
     for node in graph.node:
-        # First we try to match the Q(DQ) pattern.
-
-        q_node = node
-        if node.op_type != "QuantizeLinear": continue
-
-        conv_output_name = q_node.input[0]
-        if is_input_or_initializer(conv_output_name, node_map): continue
-        conv_node = node_map[conv_output_name]
-        if conv_node.op_type != "Conv" and conv_node.op_type != "Gemm": continue
-
-        if usage_count[conv_output_name] > 1:
-            print(f"Skipping {conv_node.name}: Output used by multiple nodes.")
-            continue
-
-        if len(conv_node.input) < 2: continue
-
-        dq_x_name = conv_node.input[0]
-        if is_input_or_initializer(dq_x_name, node_map): continue
-        dq_x_node = node_map[dq_x_name]
-        if dq_x_node.op_type != "DequantizeLinear": continue
-
-        dq_w_name = conv_node.input[1]
-        if is_input_or_initializer(dq_w_name, node_map): continue
-        dq_w_node = node_map[dq_w_name]
-        if dq_w_node.op_type != "DequantizeLinear": continue
-
-        if len(conv_node.input) > 2:
-            dq_b_name = conv_node.input[2]
-            if is_input_or_initializer(dq_b_name, node_map): continue
-            dq_b_node = node_map[dq_b_name]
-            if dq_b_node.op_type != "DequantizeLinear": continue
-
-        # If we have matched the patter we try to create the fused node.
-
-        x, x_s, x_zp = dq_x_node.input[0], dq_x_node.input[1], dq_x_node.input[2]
-        w, w_s, w_zp = dq_w_node.input[0], dq_w_node.input[1], dq_w_node.input[2]
-        y_s, y_zp = q_node.input[1], q_node.input[2]
-        inputs = [x, x_s, x_zp, w, w_s, w_zp, y_s, y_zp]
-        if len(conv_node.input) > 2:
-            b, b_s, b_zp = dq_b_node.input[0], dq_b_node.input[1], dq_b_node.input[2]
-            if b_zp not in init_map:
-                pass
-                # TODO: emit warning that must be set to 0
-            initializer_to_remove.add(b_zp)
-            if not (numpy_helper.to_array(init_map[b_zp]) == 0).all():
-                print(f"Skipping {conv_node.name}: Bias zero point is not zero.")
-                continue
-
-            # TODO: check that:
-            numpy_helper.to_array(init_map[b_s]) == numpy_helper.to_array(init_map[x_s]) * numpy_helper.to_array(init_map[x_s])
-            # in some floating point robust way.
-            initializer_to_remove.add(b_s)
-            inputs.append(b)
-
-        if conv_node.op_type == "Gemm":
-            # The bias goes in a different position...
-            if len(conv_node.input) > 2:
-                tmp = inputs.pop()
-                inputs.insert(6, tmp)
-            qlinear_node = onnx.helper.make_node(
-                "QGemm",
-                inputs=inputs,
-                outputs=[q_node.output[0]],
-                name=conv_node.name + "_fused",
-                domain="com.microsoft",
-                **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute if attr.name != "beta"}
-            )
-        else:
-            qlinear_node = onnx.helper.make_node(
-                "QLinearConv",
-                inputs=inputs,
-                outputs=[q_node.output[0]],
-                name=conv_node.name + "_fused",
-                **{attr.name: onnx.helper.get_attribute_value(attr) for attr in conv_node.attribute}
-            )
-        nodes_to_add.append(qlinear_node)
-
-        # Now we can mark for removal the nodes we have fused.
-
-        nodes_to_remove.add(conv_node.name)
-        nodes_to_remove.add(q_node.name)
-
-        usage_count[dq_x_node.output[0]] -= 1
-        if usage_count[dq_x_node.output[0]] == 0:
-            nodes_to_remove.add(dq_x_node.name)
-
-        usage_count[dq_w_node.output[0]] -= 1
-        if usage_count[dq_w_node.output[0]] == 0:
-            nodes_to_remove.add(dq_w_node.name)
-
-        if len(conv_node.input) > 2:
-            usage_count[dq_b_node.output[0]] -= 1
-            if usage_count[dq_b_node.output[0]] == 0:
-                nodes_to_remove.add(dq_b_node.name)
+        try_fuse_conv_or_gemm(
+            node,
+            node_map,
+            init_map,
+            usage_count,
+            nodes_to_remove,
+            nodes_to_add,
+            initializer_to_remove
+        )
+        try_fuse_add(
+            node,
+            node_map,
+            init_map,
+            usage_count,
+            nodes_to_remove,
+            nodes_to_add,
+            initializer_to_remove
+        )
 
     # We create the new model.
 
@@ -438,6 +529,14 @@ def fuse_qlinear_conv(model: onnx.ModelProto) -> onnx.ModelProto:
     del new_model.graph.initializer[:]
     new_model.graph.node.extend(topo)
     new_model.graph.initializer.extend(new_initializer_list)
+
+    # QLinearAdd and QGemm needs this domain
+    # TODO: check if this two nodes have actually been added
+    has_ms_domain = any(opset.domain == "com.microsoft" for opset in new_model.opset_import)
+    if not has_ms_domain and nodes_to_add:
+        opset = new_model.opset_import.add()
+        opset.domain = "com.microsoft"
+        opset.version = 1
 
     onnx.checker.check_model(new_model)
 
@@ -528,7 +627,7 @@ def main():
                 },
             )
             m = onnx.load("build/resnet18_int8_per_channel_qdq.onnx")
-            m = fuse_qlinear_conv(m)
+            m = fuse_qoperators(m)
             onnx.save(m, "build/resnet18_int8_per_channel.onnx")
         if not_resnet_per_tensor:
             quantize_static(
