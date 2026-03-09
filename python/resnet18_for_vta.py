@@ -468,6 +468,8 @@ def fuse_qoperators(model: onnx.ModelProto) -> onnx.ModelProto:
     # initializer_to_add = []
 
     for node in graph.node:
+        # NOTE: adding more fusion without checks could break the code is two
+        # consecutively go of.
         try_fuse_conv_or_gemm(
             node,
             node_map,
