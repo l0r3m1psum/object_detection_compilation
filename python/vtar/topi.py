@@ -182,3 +182,69 @@ def sq_ioa_conv2d_NCHWnc(
 	res = topi.maximum(te.min_value(out_dtype), res)
 	res = topi.cast(res, out_dtype)
 	return res
+
+
+# topi.nn.Workload(
+# in_dtype, out_dtype, height, width, in_filter, out_filter, kernel_h, kernel_w,
+# padt, padl, padb, padr, dilation_h, dilation_w, stride_h, stride_w
+#)
+resnet18_workloads = (
+	#                                  H    W    I    O  R  S pt pl pb pb dh dw sh sw
+	topi.nn.Workload("int8", "int8", 224, 224,   3,  64, 7, 7, 3, 3, 3, 3, 1, 1, 2, 2),
+	topi.nn.Workload("int8", "int8",  56,  56,  64,  64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1),
+	topi.nn.Workload("int8", "int8",  56,  56,  64, 128, 3, 3, 1, 1, 1, 1, 1, 1, 2, 2),
+	topi.nn.Workload("int8", "int8",  56,  56,  64, 128, 1, 1, 0, 0, 0, 0, 1, 1, 2, 2),
+	topi.nn.Workload("int8", "int8",  28,  28, 128, 128, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1),
+	topi.nn.Workload("int8", "int8",  28,  28, 128, 256, 3, 3, 1, 1, 1, 1, 1, 1, 2, 2),
+	topi.nn.Workload("int8", "int8",  28,  28, 128, 256, 1, 1, 0, 0, 0, 0, 1, 1, 2, 2),
+	topi.nn.Workload("int8", "int8",  14,  14, 256, 256, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1),
+	topi.nn.Workload("int8", "int8",  14,  14, 256, 512, 3, 3, 1, 1, 1, 1, 1, 1, 2, 2),
+	topi.nn.Workload("int8", "int8",  14,  14, 256, 512, 1, 1, 0, 0, 0, 0, 1, 1, 2, 2),
+	topi.nn.Workload("int8", "int8",   7,   7, 512, 512, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1),
+)
+
+def sq_ioa_conv2d_NCHWnc_from_workload(
+	wl: topi.nn.Workload, BATCH: int, BLOCK_IN: int, BLOCK_OUT: int
+) -> tir.PrimFunc:
+	if BATCH != 1:
+		raise ValueError("ONLY single batch is supported for now.")
+	N = 1
+	H, W = wl.height, wl.width
+	CI, CO = wl.in_filter, wl.out_filter
+	KH, KW = wl.kernel_h, wl.kernel_w
+	strides = (wl.stride_h, wl.stride_w)
+	if wl.padt != wl.padb or wl.padl != wl.padr:
+		raise ValueError("Padding top should should be equal to padding bottom"
+			" and padding left should be equal to padding right.")
+	padding = (wl.padt, wl.padl)
+	dilation = (wl.dilation_h, wl.dilation_w)
+
+	data_shape   = (N // BATCH, CI // BLOCK_IN, H, W, BATCH, BLOCK_IN)
+	kernel_shape = (CO // BLOCK_OUT, CI // BLOCK_IN, KH, KW, BLOCK_OUT, BLOCK_IN)
+	bias_shape   = (1, CO // BLOCK_OUT, 1, 1, 1, BLOCK_OUT)
+
+	if wl.in_dtype != "int8" or wl.out_dtype != "int8":
+		raise ValueError("Only int8 input and output types supported.")
+
+	acc_dtype = "int32"
+
+	data   = te.placeholder(data_shape, wl.in_dtype, "data")
+	kernel = te.placeholder(kernel_shape, wl.in_dtype, "kernel")
+	bias   = te.placeholder(bias_shape, acc_dtype, "bias")
+	scale  = te.placeholder(bias_shape, acc_dtype, "scale")
+
+	res = sq_ioa_conv2d_NCHWnc(
+	    data=data,
+	    kernel=kernel,
+	    bias=bias,
+	    scale=scale,
+	    strides=strides,
+	    padding=padding,
+	    dilation=dilation,
+	    acc_dtype=acc_dtype,
+	    out_dtype=wl.out_dtype,
+	)
+
+	func = te.create_prim_func((data, kernel, bias, scale,  res))
+
+	return func

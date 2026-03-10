@@ -646,75 +646,23 @@ def test_dlight_conv2d():
     mod.show()
     ex = tir.build(mod, target, vtar.tir.get_vtar_tir_transform())
 
-from typing import Tuple
-import collections
-
 def test_resnet18_layers():
 
-    Workload = collections.namedtuple(
-        "Conv2DWorkload",
-        (
-            "batch",
-            "height", "width",
-            "in_filter", "out_filter",
-            "hkernel", "wkernel",
-            "hpad", "wpad",
-            "hstride", "wstride",
-        ),
-    )
-
-    # Workloads of resnet18 on imagenet
-    # topi.nn.Workload(in_dtype, out_dtype, height, width, in_filter, out_filter, kernel_h, kernel_w, padt, padl, padb, padr, dilation_h, dilation_w, stride_h, stride_w)
-    workloads = (
-        # Workload(1, 224, 224, 3,  64, 7, 7, 3, 3, 2, 2),
-        Workload(1, 56, 56,  64,  64, 3, 3, 1, 1, 1, 1),
-        Workload(1, 56, 56,  64, 128, 3, 3, 1, 1, 2, 2),
-        Workload(1, 56, 56,  64, 128, 1, 1, 0, 0, 2, 2),
-        Workload(1, 28, 28, 128, 128, 3, 3, 1, 1, 1, 1),
-        Workload(1, 28, 28, 128, 256, 3, 3, 1, 1, 2, 2),
-        Workload(1, 28, 28, 128, 256, 1, 1, 0, 0, 2, 2),
-        Workload(1, 14, 14, 256, 256, 3, 3, 1, 1, 1, 1),
-        Workload(1, 14, 14, 256, 512, 3, 3, 1, 1, 2, 2),
-        Workload(1, 14, 14, 256, 512, 1, 1, 0, 0, 2, 2),
-        Workload(1,  7,  7, 512, 512, 3, 3, 1, 1, 1, 1),
-    )
+    workloads = vtar.topi.resnet18_workloads
 
     for idx, wl in enumerate(workloads):
+        # We can't execute the 3x3 convolution
+        if idx == 0:
+            continue
         print(idx, wl)
-        # Read in workload parameters
-        N = wl.batch
-        CI = wl.in_filter
-        H = wl.height
-        W = wl.width
-        CO = wl.out_filter
-        KH = wl.hkernel
-        KW = wl.wkernel
-        strides = (wl.hstride, wl.wstride)
-        padding = (wl.hpad, wl.wpad)
-        dilation = (1, 1)
 
-        data_shape   = (N // env.BATCH, CI // env.BLOCK_IN, H, W, env.BATCH, env.BLOCK_IN)
-        kernel_shape = (CO // env.BLOCK_OUT, CI // env.BLOCK_IN, KH, KW, env.BLOCK_OUT, env.BLOCK_IN)
-        bias_shape   = (1, CO // env.BLOCK_OUT, 1, 1, 1, env.BLOCK_OUT)
+        func = vtar.topi.sq_ioa_conv2d_NCHWnc_from_workload(wl, env.BATCH, env.BLOCK_IN, env.BLOCK_OUT)
 
-        data   = te.placeholder(data_shape, env.inp_dtype, "data")
-        kernel = te.placeholder(kernel_shape, env.wgt_dtype, "kernel")
-        bias   = te.placeholder(bias_shape, env.acc_dtype, "bias")
-        scale  = te.placeholder(bias_shape, env.acc_dtype, "scale")
+        data_shape = [int(v) for v in func.struct_info.params[0].shape.values]
+        kernel_shape = [int(v) for v in func.struct_info.params[1].shape.values]
+        bias_shape = [int(v) for v in func.struct_info.params[2].shape.values]
+        res_shape = [int(v) for v in func.struct_info.params[-1].shape.values]
 
-        res = vtar.topi.sq_ioa_conv2d_NCHWnc(
-            data=data,
-            kernel=kernel,
-            bias=bias,
-            scale=scale,
-            strides=strides,
-            padding=padding,
-            dilation=dilation,
-            acc_dtype=env.acc_dtype,
-            out_dtype=env.out_dtype,
-        )
-
-        func = te.create_prim_func((data, kernel, bias, scale,  res))
         ex_cpu = tir.build(func, tvm.target.Target("llvm"))
         ex_vta = tir.build(func, target, vtar.tir.get_actual_pipeline())
         data_np = rng.integers(-128, 128, data_shape).astype('int8')
@@ -723,7 +671,6 @@ def test_resnet18_layers():
         # VTA can only shift by small values!
         scale_np = rng.integers(-7, 8, bias_shape).astype('int32')
 
-        res_shape = topi.utils.get_const_tuple(res.shape)
         res_zeros = numpy.zeros(res_shape, dtype='int8')
         cpu_dev = tvm.device('cpu')
 
