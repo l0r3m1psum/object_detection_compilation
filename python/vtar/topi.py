@@ -183,13 +183,8 @@ def sq_ioa_conv2d_NCHWnc(
 	res = topi.cast(res, out_dtype)
 	return res
 
-
-# topi.nn.Workload(
-# in_dtype, out_dtype, height, width, in_filter, out_filter, kernel_h, kernel_w,
-# padt, padl, padb, padr, dilation_h, dilation_w, stride_h, stride_w
-#)
 resnet18_workloads = (
-	#                                  H    W    I    O  R  S pt pl pb pb dh dw sh sw
+	#                   inp     out    H    W    I    O  R  S pt pl pb pb dh dw sh sw
 	topi.nn.Workload("int8", "int8", 224, 224,   3,  64, 7, 7, 3, 3, 3, 3, 1, 1, 2, 2),
 	topi.nn.Workload("int8", "int8",  56,  56,  64,  64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1),
 	topi.nn.Workload("int8", "int8",  56,  56,  64, 128, 3, 3, 1, 1, 1, 1, 1, 1, 2, 2),
