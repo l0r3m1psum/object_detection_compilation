@@ -20,7 +20,14 @@ for idx, wl in enumerate(workloads):
     )
     ex = tir.build(func, target, vtar.tir.get_actual_pipeline())
     ex.export_library(
-        "build/conv2d_%d_%dx%dx%d.tar" % (idx, wl.height, wl.width, wl.in_filter)
+        "build/conv2d_pc_%d_%dx%dx%d.tar" % (idx, wl.height, wl.width, wl.in_filter)
+    )
+    func = vtar.topi.sq_ioa_conv2d_NCHWnc_from_workload(
+        wl, env.BATCH, env.BLOCK_IN, env.BLOCK_OUT, imm_scale=3
+    )
+    ex = tir.build(func, target, vtar.tir.get_actual_pipeline())
+    ex.export_library(
+        "build/conv2d_pt_%d_%dx%dx%d.tar" % (idx, wl.height, wl.width, wl.in_filter)
     )
 
 # TODO: Export also a Relax model that can run on the remote.
