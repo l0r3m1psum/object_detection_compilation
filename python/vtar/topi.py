@@ -199,7 +199,7 @@ resnet18_workloads = (
 )
 
 def sq_ioa_conv2d_NCHWnc_from_workload(
-	wl: topi.nn.Workload, BATCH: int, BLOCK_IN: int, BLOCK_OUT: int
+	wl: topi.nn.Workload, BATCH: int, BLOCK_IN: int, BLOCK_OUT: int, imm_scale=None
 ) -> tir.PrimFunc:
 	if BATCH != 1:
 		raise ValueError("ONLY single batch is supported for now.")
@@ -226,7 +226,7 @@ def sq_ioa_conv2d_NCHWnc_from_workload(
 	data   = te.placeholder(data_shape, wl.in_dtype, "data")
 	kernel = te.placeholder(kernel_shape, wl.in_dtype, "kernel")
 	bias   = te.placeholder(bias_shape, acc_dtype, "bias")
-	scale  = te.placeholder(bias_shape, acc_dtype, "scale")
+	scale  = te.placeholder(bias_shape, acc_dtype, "scale") if not imm_scale else imm_scale
 
 	res = sq_ioa_conv2d_NCHWnc(
 	    data=data,
