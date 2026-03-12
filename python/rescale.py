@@ -1,5 +1,5 @@
 import tvm
-from tvm import relax, ir
+from tvm import relax, ir, tir
 from tvm.script import ir as I, relax as R
 
 import vtar
@@ -163,15 +163,15 @@ def rebuild_tree(bb: relax.BlockBuilder, root_var: relax.Var, var2val: Dict, pot
 
         return var
 
-    final_i32_expr = _trace(root_var)
+    res = _trace(root_var)
 
     # Cast back to the original datatype of the root (e.g., int8 / uint8)
-    # Note: Depending on hardware target, you might want to insert a `relax.op.clip`
-    # here before casting, to simulate INT8 saturation.
     out_dtype = root_var.struct_info.dtype
-    # TODO: clip...
+    res = bb.emit(relax.op.maximum(res, relax.const(tir.max_value(out_dtype).value)))
+    res = bb.emit(relax.op.maximum(relax.const(tir.min_value(out_dtype).value), res))
+    res = bb.emit(relax.op.astype(res, out_dtype))
 
-    return bb.emit(relax.op.astype(final_i32_expr, out_dtype))
+    return res
 
 @relax.expr_functor.mutator
 class ReScaleMutator(relax.PyExprMutator):
