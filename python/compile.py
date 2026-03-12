@@ -62,7 +62,7 @@ target = tvm.target.Target(env.target, host=env.target_host)
 def compile(name: str, end: str) -> None:
 	seq = tvm.transform.Sequential([
 		# In case there is a symbolic batch dimension.
-		relax.transform.BindSymbolicVars({"N": 1}),
+		# relax.transform.BindSymbolicVars({"N": 1}),
 		vtar.relax.transform.RewriteBidiShift(),
 		vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
 		# Constant folding in TVM has some serious limitations. It can
@@ -116,8 +116,8 @@ def compile(name: str, end: str) -> None:
 		)
 	)
 
-compile("resnet50-v1-12-int8", "relax.nn.avg_pool2d")
-raise SystemExit(0)
+# compile("resnet50-v1-12-int8", "relax.nn.avg_pool2d")
 compile("resnet18_int8_per_channel", "relax.mean")
+raise SystemExit(0)
 compile("resnet18_int8_per_tensor", "relax.mean")
 compile("resnet18_int8_per_network", "relax.mean")

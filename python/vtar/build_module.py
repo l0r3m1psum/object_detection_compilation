@@ -32,6 +32,90 @@ bidi_shift_op.set_num_inputs(2)
 bidi_shift_op.add_argument("data", "Tensor", "The input tensor.")
 bidi_shift_op.add_argument("shift", "Tensor", "The direction and magnitude of the shift.")
 
+def infer_struct_info_qnn_add_op(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
+    if len(call.args) != 8:
+        raise ValueError("relax.qnn.add expects exactly 8 arguments.")
+
+    sinfo = []
+    for i, arg in enumerate(call.args):
+        if not isinstance(arg.struct_info, tvm.relax.TensorStructInfo):
+            raise ValueError(f"Argument {i} must be a Tensor.")
+        sinfo.append(arg.struct_info)
+
+    a_sinfo = sinfo[0]
+    a_scale_sinfo = sinfo[1]
+    a_zp_sinfo = sinfo[2]
+    b_sinfo = sinfo[3]
+    b_scale_sinfo = sinfo[4]
+    b_zp_sinfo = sinfo[5]
+    c_scale_sinfo = sinfo[6]
+    c_zp_sinfo = sinfo[7]
+
+    def is_int(dtype):
+        return dtype.startswith("int") or dtype.startswith("uint")
+
+    if not (a_scale_sinfo.dtype.startswith("float") and
+            b_scale_sinfo.dtype.startswith("float") and
+            c_scale_sinfo.dtype.startswith("float")):
+        raise ValueError("All scales must be float tensors.")
+
+    if not (is_int(a_sinfo.dtype) and is_int(b_sinfo.dtype)):
+        raise ValueError("All input addend must be integer tensors.")
+
+    if not (is_int(a_zp_sinfo.dtype) and
+            is_int(b_zp_sinfo.dtype) and
+            is_int(c_zp_sinfo.dtype)):
+        raise ValueError("All zero points must be integer tensors.")
+
+    def get_broadcast_shape(shape1, shape2):
+           if shape1 is None or shape2 is None:
+               return None
+
+           dummy_struct_info1 = tvm.relax.TensorStructInfo(shape1.values, dtype="float32")
+           dummy_struct_info2 = tvm.relax.TensorStructInfo(shape2.values, dtype="float32")
+           dummy_var1 = tvm.relax.Var("tmp1", dummy_struct_info1)
+           dummy_var2 = tvm.relax.Var("tmp2", dummy_struct_info2)
+           dummy_add = tvm.relax.op.add(dummy_var1, dummy_var2)
+
+           # We use the internal TVM facilities to implement broadcast semantics
+           normalized = ctx.normalize(dummy_add)
+
+           return normalized.struct_info.shape
+
+    # (a_scale * (a - a_zero_point) + b_scale * (b - b_zero_point))/c_scale + c_zero_point
+    out_shape1 = get_broadcast_shape(a_sinfo.shape, a_zp_sinfo.shape)
+    out_shape1 = get_broadcast_shape(out_shape1, a_scale_sinfo.shape)
+    out_shape2 = get_broadcast_shape(b_sinfo.shape, b_zp_sinfo.shape)
+    out_shape2 = get_broadcast_shape(out_shape2, b_scale_sinfo.shape)
+    out_shape = get_broadcast_shape(out_shape1, out_shape2)
+    out_shape = get_broadcast_shape(out_shape, c_scale_sinfo.shape)
+    out_shape = get_broadcast_shape(out_shape, c_zp_sinfo.shape)
+
+    # TODO: this is best effort and the resulting type should be calculated or
+    # constrains should be added to ensure correctness. Same for vdevice
+    out_dtype = a_sinfo.dtype
+    out_vdevice = a_sinfo.vdevice
+
+    # TODO: I have no idea if this is correct.
+    if out_shape is None:
+        out_ndim = max(s.ndim for s in sinfo) if all(s.ndim >= 0 for s in sinfo) else -1
+        return tvm.relax.TensorStructInfo(dtype=out_dtype, ndim=out_ndim, vdevice=out_vdevice)
+
+    return tvm.relax.TensorStructInfo(out_shape, dtype=out_dtype, vdevice=out_vdevice)
+
+tvm.ir.register_op_attr("relax.qnn.add", "FPurity", True)
+tvm.ir.register_op_attr("relax.qnn.add", "FInferStructInfo", infer_struct_info_qnn_add_op)
+qnn_add_op = tvm.ir.Op.get("relax.qnn.add")
+qnn_add_op.set_num_inputs(8)
+qnn_add_op.add_argument("a", "Tensor", "LHS addend.")
+qnn_add_op.add_argument("a_scale", "Tensor", "Scale of the LHS addend.")
+qnn_add_op.add_argument("a_zero_point", "Tensor", "Zero point of the LHS addend.")
+qnn_add_op.add_argument("b", "Tensor", "RHS addend.")
+qnn_add_op.add_argument("b_scale", "Tensor", "Scale of the RHS addend.")
+qnn_add_op.add_argument("b_zero_point", "Tensor", "Zero point of the RHS addend.")
+qnn_add_op.add_argument("c_scale", "Tensor", "Scale of the result.")
+qnn_add_op.add_argument("c_zero_point", "Tensor", "Zero point of the result.")
+
 # Register key ops
 tvm.ir.register_op_attr("tir.vta.coproc_sync", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
 tvm.ir.register_op_attr("tir.vta.coproc_sync", "TScriptPrinterName", "tir.vta.coproc_sync")
