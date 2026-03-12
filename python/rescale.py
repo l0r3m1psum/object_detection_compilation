@@ -1,17 +1,13 @@
 import tvm
 from tvm import relax, ir
-from tvm.script import ir as I
-from tvm.script import relax as R
-import vtar
-
-qnn_add = ir.Op.get("relax.qnn.add")
-
-import tvm
-from tvm import relax
 from tvm.script import ir as I, relax as R
+
+import vtar
 import numpy
 
 from typing import Dict, Set, List, Tuple
+
+qnn_add = ir.Op.get("relax.qnn.add")
 
 def optimize_scales(s_y: float, s_i: numpy.ndarray) -> numpy.ndarray:
     """
@@ -60,7 +56,6 @@ def find_connected_linear_ops(
         expr = bindings[var]
 
         if isinstance(expr, relax.Call) and hasattr(expr.op, "name"):
-            print(expr.op.name)
             if expr.op.name == "relax.qnn.add": # Linear ops
                 connected_linear_ops.append(var)
                 (
@@ -102,35 +97,103 @@ def find_connected_linear_ops(
                         leaf_scales.append(s_b.data.numpy())
                     else:
                         _trace(b)
-
-                # for arg in expr.args:
-                #     if isinstance(arg, relax.Var):
-                #         _trace(arg)
-            elif expr.op.name == "relax.nn.relu": # homogeneous functions
+            elif expr.op.name == "relax.nn.relu": # Homogeneous functions
                 _trace(expr.args[0])
-                # for arg in expr.args:
-                #     if isinstance(arg, relax.Var):
-                #         _trace(arg)
 
     _trace(root_var)
     return connected_linear_ops, leaf_scales
 
+def rebuild_tree(bb: relax.BlockBuilder, root_var: relax.Var, var2val: Dict, pots: List[int]) -> relax.Expr:
+    # Use an iterator so we pop the exact n_i corresponding to the leaves in DFS
+    # order as the find_connected_linear_ops function does.
+    pot_iter = iter(pots)
+
+    def _build_leaf(arg, zero_point, n: int) -> relax.Expr:
+        """Emits (a - z_a) <> s_a"""
+        val_i32 = bb.emit(relax.op.astype(arg, "int32"))
+        zp_i32 = bb.emit(relax.op.astype(zero_point, "int32"))
+
+        diff = bb.emit(relax.op.subtract(val_i32, zp_i32))
+
+        n_val = int(n)
+        if n_val > 0:
+            shift_const = relax.const(n_val, "int32")
+            return bb.emit(relax.op.left_shift(diff, shift_const))
+        elif n_val < 0:
+            shift_const = relax.const(-n_val, "int32")
+            return bb.emit(relax.op.right_shift(diff, shift_const))
+        else:
+            return diff
+
+    def _trace(var: relax.Var) -> relax.Expr:
+        expr = var2val[var]
+
+        if isinstance(expr, relax.Call) and hasattr(expr.op, "name"):
+            if expr.op.name == "relax.qnn.add":
+                a, s_a, z_a, b, s_b, z_b, s_c, z_c = expr.args
+
+                # Checks if leaves needs to be produced for LHS or RHS.
+                if isinstance(a, relax.Var):
+                    expr_a = var2val.get(a)
+                    if isinstance(expr_a, relax.Call) and getattr(expr_a.op, "name", "") in ["relax.qnn.add", "relax.nn.relu"]:
+                        lhs = _trace(a)
+                    else:
+                        n_a = next(pot_iter)
+                        lhs = _build_leaf(a, z_a, n_a)
+                else:
+                    n_a = next(pot_iter)
+                    lhs = _build_leaf(a, z_a, n_a)
+
+                if isinstance(b, relax.Var):
+                    expr_b = var2val.get(b)
+                    if isinstance(expr_b, relax.Call) and getattr(expr_b.op, "name", "") in ["relax.qnn.add", "relax.nn.relu"]:
+                        rhs = _trace(b)
+                    else:
+                        n_b = next(pot_iter)
+                        rhs = _build_leaf(b, z_b, n_b)
+                else:
+                    n_b = next(pot_iter)
+                    rhs = _build_leaf(b, z_b, n_b)
+
+                return bb.emit(relax.op.add(lhs, rhs))
+
+            elif expr.op.name == "relax.nn.relu":
+                inner_expr = _trace(expr.args[0])
+                return bb.emit(relax.op.nn.relu(inner_expr))
+
+        return var
+
+    final_i32_expr = _trace(root_var)
+
+    # Cast back to the original datatype of the root (e.g., int8 / uint8)
+    # Note: Depending on hardware target, you might want to insert a `relax.op.clip`
+    # here before casting, to simulate INT8 saturation.
+    out_dtype = root_var.struct_info.dtype
+    # TODO: clip...
+
+    return bb.emit(relax.op.astype(final_i32_expr, out_dtype))
+
 @relax.expr_functor.mutator
 class ReScaleMutator(relax.PyExprMutator):
-    def visit_function_(self, func: relax.Function):
-        self.roots_and_pots_leaves: Dict[relax.Var, List[int]] = {}
-        already_connected_linear_ops: Set[relax.Var] = set()
-        var2val: Dict[relax.Var, relax.Expr] = relax.analysis.get_var2val(func)
 
-        for var, expr in reversed(var2val.items()):
+    def visit_function_(self, func: relax.Function) -> relax.Function:
+        self.roots_and_pots_leaves: Dict[relax.Var, List[int]] = {}
+        self.already_connected_linear_ops: Set[relax.Var] = set()
+        self.var2val: Dict[relax.Var, relax.Expr] = relax.analysis.get_var2val(func)
+
+        return super().visit_function_(func)
+
+    def visit_dataflow_block_(self, block: relax.DataflowBlock) -> relax.DataflowBlock:
+        for binding in reversed(block.bindings):
+            var, expr = binding.var, binding.value
             if isinstance(expr, relax.Call) and getattr(expr.op, "name", "") == "relax.qnn.add":
 
-                if var in already_connected_linear_ops:
+                if var in self.already_connected_linear_ops:
                     continue
 
-                connected_linear_ops, leaf_scales = find_connected_linear_ops(var, var2val)
+                connected_linear_ops, leaf_scales = find_connected_linear_ops(var, self.var2val)
 
-                already_connected_linear_ops.update(connected_linear_ops)
+                self.already_connected_linear_ops.update(connected_linear_ops)
 
                 # Given reversed topological order the first element of the
                 # list is always the output qnn.add.
@@ -138,43 +201,26 @@ class ReScaleMutator(relax.PyExprMutator):
                     _, _, _,
                     _, _, _,
                     s_y, _,
-                ) = var2val[connected_linear_ops[0]].args
+                ) = self.var2val[connected_linear_ops[0]].args
 
                 pots = optimize_scales(s_y.data.numpy().item(), numpy.array(leaf_scales))
-                print(pots)
 
-                self.roots_and_pots_leaves[var] = leaf_scales
+                self.roots_and_pots_leaves[var] = pots
 
-        # FIXME: why there are two roots?
-        print(already_connected_linear_ops)
-        print(self.roots_and_pots_leaves)
-
-        return super().visit_function_(func)
+        return super().visit_dataflow_block_(block)
 
     def visit_var_binding_(self, binding: relax.VarBinding) -> None:
-        new_value = self.visit_expr(binding.value)
-        print(binding.var in self.roots_and_pots_leaves)
-        # TODO: when a root is found rebuild the expression tree lowering
-        # qnn.add to IOA operations.
-        return
+        if binding.var in self.roots_and_pots_leaves:
+            pots = self.roots_and_pots_leaves[binding.var]
 
-        # Apply multiplier adjustments if this variable was optimized
-        if binding.var in self.scale_adjustments:
-            factor = self.scale_adjustments[binding.var]
+            new_expr = rebuild_tree(self.builder_, binding.var, self.var2val, pots)
 
-            # Emit raw unscaled node
-            unscaled_var = self.builder_.emit(new_value, name_hint=binding.var.name_hint + "_unscaled")
-
-            # Multiply by scale adjustment
-            factor_const = relax.const(factor, dtype="float32")
-            scaled_expr = relax.multiply(unscaled_var, factor_const)
-
-            # Bind back to original variable ID
-            new_var = self.builder_.emit(scaled_expr, name_hint=binding.var.name_hint)
+            # Rebind the original variable ID to the AST
+            new_var = self.builder_.emit(new_expr, name_hint=binding.var.name_hint)
             self.set_var_remap(binding.var.vid, new_var)
-        else:
-            new_var = self.builder_.emit(new_value, name_hint=binding.var.name_hint)
-            self.set_var_remap(binding.var.vid, new_var)
+            return
+
+        super().visit_var_binding_(binding)
 
 @ir.transform.module_pass(opt_level=0)
 class ReScale:
