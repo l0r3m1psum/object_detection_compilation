@@ -129,12 +129,13 @@ def avg_pool2d_int(
 
 def bidi_shift(x: te.Tensor, a: te.Tensor) -> te.Tensor:
 	shape = topi.utils.get_const_tuple(x.shape)
+	# FIXME: the hack I have done here makes the test test_shift_bidirectional fail
 	if len(shape) == 4:
 		res = te.compute(
 			topi.utils.get_const_tuple(x.shape),
 			lambda n, c, h, w: tir.Select(
 				a[0, c, 0, 0] >= 0,
-				x[n, c, h, w] >>a[0, c, 0, 0],
+				x[n, c, h, w] >> a[0, c, 0, 0],
 				x[n, c, h, w] << -a[0, c, 0, 0]
 			),
 			"res",
@@ -144,7 +145,7 @@ def bidi_shift(x: te.Tensor, a: te.Tensor) -> te.Tensor:
 			topi.utils.get_const_tuple(x.shape),
 			lambda no, co, h, w, ni, ci: tir.Select(
 				a[0, co, 0, 0, 0, ci] >= 0,
-				x[no, co, h, w, ni, ci] >>a[0, co, 0, 0, 0, ci],
+				x[no, co, h, w, ni, ci] >> a[0, co, 0, 0, 0, ci],
 				x[no, co, h, w, ni, ci] << -a[0, co, 0, 0, 0, ci]
 			),
 			"res",

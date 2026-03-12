@@ -399,7 +399,7 @@ class QLinearAdd(relax.frontend.onnx.onnx_frontend.OnnxOpConverter):
 		# https://github.com/tensorflow/tflite-micro/blob/3b209129cc4ca0d9de64e23bd2b15def90345a7f/tensorflow/lite/kernels/internal/common.cc#L22
 
 		# C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
-		if False:
+		if True:
 			res = relax.Call(ir.Op.get("relax.qnn.add"), (
 				inputs[0],
 				get_constant(inputs[1], params),

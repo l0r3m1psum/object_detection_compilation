@@ -553,6 +553,7 @@ def test_shift_bidirectional():
 
     A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
     B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
+    # FIXME: this function fails because of the bad implementation of vtar.topi.bidi_shift
     C = vtar.topi.bidi_shift(A, B)
     D = te.compute(shape, lambda *i: C(*i).astype(env.out_dtype), "D")
 

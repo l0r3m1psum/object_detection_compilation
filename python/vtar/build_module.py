@@ -20,6 +20,8 @@ import tvm
 from .tir import transform
 from .environment import get_env, Environment
 
+from types import SimpleNamespace
+
 def infer_struct_info(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
     right_shift_op = tvm.ir.Op.get("relax.right_shift")
     infer_fn = right_shift_op.get_attr("FInferStructInfo")
@@ -31,6 +33,13 @@ bidi_shift_op = tvm.ir.Op.get("relax.bidi_shift")
 bidi_shift_op.set_num_inputs(2)
 bidi_shift_op.add_argument("data", "Tensor", "The input tensor.")
 bidi_shift_op.add_argument("shift", "Tensor", "The direction and magnitude of the shift.")
+
+def bidi_shift(data: tvm.relax.Expr, shift: tvm.relax.Expr) -> tvm.relax.Call:
+    op = tvm.ir.Op.get("relax.bidi_shift")
+    return tvm.relax.Call(op, (data, shift))
+
+import tvm.script.relax
+tvm.script.relax.bidi_shift = bidi_shift
 
 def infer_struct_info_qnn_add_op(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
     if len(call.args) != 8:
@@ -115,6 +124,19 @@ qnn_add_op.add_argument("b_scale", "Tensor", "Scale of the RHS addend.")
 qnn_add_op.add_argument("b_zero_point", "Tensor", "Zero point of the RHS addend.")
 qnn_add_op.add_argument("c_scale", "Tensor", "Scale of the result.")
 qnn_add_op.add_argument("c_zero_point", "Tensor", "Zero point of the result.")
+
+def qnn_add(
+    a: tvm.relax.Expr, s_a: tvm.relax.Expr, z_a: tvm.relax.Expr,
+    b: tvm.relax.Expr, s_b: tvm.relax.Expr, z_b: tvm.relax.Expr,
+    s_c: tvm.relax.Expr, z_c: tvm.relax.Expr,
+) -> tvm.relax.Call:
+    op = tvm.ir.Op.get("relax.qnn.add")
+    return tvm.relax.Call(op, (a, s_a, z_a, b, s_b, z_b, s_c, z_c))
+
+if not hasattr(tvm.script.relax, "qnn"):
+    tvm.script.relax.qnn = SimpleNamespace()
+
+tvm.script.relax.qnn.add = qnn_add
 
 # Register key ops
 tvm.ir.register_op_attr("tir.vta.coproc_sync", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)

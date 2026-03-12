@@ -64,6 +64,7 @@ def compile(name: str, end: str) -> None:
 		# In case there is a symbolic batch dimension.
 		# relax.transform.BindSymbolicVars({"N": 1}),
 		vtar.relax.transform.RewriteBidiShift(),
+		vtar.relax.transform.ReScale(),
 		vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping(),
 		# Constant folding in TVM has some serious limitations. It can
 		# only fold code by executing it hence if x is not know at
