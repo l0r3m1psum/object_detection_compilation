@@ -850,8 +850,8 @@ def rebuild_tree(bb: relax.BlockBuilder, root_var: relax.Var, var2val: Dict, pot
 
     # Cast back to the original datatype of the root (e.g., int8 / uint8)
     out_dtype = root_var.struct_info.dtype
-    res = bb.emit(relax.op.maximum(res, relax.const(tir.min_value(out_dtype).value)))
-    res = bb.emit(relax.op.maximum(relax.const(tir.max_value(out_dtype).value), res))
+    res = bb.emit(relax.op.minimum(res, relax.const(tir.max_value(out_dtype).value)))
+    res = bb.emit(relax.op.maximum(relax.const(tir.min_value(out_dtype).value), res))
     res = bb.emit(relax.op.astype(res, out_dtype))
 
     return res
