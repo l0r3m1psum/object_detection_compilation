@@ -52,6 +52,7 @@ pushd submodules
             --include-distutils ^
             --include-venv ^
             --include-dev ^
+            --include-tcltk ^
             --copy "%installdir%\Programs\Python" || goto :exit
     popd || goto :exit
 

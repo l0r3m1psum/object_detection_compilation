@@ -114,8 +114,43 @@ def show_dfgraph(func: relax.Function, name: str):
 
     for i, dot_graph in enumerate(visitor.dot_graphs):
         # print(dot_graph)
-        graph = graphviz.Source(dot_graph)
-        graph.view(name)
+        view_dot_graph_tkinter(dot_graph)
+        # graph = graphviz.Source(dot_graph)
+        # graph.view(name)
+
+import tkinter
+import subprocess
+
+def view_dot_graph_tkinter(dot_string: str):
+    try:
+        process = subprocess.Popen(
+            ("dot", "-Tpng"),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        png_data, err_data = process.communicate(input=dot_string.encode('utf-8'))
+
+        if process.returncode != 0:
+            raise RuntimeError(f"Graphviz failed to render: {err_data.decode('utf-8')}")
+
+    except FileNotFoundError:
+        raise RuntimeError("The 'dot' command was not found. Please install Graphviz on your system.")
+
+    root = tkinter.Tk()
+    root.title("TVM DataflowGraph Viewer")
+
+    photo = tkinter.PhotoImage(data=png_data)
+
+    img_width, img_height = photo.width(), photo.height()
+
+    root.geometry(f"{img_width + 40}x{img_height + 40}")
+
+    label = tkinter.Label(root, image=photo, bg="white")
+    label.pack(expand=True, fill="both")
+
+    # TODO: open more multiple windows, this should be probably be called from another thread.
+    root.mainloop()
 
 if __name__ == "__main__":
     mod = CascadedAddsModule
