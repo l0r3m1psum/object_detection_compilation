@@ -161,7 +161,7 @@ def view_dot_graph_tkinter(dot_string: str):
 if __name__ == "__main__":
     mod = CascadedAddsModule
     mod.show()
-    show_dfgraph(mod["main"], "before.gv")
+    # show_dfgraph(mod["main"], "before.gv")
     mod = vtar.relax.transform.ReScale()(mod)
     mod.show()
-    show_dfgraph(mod["main"], "after.gv")
+    # show_dfgraph(mod["main"], "after.gv")

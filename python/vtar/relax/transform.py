@@ -794,9 +794,11 @@ def rebuild_tree(bb: relax.BlockBuilder, root_var: relax.Var, var2val: Dict, pot
 	def _build_leaf(arg, zero_point, n: int) -> relax.Expr:
 		"""Emits (a - z_a) <> s_a"""
 		val_i32 = bb.emit(relax.op.astype(arg, "int32"))
-		zp_i32 = bb.emit(relax.op.astype(zero_point, "int32"))
-
-		diff = bb.emit(relax.op.subtract(val_i32, zp_i32))
+		if isinstance(zero_point, relax.Constant) and (zero_point.data.numpy() == 0).all():
+			diff = val_i32
+		else:
+			zp_i32 = bb.emit(relax.op.astype(zero_point, "int32"))
+			diff = bb.emit(relax.op.subtract(val_i32, zp_i32))
 
 		n_val = int(n)
 		if n_val > 0:
@@ -899,7 +901,12 @@ class ReScaleMutator(relax.PyExprMutator):
 			new_expr = rebuild_tree(self.builder_, binding.var, self.var2val, pots)
 
 			# Rebind the original variable ID to the AST
-			new_var = self.builder_.emit(new_expr, name_hint=binding.var.name_hint)
+			if isinstance(binding.var, relax.DataflowVar):
+				new_var = self.builder_.emit(new_expr, name_hint=binding.var.name_hint)
+			else:
+				# Emits a regular Var i.e. the output of the DataflowBlock.
+				new_var = self.builder_.emit_output(new_expr, name_hint=binding.var.name_hint)
+
 			self.set_var_remap(binding.var.vid, new_var)
 			return
 

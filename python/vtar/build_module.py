@@ -238,7 +238,6 @@ def qnn_conv2d(
 
     # NOTE: maybe we should use tvm.relax.op.op_attrs.Conv2DAttrs
     attrs = tvm.ir.make_node("DictAttrs", **kwargs) if kwargs else None
-    breakpoint()
 
     return tvm.relax.Call(op, tuple(args), attrs=attrs)
 
