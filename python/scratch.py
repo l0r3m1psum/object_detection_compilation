@@ -400,6 +400,15 @@ def virtual_threading():
     mod.show()
 
 if __name__ == "__main__":
+
+    onnx_model = onnx.load(r"C:\Users\Diego\Downloads\resnet18-resnet18-w8a8.onnx\job_jgovrkr45_optimized_onnx\model.onnx")
+    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
+    mod.show()
+    mod = vtar.relax.transform.RewriteQDQPatterns()(mod)
+    # mod = relax.transform.FoldConstant()(mod)
+    mod.show()
+
+    raise SystemExit()
     # from tvm.contrib.download import download
     virtual_threading()
     from vtar.relax.transform import print_report

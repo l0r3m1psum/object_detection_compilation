@@ -80,33 +80,38 @@ class CascadedAddsModule:
         w3: R.Tensor((16, 16, 3, 3), "int8")
     ):
         with R.dataflow():
-            c1 = R.nn.conv2d(x, w1, padding=(1, 1))
-            c2 = R.nn.conv2d(x, w2, padding=(1, 1))
-            c3 = R.nn.conv2d(x, w3, padding=(1, 1))
+            c1 = R.qnn.conv2d(
+                x, R.const(1.0), R.const(0, "int8"),
+                w1, R.const(1.0), R.const(0, "int8"),
+                R.const(1.0), R.const(0, "int8"),
+                padding=(1, 1)
+            )
+            c2 = R.qnn.conv2d(
+                x, R.const(1.0), R.const(0, "int8"),
+                w2, R.const(1.0), R.const(0, "int8"),
+                R.const(1.0), R.const(0, "int8"),
+                padding=(1, 1)
+            )
+            c3 = R.qnn.conv2d(
+                x, R.const(1.0), R.const(0, "int8"),
+                w3, R.const(1.0), R.const(0, "int8"),
+                R.const(1.0), R.const(0, "int8"),
+                padding=(1, 1)
+            )
             add1 = R.nn.relu(
                 R.qnn.add(
-                    c2, R.const(1.0), R.const(0),
-                    c3, R.const(1.0), R.const(0),
-                    R.const(1.0), R.const(0),
+                    c2, R.const(1.0), R.const(0, "int8"),
+                    c3, R.const(1.0), R.const(0, "int8"),
+                    R.const(1.0), R.const(0, "int8"),
                 )
             )
             add2 = R.qnn.add(
-                c1, R.const(1.0), R.const(0),
-                add1, R.const(1.0), R.const(0),
-                R.const(1.0), R.const(0),
+                c1, R.const(1.0), R.const(0, "int8"),
+                add1, R.const(1.0), R.const(0, "int8"),
+                R.const(1.0), R.const(0, "int8"),
             )
             R.output(add2)
         return add2
-
-@R.function
-def example_func(x: R.Tensor((10, 10), "float32"), y: R.Tensor((10, 10), "float32")):
-    with R.dataflow():
-        # These are bindings within a DataflowBlock
-        lv0 = R.add(x, y)
-        lv1 = R.multiply(lv0, x)
-        gv = R.subtract(lv1, y)
-        R.output(gv)
-    return gv
 
 def show_dfgraph(func: relax.Function, name: str):
     visitor = DataflowBlockGraphvizVisitor()
@@ -124,7 +129,7 @@ import subprocess
 def view_dot_graph_tkinter(dot_string: str):
     try:
         process = subprocess.Popen(
-            ("dot", "-Tpng"),
+            ("dot", "-Tpng", "-Gdpi=300"),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
@@ -140,7 +145,8 @@ def view_dot_graph_tkinter(dot_string: str):
     root = tkinter.Tk()
     root.title("TVM DataflowGraph Viewer")
 
-    photo = tkinter.PhotoImage(data=png_data)
+    # FIXME: this is so shit.
+    photo = tkinter.PhotoImage(data=png_data).subsample(4, 4)
 
     img_width, img_height = photo.width(), photo.height()
 

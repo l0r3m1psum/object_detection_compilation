@@ -17,10 +17,15 @@
 # pylint: disable=unused-argument, invalid-name
 """VTA specific buildin for runtime."""
 import tvm
+import tvm.script.relax
+
 from .tir import transform
 from .environment import get_env, Environment
 
 from types import SimpleNamespace
+
+if not hasattr(tvm.script.relax, "qnn"):
+    tvm.script.relax.qnn = SimpleNamespace()
 
 def infer_struct_info(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
     right_shift_op = tvm.ir.Op.get("relax.right_shift")
@@ -38,7 +43,6 @@ def bidi_shift(data: tvm.relax.Expr, shift: tvm.relax.Expr) -> tvm.relax.Call:
     op = tvm.ir.Op.get("relax.bidi_shift")
     return tvm.relax.Call(op, (data, shift))
 
-import tvm.script.relax
 tvm.script.relax.bidi_shift = bidi_shift
 
 def infer_struct_info_qnn_add_op(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
@@ -133,10 +137,112 @@ def qnn_add(
     op = tvm.ir.Op.get("relax.qnn.add")
     return tvm.relax.Call(op, (a, s_a, z_a, b, s_b, z_b, s_c, z_c))
 
-if not hasattr(tvm.script.relax, "qnn"):
-    tvm.script.relax.qnn = SimpleNamespace()
-
 tvm.script.relax.qnn.add = qnn_add
+
+def infer_struct_info_qnn_conv2d_op(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
+    if len(call.args) not in (8, 9):
+        raise ValueError("relax.qnn.conv2d expects either 8 or 9 arguments.")
+
+    sinfo =[]
+    for i, arg in enumerate(call.args):
+        if not isinstance(arg.struct_info, tvm.relax.TensorStructInfo):
+            raise ValueError(f"Argument {i} must be a Tensor.")
+        sinfo.append(arg.struct_info)
+
+    x_sinfo = sinfo[0]
+    x_scale_sinfo = sinfo[1]
+    x_zp_sinfo = sinfo[2]
+    w_sinfo = sinfo[3]
+    w_scale_sinfo = sinfo[4]
+    w_zp_sinfo = sinfo[5]
+    y_scale_sinfo = sinfo[6]
+    y_zp_sinfo = sinfo[7]
+    b_sinfo = sinfo[8] if len(call.args) == 9 else None
+
+    def is_int(dtype):
+        return dtype.startswith("int") or dtype.startswith("uint")
+
+    if not (x_scale_sinfo.dtype.startswith("float") and
+            w_scale_sinfo.dtype.startswith("float") and
+            y_scale_sinfo.dtype.startswith("float")):
+        raise ValueError("All scales must be float tensors.")
+
+    if not (is_int(x_sinfo.dtype) and is_int(w_sinfo.dtype)):
+        raise ValueError("Input and weight must be integer tensors.")
+
+    if b_sinfo and not is_int(b_sinfo.dtype):
+        raise ValueError("Bias must be an integer tensors.")
+
+    if not (is_int(x_zp_sinfo.dtype) and
+            is_int(w_zp_sinfo.dtype) and
+            is_int(y_zp_sinfo.dtype)):
+        raise ValueError("All zero points must be integer tensors.")
+
+    out_shape = None
+    if x_sinfo.shape is not None and w_sinfo.shape is not None:
+        dummy_x_sinfo = tvm.relax.TensorStructInfo(x_sinfo.shape, dtype="float32")
+        dummy_w_sinfo = tvm.relax.TensorStructInfo(w_sinfo.shape, dtype="float32")
+        dummy_x = tvm.relax.Var("tmp_x", dummy_x_sinfo)
+        dummy_w = tvm.relax.Var("tmp_w", dummy_w_sinfo)
+
+        kwargs = {}
+        if call.attrs is not None:
+            for k, v in call.attrs.items():
+                kwargs[k] = v
+
+        dummy_conv = tvm.relax.op.nn.conv2d(dummy_x, dummy_w, **kwargs)
+        normalized = ctx.normalize(dummy_conv)
+        out_shape = normalized.struct_info.shape
+
+    # https://onnx.ai/onnx/operators/onnx__QLinearConv.html#qlinearconv-10
+    # In ONNX y_zero_point has the same type as y hence we use it to determine
+    # the output type.
+    out_dtype = y_zp_sinfo.dtype
+    out_vdevice = x_sinfo.vdevice
+
+    # TODO: I have no idea if this is correct.
+    if out_shape is None:
+        # Best effort ndim deduction if dynamic shape is heavily missing
+        out_ndim = x_sinfo.ndim if x_sinfo.ndim >= 0 else -1
+        return tvm.relax.TensorStructInfo(dtype=out_dtype, ndim=out_ndim, vdevice=out_vdevice)
+
+    return tvm.relax.TensorStructInfo(out_shape, dtype=out_dtype, vdevice=out_vdevice)
+
+tvm.ir.register_op_attr("relax.qnn.conv2d", "FPurity", True)
+tvm.ir.register_op_attr("relax.qnn.conv2d", "FInferStructInfo", infer_struct_info_qnn_conv2d_op)
+
+qnn_conv2d_op = tvm.ir.Op.get("relax.qnn.conv2d")
+qnn_conv2d_op.set_num_inputs(9)
+qnn_conv2d_op.add_argument("x", "Tensor", "Input tensor.")
+qnn_conv2d_op.add_argument("x_scale", "Tensor", "Scale of the input.")
+qnn_conv2d_op.add_argument("x_zero_point", "Tensor", "Zero point of the input.")
+qnn_conv2d_op.add_argument("w", "Tensor", "Weight tensor.")
+qnn_conv2d_op.add_argument("w_scale", "Tensor", "Scale of the weight.")
+qnn_conv2d_op.add_argument("w_zero_point", "Tensor", "Zero point of the weight.")
+qnn_conv2d_op.add_argument("y_scale", "Tensor", "Scale of the output.")
+qnn_conv2d_op.add_argument("y_zero_point", "Tensor", "Zero point of the output.")
+qnn_conv2d_op.add_argument("B", "Optional[Tensor]", "Optional bias tensor.")
+
+def qnn_conv2d(
+    x: tvm.relax.Expr, x_scale: tvm.relax.Expr, x_zero_point: tvm.relax.Expr,
+    w: tvm.relax.Expr, w_scale: tvm.relax.Expr, w_zero_point: tvm.relax.Expr,
+    y_scale: tvm.relax.Expr, y_zero_point: tvm.relax.Expr,
+    B: tvm.relax.Expr = None,
+    **kwargs
+) -> tvm.relax.Call:
+
+    op = tvm.ir.Op.get("relax.qnn.conv2d")
+    args =[x, x_scale, x_zero_point, w, w_scale, w_zero_point, y_scale, y_zero_point]
+    if B is not None:
+        args.append(B)
+
+    # NOTE: maybe we should use tvm.relax.op.op_attrs.Conv2DAttrs
+    attrs = tvm.ir.make_node("DictAttrs", **kwargs) if kwargs else None
+    breakpoint()
+
+    return tvm.relax.Call(op, tuple(args), attrs=attrs)
+
+tvm.script.relax.qnn.conv2d = qnn_conv2d
 
 # Register key ops
 tvm.ir.register_op_attr("tir.vta.coproc_sync", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque)
