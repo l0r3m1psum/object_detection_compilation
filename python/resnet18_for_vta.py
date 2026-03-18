@@ -72,7 +72,11 @@ import vtar.relax.frontend.onnx
 # Other model zoos
 # https://huggingface.co/opencv
 # https://github.com/STMicroelectronics/stm32ai-modelzoo/
+# https://aihub.qualcomm.com/models/
+
+# Quantized ResNet 18 (the Qualcomm one requires uint quantization)
 # https://aihub.qualcomm.com/models/resnet18
+# https://github.com/STMicroelectronics/stm32ai-modelzoo/blob/main/image_classification/resnet18_pt/Public_pretrainedmodel_public_dataset/Imagenet/resnet18wd4_pt_224/resnet18wd4_pt_224_qdq_int8.onnx
 # This could be good for live real-time demo on face detection
 # https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar_int8.onnx
 
