@@ -62,7 +62,7 @@ def convert_zero_point_for_relax(zero_point: relax.Constant) -> relax.Constant:
 	only support immediate values for scale and zero point."""
 	zero_point_dtype = zero_point.struct_info.dtype
 	if zero_point_dtype != "int8":
-		if not (0 <= zero_point.data.numpy() < 128):
+		if not ((0 <= zero_point.data.numpy()) & (zero_point.data.numpy() < 128)).all():
 			warnings.warn("Relax only supports signed integers types for "
 				"zero points. The values of this particular zero_point "
 				"cannot be safely casted to int8. Clipping is going to be "
