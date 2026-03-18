@@ -185,9 +185,13 @@ def infer_struct_info_qnn_conv2d_op(call: tvm.relax.Call, ctx: tvm.relax.BlockBu
         dummy_x = tvm.relax.Var("tmp_x", dummy_x_sinfo)
         dummy_w = tvm.relax.Var("tmp_w", dummy_w_sinfo)
 
+        # FIXME: I am pretty sure that this should not be here!
         kwargs = {}
-        if call.attrs is not None:
-            for k, v in call.attrs.items():
+        attrs = dict(call.attrs) if isinstance(call.attrs, tvm.ir.Attrs) else call.attrs
+        if attrs is not None:
+            for k, v in attrs.items():
+                if isinstance(v, tvm.tir.IntImm):
+                    v = int(v)
                 kwargs[k] = v
 
         dummy_conv = tvm.relax.op.nn.conv2d(dummy_x, dummy_w, **kwargs)
