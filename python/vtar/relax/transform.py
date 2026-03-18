@@ -786,89 +786,82 @@ def find_connected_linear_ops(
 	_trace(root_var)
 	return connected_linear_ops, leaf_scales
 
-def rebuild_tree(bb: relax.BlockBuilder, root_var: relax.Var, var2val: Dict, pots: List[int]) -> relax.Expr:
+def rebuild_tree(root_var: relax.Var, var2val: Dict, pots: List[int]) -> Dict[relax.Var, dict]:
 	# Use an iterator so we pop the exact n_i corresponding to the leaves in DFS
 	# order as the find_connected_linear_ops function does.
 	pot_iter = iter(pots)
+	tree_nodes = {}
 
-	def _build_leaf(arg, zero_point, n: int) -> relax.Expr:
-		"""Emits (a - z_a) <> s_a"""
-		val_i32 = bb.emit(relax.op.astype(arg, "int32"))
-		if isinstance(zero_point, relax.Constant) and (zero_point.data.numpy() == 0).all():
-			diff = val_i32
-		else:
-			zp_i32 = bb.emit(relax.op.astype(zero_point, "int32"))
-			diff = bb.emit(relax.op.subtract(val_i32, zp_i32))
-
-		n_val = int(n)
-		if n_val > 0:
-			shift_const = relax.const(n_val, "int32")
-			return bb.emit(relax.op.left_shift(diff, shift_const))
-		elif n_val < 0:
-			shift_const = relax.const(-n_val, "int32")
-			return bb.emit(relax.op.right_shift(diff, shift_const))
-		else:
-			return diff
-
-	def _trace(var: relax.Var) -> relax.Expr:
+	def _trace(var: relax.Var, is_root: bool = False):
 		expr = var2val[var]
 
 		if isinstance(expr, relax.Call) and hasattr(expr.op, "name"):
 			if expr.op.name == "relax.qnn.add":
 				a, s_a, z_a, b, s_b, z_b, s_c, z_c = expr.args
 
-				# Checks if leaves needs to be produced for LHS or RHS.
+				node_info = {
+					"op": "qnn.add",
+					"is_root": is_root,
+				}
+				if is_root:
+					node_info["out_dtype"] = root_var.struct_info.dtype
+
+				# Checks if leaves needs to be produced for LHS.
 				if isinstance(a, relax.Var):
 					expr_a = var2val.get(a)
 					if isinstance(expr_a, relax.Call) and getattr(expr_a.op, "name", "") in ["relax.qnn.add", "relax.nn.relu"]:
-						lhs = _trace(a)
+						node_info["lhs_is_leaf"] = False
+						_trace(a)
 					else:
-						n_a = next(pot_iter)
-						lhs = _build_leaf(a, z_a, n_a)
+						node_info["lhs_is_leaf"] = True
+						node_info["lhs_n"] = next(pot_iter)
 				else:
-					n_a = next(pot_iter)
-					lhs = _build_leaf(a, z_a, n_a)
+					node_info["lhs_is_leaf"] = True
+					node_info["lhs_n"] = next(pot_iter)
 
+				# Checks if leaves needs to be produced for RHS.
 				if isinstance(b, relax.Var):
 					expr_b = var2val.get(b)
 					if isinstance(expr_b, relax.Call) and getattr(expr_b.op, "name", "") in ["relax.qnn.add", "relax.nn.relu"]:
-						rhs = _trace(b)
+						node_info["rhs_is_leaf"] = False
+						_trace(b)
 					else:
-						n_b = next(pot_iter)
-						rhs = _build_leaf(b, z_b, n_b)
+						node_info["rhs_is_leaf"] = True
+						node_info["rhs_n"] = next(pot_iter)
 				else:
-					n_b = next(pot_iter)
-					rhs = _build_leaf(b, z_b, n_b)
+					node_info["rhs_is_leaf"] = True
+					node_info["rhs_n"] = next(pot_iter)
 
-				return bb.emit(relax.op.add(lhs, rhs))
+				tree_nodes[var] = node_info
 
 			elif expr.op.name == "relax.nn.relu":
-				inner_expr = _trace(expr.args[0])
-				return bb.emit(relax.op.nn.relu(inner_expr))
+				node_info = {
+					"op": "nn.relu",
+					"is_root": is_root,
+				}
+				if is_root:
+					node_info["out_dtype"] = root_var.struct_info.dtype
 
-		return var
+				_trace(expr.args[0])
+				tree_nodes[var] = node_info
 
-	res = _trace(root_var)
+	_trace(root_var, is_root=True)
 
-	# Cast back to the original datatype of the root (e.g., int8 / uint8)
-	out_dtype = root_var.struct_info.dtype
-	res = bb.emit(relax.op.minimum(res, relax.const(tir.max_value(out_dtype).value)))
-	res = bb.emit(relax.op.maximum(relax.const(tir.min_value(out_dtype).value), res))
-	res = bb.emit(relax.op.astype(res, out_dtype))
-
-	return res
+	return tree_nodes
 
 @relax.expr_functor.mutator
 class ReScaleMutator(relax.PyExprMutator):
 
 	def visit_function_(self, func: relax.Function) -> relax.Function:
-		self.roots_and_pots_leaves: Dict[relax.Var, List[int]] = {}
+		# Instead of roots_and_pots, we now track all individual nodes of the tree
+		self.tree_nodes: Dict[relax.Var, dict] = {}
 		self.already_connected_linear_ops: Set[relax.Var] = set()
 		self.var2val: Dict[relax.Var, relax.Expr] = relax.analysis.get_var2val(func)
 
 		return super().visit_function_(func)
 
 	def visit_dataflow_block_(self, block: relax.DataflowBlock) -> relax.DataflowBlock:
+		# Backward pass: identify roots and build the configuration dictionary
 		for binding in reversed(block.bindings):
 			var, expr = binding.var, binding.value
 			if isinstance(expr, relax.Call) and getattr(expr.op, "name", "") == "relax.qnn.add":
@@ -880,8 +873,6 @@ class ReScaleMutator(relax.PyExprMutator):
 
 				self.already_connected_linear_ops.update(connected_linear_ops)
 
-				# Given reversed topological order the first element of the
-				# list is always the output qnn.add.
 				(
 					_, _, _,
 					_, _, _,
@@ -890,26 +881,80 @@ class ReScaleMutator(relax.PyExprMutator):
 
 				pots = optimize_scales(s_y.data.numpy().item(), numpy.array(leaf_scales))
 
-				self.roots_and_pots_leaves[var] = pots
+				# Update the mutator's node mapping with all nodes in this specific tree
+				tree_dict = rebuild_tree(var, self.var2val, pots)
+				self.tree_nodes.update(tree_dict)
 
+		# Standard forward pass mutation over bindings using our mapping
 		return super().visit_dataflow_block_(block)
 
-	def visit_var_binding_(self, binding: relax.VarBinding) -> None:
-		if binding.var in self.roots_and_pots_leaves:
-			pots = self.roots_and_pots_leaves[binding.var]
+	def _build_leaf(self, arg: relax.Expr, zero_point: relax.Expr, n: int) -> relax.Expr:
+		"""Helper method: Emits (a - z_a) << n / >> -n"""
+		val_i32 = self.builder_.emit(relax.op.astype(arg, "int32"))
+		if isinstance(zero_point, relax.Constant) and (zero_point.data.numpy() == 0).all():
+			diff = val_i32
+		else:
+			zp_i32 = self.builder_.emit(relax.op.astype(zero_point, "int32"))
+			diff = self.builder_.emit(relax.op.subtract(val_i32, zp_i32))
 
-			new_expr = rebuild_tree(self.builder_, binding.var, self.var2val, pots)
+		n_val = int(n)
+		if n_val > 0:
+			shift_const = relax.const(n_val, "int32")
+			return self.builder_.emit(relax.op.left_shift(diff, shift_const))
+		elif n_val < 0:
+			shift_amount = -n_val
+			rounding_bias = relax.const(1 << (shift_amount - 1), "int32")
+			diff_rounded = self.builder_.emit(relax.op.add(diff, rounding_bias))
+			shift_const = relax.const(shift_amount, "int32")
+			return self.builder_.emit(relax.op.right_shift(diff_rounded, shift_const))
+		else:
+			return diff
+
+	def visit_var_binding_(self, binding: relax.VarBinding) -> None:
+		# If the currently visited variable is part of an optimized tree
+		if binding.var in self.tree_nodes:
+			info = self.tree_nodes[binding.var]
+			expr = self.var2val[binding.var]
+
+			if info["op"] == "qnn.add":
+				a, s_a, z_a, b, s_b, z_b, s_c, z_c = expr.args
+
+				# `self.visit_expr()` acts as a lookup. If `a` or `b` are internal nodes
+				# they will correctly return the newly mapped int32 variables generated previously.
+				if info["lhs_is_leaf"]:
+					lhs = self._build_leaf(self.visit_expr(a), self.visit_expr(z_a), info["lhs_n"])
+				else:
+					lhs = self.visit_expr(a)
+
+				if info["rhs_is_leaf"]:
+					rhs = self._build_leaf(self.visit_expr(b), self.visit_expr(z_b), info["rhs_n"])
+				else:
+					rhs = self.visit_expr(b)
+
+				res = self.builder_.emit(relax.op.add(lhs, rhs))
+
+			elif info["op"] == "nn.relu":
+				inner_expr = self.visit_expr(expr.args[0])
+				res = self.builder_.emit(relax.op.nn.relu(inner_expr))
+
+			# If this is the root of the tree, it is finally cast back to the original datatype
+			if info["is_root"]:
+				out_dtype = info["out_dtype"]
+				# Enforce "int32" type for minimum/maximum bounds to match the type of `res`
+				res = self.builder_.emit(relax.op.minimum(res, relax.const(tir.max_value(out_dtype).value, "int32")))
+				res = self.builder_.emit(relax.op.maximum(relax.const(tir.min_value(out_dtype).value, "int32"), res))
+				res = self.builder_.emit(relax.op.astype(res, out_dtype))
 
 			# Rebind the original variable ID to the AST
 			if isinstance(binding.var, relax.DataflowVar):
-				new_var = self.builder_.emit(new_expr, name_hint=binding.var.name_hint)
+				new_var = self.builder_.emit(res, name_hint=binding.var.name_hint)
 			else:
-				# Emits a regular Var i.e. the output of the DataflowBlock.
-				new_var = self.builder_.emit_output(new_expr, name_hint=binding.var.name_hint)
+				new_var = self.builder_.emit_output(res, name_hint=binding.var.name_hint)
 
 			self.set_var_remap(binding.var.vid, new_var)
 			return
 
+		# Fallback to standard AST propagation for operations outside of the qnn.add trees
 		super().visit_var_binding_(binding)
 
 @ir.transform.module_pass(opt_level=0)
@@ -925,7 +970,7 @@ class ReScale:
 
 		return rewriter.builder_.get()
 
-@tvm.ir.transform.module_pass(opt_level=0)
+@ir.transform.module_pass(opt_level=0)
 class RewriteQDQPatterns:
 	def transform_module(self, mod, ctx):
 
@@ -938,13 +983,15 @@ class RewriteQDQPatterns:
 		qconv2d_w_zp = relax.dpl.is_const()
 
 		qconv2d_b = relax.dpl.is_const()
+		qconv2d_b_s = relax.dpl.is_const()
+		qconv2d_b_zp = relax.dpl.is_const()
 
 		qconv2d_y_s = relax.dpl.is_const()
 		qconv2d_y_zp = relax.dpl.is_const()
 
 		qconv2d_relu = relax.dpl.is_op("relax.nn.relu")
 
-		qconv2d = relax.dpl.is_op("relax.nn.conv2d")(
+		qconv2d_conv = relax.dpl.is_op("relax.nn.conv2d")(
 			relax.dpl.is_op("relax.dequantize")(
 				qconv2d_x, qconv2d_x_s, qconv2d_x_zp
 			),
@@ -953,9 +1000,12 @@ class RewriteQDQPatterns:
 			),
 		)
 		qconv2d = relax.dpl.is_op("relax.add")(
-		   qconv2d,
-		   relax.dpl.is_op("relax.reshape")(qconv2d_b, relax.dpl.wildcard()),
-		) | qconv2d
+			qconv2d_conv,
+			relax.dpl.is_op("relax.reshape")(
+				relax.dpl.is_op("relax.dequantize")(qconv2d_b, qconv2d_b_s, qconv2d_b_zp) | qconv2d_b,
+				relax.dpl.wildcard()
+			)
+		) | qconv2d_conv
 		qconv2d = qconv2d_relu(qconv2d) | qconv2d
 		qconv2d = relax.dpl.is_op("relax.quantize")(
 			qconv2d, qconv2d_y_s, qconv2d_y_zp
@@ -1009,11 +1059,37 @@ class RewriteQDQPatterns:
 					match_map[qconv2d_y_s], match_map[qconv2d_y_zp],
 				]
 				if qconv2d_b in match_map:
-					# NOTE: Isn't it better if this is done in float64?
-					b_s = match_map[qconv2d_x_s].data.numpy()*match_map[qconv2d_x_s].data.numpy()
-					b = relax.const(numpy.round(match_map[qconv2d_b].data.numpy()/b_s).astype("int32"))
+					if qconv2d_b_s in match_map:
+						# NOTE: is there a way to avoid re dequantization?
+						b_s_old = match_map[qconv2d_b_s].data.numpy()
+						b_zp_old = match_map[qconv2d_b_zp].data.numpy()
+						b_float = (match_map[qconv2d_b].data.numpy() - b_zp_old) * b_s_old
+					else:
+						# 1. It is a float tensor (unquantized)
+						b_float = match_map[qconv2d_b].data.numpy()
+
+					# 2. Requantize using the ONNX convention
+					b_s = (
+						match_map[qconv2d_x_s].data.numpy().astype("float64")
+						* match_map[qconv2d_w_s].data.numpy().astype("float64")
+					).astype("float32")
+					b_zp = numpy.zeros_like(b_s)
+
+					b = relax.const(
+						numpy.clip(
+							numpy.round(b_float / b_s + b_zp),
+							numpy.iinfo("int32").min,
+							numpy.iinfo("int32").max,
+						).astype("int32")
+					)
 					args.append(b)
-				res = relax.Call(ir.Op.get("relax.qnn.conv2d"), args)
+				new_attrs = {str(k): v for k, v in dict(match_map[qconv2d_conv].attrs).items()}
+				new_attrs['out_dtype'] = 'int32'
+				res = relax.Call(
+					ir.Op.get("relax.qnn.conv2d"),
+					args,
+					attrs=ir.make_node("relax.attrs.Conv2DAttrs", **new_attrs)
+				)
 				if qconv2d_relu in match_map:
 					res = relax.op.nn.relu(res)
 				return res
@@ -1023,5 +1099,277 @@ class RewriteQDQPatterns:
 				new_func = relax.dpl.rewrite_call(pattern, rewriter, func)
 				new_func = relax.analysis.remove_all_unused(new_func)
 				mod.update_func(global_var, new_func)
+
+		return mod
+
+# TODO: write test for this function.
+def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
+	x = numpy.asanyarray(arr, dtype=numpy.float32)
+	x_bits = x.view(numpy.int32)
+
+	SIGN_MASK     = numpy.asarray(-2147483648, dtype='int32') # 0x80000000
+	EXPONENT_MASK = 0x7F800000
+	MANTISSA_MASK = 0x007FFFFF
+	EXPONENT_SIZE_MASK = 0xFF
+	MANTISSA_SIZE = 23
+	BIAS = 127
+
+	# https://it.wikipedia.org/wiki/IEEE_754#Precisione_singola_(32_bit)
+	not_inf_or_nan = (x_bits < EXPONENT_MASK)
+	not_neg_inf_or_nan = (x_bits > 0) & not_inf_or_nan
+	has_zero_mantissa = (x_bits & (MANTISSA_MASK | SIGN_MASK)) == 0
+	is_pow2 = not_neg_inf_or_nan & has_zero_mantissa
+
+	powers = ((x_bits >> MANTISSA_SIZE) & EXPONENT_SIZE_MASK) - BIAS
+
+	return is_pow2, powers
+	# return numpy.where(is_pow2, powers, numpy.nan)
+
+def clamp(data: relax.Expr, min, max) -> relax.Expr:
+	res = relax.op.minimum(data, relax.const(max))
+	res = relax.op.maximum(relax.const(min), res)
+	return res
+
+def const_astype(x: relax.Constant, dtype: str) -> relax.Constant:
+	# TODO: check that conversion is safe to do
+	return relax.const(x.data.numpy().astype(dtype))
+
+def requantize(s: relax.Constant, x: relax.Expr, z: relax.Constant) -> relax.Expr:
+	res = x
+	if not (s.data.numpy() == 1).all():
+		res *= s
+	if not (z.data.numpy() == 0).all():
+		res += const_astype(z, "float32")
+	res = relax.op.round(res)
+	res = clamp(res, -128., 127.).astype("int8")
+	return res
+
+from typing import Optional
+
+def integer_only_arithmetic(
+	M: relax.Constant,
+	s_w: numpy.ndarray,
+	q_w: relax.Constant,
+	z_w: relax.Constant,
+	B: Optional[relax.Constant]
+) -> Tuple[numpy.ndarray, relax.Expr, Optional[relax.Constant]]:
+	"""From "Speed up integer-arithmetic-only inference via bit-shifting" """
+
+	# Global scale optimization
+	is_pow2, powers = get_strictly_power_of_two(s_w)
+	if (M.data.numpy() == s_w).all() and is_pow2.all():
+		# Powers needs to be negated because... Look at ioa_requantize
+		return numpy.array(-powers.item()).astype("int32"), q_w, B
+
+	M = M.data.numpy()
+	n = numpy.floor(-numpy.log2(M)).astype("int32")
+	# if (n < 0).any(): print(n, M)
+	M_star = 2.**(-n)
+	assert ((2.**(-(n + 1)) <= M) & (M <= M_star)).all(), "M = %s, n = %s" % (M, n)
+	assert ((1 <= M_star/M) & (M_star/M < 2)).all()
+
+	s_star_w = M_star/M * s_w
+	assert (s_star_w >= s_w).all()
+
+	q_star_w = (const_astype(q_w, "int32") - const_astype(z_w, "int32")).astype("float32")
+	q_star_w = requantize(relax.const(s_w/s_star_w), q_star_w , z_w)
+	if B:
+		B = relax.const(numpy.round(s_w/s_star_w*B.data.numpy()).astype("int32"))
+	return n, q_star_w, B
+
+def ioa_requantize(
+	bb: relax.BlockBuilder,
+	N: numpy.ndarray,
+	x: relax.Expr,
+	z: relax.Constant
+) -> relax.Expr:
+	# This is horrible. N is the inverted exponent of 2 to perform the
+	# multiplication in IOA i.e. M_star = 2**(-n).
+	is_pos = -N > 0
+	is_neg = -N < 0
+	magnitude = relax.const(numpy.where(is_neg, -(-N), -N))
+	# https://docs.amd.com/r/en-US/ug1399-vitis-hls/Class-Methods-and-Operators#:~:text=b%2B1%3B%0A%7D-,Shift%20Operators,-Each%20shift%20operator
+	is_scalar = not is_pos.shape
+	# This implements round to nearest after multiplication
+	# because the semantics of x >> n is floor(x >> n) and to get round(x >> n)
+	# we need to do x + 2^(n-1) >> n.
+	# Note that 2^(n-1) is 1 << (n-1) and could be calculated inside VTA.
+	# TODO: check that for left_shift is right also
+	if is_scalar:
+		x = x + relax.const(2**(magnitude.data.numpy().item()-1))
+		res = relax.op.left_shift(x, magnitude) if is_pos \
+			else relax.op.right_shift(x, magnitude)
+	else:
+		x = x + relax.const(2**(magnitude.data.numpy()-1))
+		A = relax.const(N)
+		res = relax.op.where(
+			A >= relax.const(0),
+			relax.op.right_shift(x, A),
+			relax.op.left_shift(x, -A)
+		)
+
+	# FIXME: handle y zero point when different from zero.
+	if not (z.data.numpy() == 0).all():
+		print("Non zero z_y = %f" % z.data.numpy())
+
+	return clamp(res + const_astype(z, "int32"), -128, 127).astype("int8")
+
+def reshape_if_needed(x: relax.Constant, shape: Tuple[int, int, int, int]) -> relax.Constant:
+	x_np = x.data.numpy()
+	# FIXME: GrapPhack breaks if scalar are reshaped to (1, 1, 1, 1)...
+	res = relax.const(x_np.reshape(shape)) if x_np.shape else x
+	return res
+
+@relax.expr_functor.mutator
+class ReQuantizeMutator(relax.PyExprMutator):
+	def visit_call_(self, call: relax.Call) -> relax.Call:
+		# Instead of roots_and_pots, we now track all individual nodes of the tree
+		if getattr(call.op, "name", "") == "relax.qnn.conv2d":
+			(
+				x, x_s, x_zp,
+				w, w_s, w_zp,
+				y_s, y_zp,
+			) = call.args[:8]
+			x_s = x_s.data.numpy()
+			w_s = w_s.data.numpy()
+			y_s = y_s.data.numpy()
+			b = call.args[8] if len(call.args) == 9 else None
+
+			if (x_s == y_s).all():
+				m = relax.const(w_s)
+			else:
+				m = relax.const((x_s*w_s)/y_s)
+
+			N, W, B = integer_only_arithmetic(
+				reshape_if_needed(m, (-1, 1, 1, 1)),
+				w_s.reshape((-1, 1, 1, 1)),
+				w,
+				reshape_if_needed(w_zp, (-1, 1, 1, 1)),
+				reshape_if_needed(b, (-1, 1, 1, 1)) if b else b,
+			)
+			W = self.builder_.normalize(W)
+			x_zp = reshape_if_needed(x_zp, (1, -1, 1, 1))
+			w_zp = reshape_if_needed(w_zp, (1, -1, 1, 1))
+			# TODO: based on kwargs some of those terms can be drastically
+			# simplified.
+			# TODO: implement "scalarization" of tensors with all the same value.
+			kwargs = call.attrs if call.attrs else {}
+			conv = (
+				const_astype(x_zp, "int32")*const_astype(w_zp, "int32")*relax.op.nn.conv2d(relax.op.ones_like(x), relax.op.ones_like(W), **kwargs)
+				- const_astype(w_zp, "int32")*relax.op.nn.conv2d(x, relax.op.ones_like(W), **kwargs)
+				- const_astype(x_zp, "int32")*relax.op.nn.conv2d(relax.op.ones_like(x), W, **kwargs)
+				+ relax.op.nn.conv2d(x, W, **kwargs)
+			)
+			res = conv + reshape_if_needed(B, (1, -1, 1, 1)) if B else conv
+			y_zp = reshape_if_needed(y_zp, (1, -1, 1, 1))
+			# The conditional reshape is needed because the dlight schedule is
+			# fragile (also the transform that binds scalars does not recognize
+			# tensors of shape (1, 1, 1, 1) as equivalent to scalars)
+			return ioa_requantize(self.builder_, N.reshape(1, -1, 1, 1) if N.shape else N, res, y_zp)
+
+		return super().visit_call_(call)
+
+@ir.transform.module_pass(opt_level=0)
+class ReQuantize:
+	def transform_module(self, mod: ir.IRModule, _ctx: ir.transform.PassContext) -> ir.IRModule:
+		mutator = ReQuantizeMutator(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				updated_func = mutator.visit_expr(func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				mod.update_func(global_var, updated_func)
+
+		return mod
+
+@relax.expr_functor.mutator
+class LowerQNNOpsMutator(relax.PyExprMutator):
+	def visit_call_(self, call: relax.Call) -> relax.Call:
+		res = call
+		op_name = getattr(call.op, "name", "")
+		if op_name == "relax.qnn.conv2d":
+			(
+				x, x_s, x_zp,
+				w, w_s, w_zp,
+				y_s, y_zp,
+			) = call.args[:8]
+			b = call.args[8] if len(call.args) == 9 else None
+
+			kwargs = call.attrs if call.attrs else {}
+			m = relax.const(
+				(x_s.data.numpy().astype("float64")
+					* w_s.data.numpy().astype("float64"))
+				/ y_s.data.numpy().astype("float64"),
+				dtype="float32"
+			)
+			x_ones = relax.op.ones_like(x)
+			w_ones = relax.op.ones_like(w)
+			x_zp_int = reshape_if_needed(const_astype(x_zp, "int32"), (1, -1, 1, 1))
+			w_zp_int = reshape_if_needed(const_astype(w_zp, "int32"), (1, -1, 1, 1))
+
+			x_zp_zero = (x_zp.data.numpy() == 0).all()
+			w_zp_zero = (w_zp.data.numpy() == 0).all()
+
+			res = relax.op.nn.conv2d(x, w, **kwargs)
+			if not x_zp_zero:
+				res -= x_zp_int*relax.op.nn.conv2d(x_ones, w, **kwargs)
+			if not w_zp_zero:
+				res -= w_zp_int*relax.op.nn.conv2d(x, w_ones, **kwargs)
+			if not x_zp_zero and not w_zp_zero:
+				res += x_zp_int*w_zp_int*relax.op.nn.conv2d(x_ones, w_ones, **kwargs)
+			if b:
+				res += reshape_if_needed(b, (1, -1, 1, 1))
+
+			res = requantize(
+				reshape_if_needed(m, (1, -1, 1, 1)),
+				res.astype("float32"),
+				reshape_if_needed(y_zp, (1, -1, 1, 1))
+			)
+		elif op_name == "relax.qnn.add":
+			(
+				a, a_s, a_zp,
+				b, b_s, b_zp,
+				c_s, c_zp,
+			) = call.args
+			# C = (A_s * (A - A_z) + B_s * (B - B_z))/C_s + C_z
+			# C = A_s/C_s * (A - A_z) + B_s/C_s * (B - B_z) + C_z
+			c_s_float = c_s.data.numpy().astype("float64")
+			a_m_float = a_s.data.numpy().astype("float64") / c_s_float
+			b_m_float = b_s.data.numpy().astype("float64") / c_s_float
+			a_m = relax.const(a_m_float, dtype="float32")
+			b_m = relax.const(b_m_float, dtype="float32")
+
+			lhs = a.astype("int32")
+			if not (a_zp.data.numpy() == 0).all():
+				lhs -= const_astype(a_zp, "int32")
+			lhs = lhs.astype("float32")
+			if not (a_m_float == 1).all():
+				lhs *= a_m
+
+			rhs = b.astype("int32")
+			if not (b_zp.data.numpy() == 0).all():
+				rhs -= const_astype(b_zp, "int32")
+			rhs = rhs.astype("float32")
+			if not (b_m_float == 1).all():
+				rhs *= b_m
+
+			res = lhs + rhs
+			res = requantize(relax.const(1.0), res, c_zp)
+
+		if res is call:
+			res = super().visit_call_(call)
+
+		return res
+
+@ir.transform.module_pass(opt_level=0)
+class LowerQNNOps:
+	def transform_module(self, mod: ir.IRModule, _ctx: ir.transform.PassContext) -> ir.IRModule:
+		mutator = LowerQNNOpsMutator(mod)
+
+		for global_var, func in mod.functions.items():
+			if isinstance(func, relax.Function):
+				updated_func = mutator.visit_expr(func)
+				updated_func = relax.analysis.remove_all_unused(updated_func)
+				mod.update_func(global_var, updated_func)
 
 		return mod
