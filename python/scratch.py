@@ -404,9 +404,12 @@ if __name__ == "__main__":
     # From Qualcomm zoo
     # onnx_model = onnx.load(r"C:\Users\Diego\Downloads\resnet18-resnet18-w8a8.onnx\job_jgovrkr45_optimized_onnx\model.onnx")
     # From STMicroelectronics zoo
-    onnx_model = onnx.load(r"build/resnet18wd4_pt_224_qdq_int8.onnx")
+    # onnx_model = onnx.load(r"build/resnet18wd4_pt_224_qdq_int8.onnx")
+    # Despite the name this is the one taken from the ONNX zoo (ported from Gluon)
+    # and then quantized by me (look at quantize.bat).
+    onnx_model = onnx.load(r"build\resnet18-v2-7_int8_axis.onnx")
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
-    mod = relax.transform.BindSymbolicVars({"batch_size": 64})(mod)
+    # mod = relax.transform.BindSymbolicVars({"batch_size": 64})(mod)
     mod.show()
     mod = vtar.relax.transform.RewriteQDQPatterns()(mod)
     # mod = vtar.relax.transform.ReScale()(mod)
@@ -415,7 +418,7 @@ if __name__ == "__main__":
     mod = relax.transform.FoldConstant()(mod)
     mod.show()
     ex = tvm.compile(mod)
-    ex.export_library("build/resnet18wd4_pt_224_qdq_int8.dll")
+    ex.export_library(r"build\gluon_resnet18_v1b_Opset18_ioa.dll")
 
     raise SystemExit(0)
     # from tvm.contrib.download import download
