@@ -173,6 +173,7 @@ Other open source hardware accellerators for deep learning:
   * [OpenDLA](https://github.com/OpenDLA/OpenDLA)
   * [PipeCNN](https://github.com/doonny/PipeCNN)
   * [Coral NPU](https://github.com/google-coral/coralnpu)
+  * [Tensil CU](https://github.com/tensil-ai/tensil)
 
 # Convolution
 
