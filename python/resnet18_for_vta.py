@@ -70,8 +70,9 @@ import vtar.relax.frontend.onnx
 # https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12-int8/resolve/main/ssd_mobilenet_v1_12-int8.onnx
 
 # Other model zoos
+# https://huggingface.co/onnx/models
 # https://huggingface.co/onnx-community/models
-# https://huggingface.co/opencv
+# https://huggingface.co/opencv/models
 # https://github.com/STMicroelectronics/stm32ai-modelzoo/
 # https://aihub.qualcomm.com/models/
 
