@@ -1031,7 +1031,7 @@ class RewriteQDQPatterns:
 		qadd = qadd_relu(qadd) | qadd
 		qadd = relax.dpl.is_op("relax.quantize")(qadd, qadd_c_s, qadd_c_zp)
 
-		# A single pattern must be used in this case because is this is
+		# A single pattern must be used in this case because if this is
 		# splitted in two passes of relax.dpl.rewrite_call (or using
 		# relax.transform.FuseOpsByPattern with two different patterns) there
 		# are some dequantize which have out degree 2 i.e are used by more than

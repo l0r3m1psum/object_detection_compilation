@@ -185,7 +185,7 @@ def sq_ioa_conv2d_NCHWnc(
 	return res
 
 resnet18_workloads = (
-	#                   inp     out    H    W    I    O  R  S pt pl pb pb dh dw sh sw
+	#                   inp     out    H    W    I    O  R  S pt pl pb pr dh dw sh sw
 	topi.nn.Workload("int8", "int8", 224, 224,   3,  64, 7, 7, 3, 3, 3, 3, 1, 1, 2, 2),
 	topi.nn.Workload("int8", "int8",  56,  56,  64,  64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1),
 	topi.nn.Workload("int8", "int8",  56,  56,  64, 128, 3, 3, 1, 1, 1, 1, 1, 1, 2, 2),
