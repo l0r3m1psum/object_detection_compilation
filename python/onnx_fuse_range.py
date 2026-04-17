@@ -34,6 +34,9 @@ def rewrite_loop_to_arange(
     if trip_cnt_name not in bwd_node_map: return
     cast_2_node = bwd_node_map[trip_cnt_name]
     if cast_2_node.op_type != "Cast": return
+    cast_2_to_attribute = next(attr for attr in cast_2_node.attribute if attr.name == "to")
+    if cast_2_to_attribute is None: return
+    if cast_2_to_attribute.i != onnx.TensorProto.INT64: return
 
     if cast_2_node.input[0] not in bwd_node_map: return
     ceil_node = bwd_node_map[cast_2_node.input[0]]
@@ -46,6 +49,8 @@ def rewrite_loop_to_arange(
     if div_node.input[0] not in bwd_node_map: return
     cast_1_node = bwd_node_map[div_node.input[0]]
     if cast_1_node.op_type != "Cast": return
+    cast_1_to_attribute = next(attr for attr in cast_1_node.attribute if attr.name == "to")
+    if cast_1_to_attribute.i != onnx.TensorProto.FLOAT: return
 
     if cast_1_node.input[0] not in bwd_node_map: return
     sub_node = bwd_node_map[cast_1_node.input[0]]
@@ -68,10 +73,8 @@ def rewrite_loop_to_arange(
     if limit_name == start_name or limit_name == delta_name or start_name == delta_name: return
 
     if len(loop_node.output) != 2: return
-        
-    # final_state_output = loop_node.output[0] unused
-    range_output_name = loop_node.output[1]
 
+    _, range_output_name = loop_node.output
 
     # At this point we have found an occurrence of the rewrite rule (an
     # homomorphishm). We just need to add the new graph and remove the
@@ -87,16 +90,20 @@ def rewrite_loop_to_arange(
     # To keep the topological order
     i = next(i for i, node in enumerate(graph.node) if node == loop_node)
     graph.node.insert(i, range_node)
+    # Since we introduce only one node we do not need to add anything to
+    # graph.value_info nor we need to change graph.initializer
 
+    # After having inserted the new node the graph is in an invalid state since
+    # range_output_name is in loop_node.output and range_node.output. We only
+    # update the bwd_node_map to then let the GC step do the cleaning.
     del loop_node.output[1]
-    # loop_node.output[1] += "_detached"
     bwd_node_map[range_output_name] = range_node
 
 def reachability(
     name: str,
     bwd_node_map: Dict[str, onnx.NodeProto],
     init_map: Dict[str, onnx.TensorProto],
-    unreachable_node: Set[str],
+    unreachable_edges: Set[str],
     unreachable_initializer: Set[str],
     visited: Set[str],
 ) -> None:
@@ -111,16 +118,19 @@ def reachability(
     visited.add(name)
 
     if name in bwd_node_map:
-        unreachable_node.discard(name)
+        unreachable_edges.discard(name)
         node = bwd_node_map[name]
         for input in node.input:
-            reachability(input, bwd_node_map, init_map, unreachable_node, unreachable_initializer, visited)
+            reachability(
+                input, bwd_node_map, init_map,
+                unreachable_edges, unreachable_initializer, visited
+            )
         return
     if name in init_map:
         unreachable_initializer.discard(name)
         return
 
-    print("This should be the input", name)
+    # print("This should be the input", name)
 
 
 def onnx_term_graph_rewrite(
@@ -143,6 +153,8 @@ def onnx_term_graph_rewrite(
     graph instead of reaching a fixed point with a while.
     """
 
+    onnx.checker.check_model(model)
+
     new_model = copy.deepcopy(model)
     new_graph: onnx.GraphProto = new_model.graph
 
@@ -160,30 +172,37 @@ def onnx_term_graph_rewrite(
     for node in list(new_graph.node):
         graph_rewrite_rule(node, new_graph, bwd_node_map, init_map)
 
+    # Garbage collection phase
 
-    unreachable_node = set(bwd_node_map.keys())
+    unreachable_edges = set(bwd_node_map.keys())
     unreachable_initializer = set(init_map.keys())
     # TODO: if a path from the output does not reach the input or an initializer
-    # all nodes along that path can be deleted.
+    # all nodes along that path can be deleted. Is this even possible?
     visited: Set[str] = set()
     for output in new_graph.output:
-        reachability(output.name, bwd_node_map, init_map, unreachable_node, unreachable_initializer, visited)
+        reachability(
+            output.name, bwd_node_map, init_map,
+            unreachable_edges, unreachable_initializer, visited
+        )
 
-    print(unreachable_node)
+    to_delete: List[int]
 
-    to_delete: List[int] = []
+    to_delete = []
     for i, node in enumerate(new_graph.node):
         # TODO: understand the difference between node.name and Tensor Names
-        if node.output and all(out_tensor in unreachable_node for out_tensor in node.output):
+        if node.output and all(out_tensor in unreachable_edges for out_tensor in node.output):
             to_delete.append(i)
-
     for i in reversed(to_delete): del new_graph.node[i]
 
+    # TODO: also the new_graph.value_info need to be garbage collected with
+    # unreachable_edges.
+
+    # FIXME: the reachability function can report an initializer as unreachable
+    # if it is an initializer used by a another graph (e.g. the body of a Loop)
     to_delete = []
     for i, initializer in enumerate(new_graph.initializer):
         if initializer.name in unreachable_initializer:
             to_delete.append(i)
-
     for i in reversed(to_delete): del new_graph.initializer[i]
 
     onnx.checker.check_model(new_model)
@@ -192,7 +211,8 @@ def onnx_term_graph_rewrite(
 model = onnx.load(r"C:\Users\Diego\Downloads\yolov3-12-int8.onnx")
 new_model = onnx_term_graph_rewrite(model, rewrite_loop_to_arange)
 onnx.save(new_model, r"C:\Users\Diego\Downloads\yolov3-range-12-int8.onnx")
+new_model = onnx_term_graph_rewrite(model, lambda *args: None)
 
-import vtar.relax.frontend.onnx
-mod = vtar.relax.frontend.onnx.from_onnx(new_model)
-mod.show()
+# import vtar.relax.frontend.onnx
+# mod = vtar.relax.frontend.onnx.from_onnx(new_model)
+# mod.show()
