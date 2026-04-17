@@ -924,38 +924,23 @@ def test_trivial_quantized_gemm():
                 R.output(gv)
             return gv
 
-    # NOTE: relax.dpl.is_tuple seems to be broken on the TVM side it passes the
-    # arguments both "normally" and as a tuple hence passing them two times.
-    # To work around this we have to do our pattern matching after
-    # relax.transform.LegalizeOps
-    if False:
-        data = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
-        weight = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
-        args = relax.dpl.is_tuple((data, weight))
-        quantized_pat = relax.dpl.is_op("relax.einsum")(args)
-
-    data = relax.dpl.is_call_tir("cast", (relax.dpl.wildcard().has_dtype("int8"),)).has_dtype("int32")
-    weight = relax.dpl.is_call_tir("cast", (relax.dpl.wildcard().has_dtype("int8"),)).has_dtype("int32")
-    quantized_pat = relax.dpl.is_call_tir("einsum", (data, weight))
-    relu_pat = relax.dpl.is_call_tir("relu", (quantized_pat,))
-    cast_pat = relax.dpl.is_call_tir("cast", (relu_pat, )).has_dtype("int8")
+    data = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
+    weight = relax.dpl.is_op("relax.astype")(relax.dpl.wildcard())
+    out = relax.dpl.is_tuple((data, weight))
+    out = relax.dpl.is_op("relax.einsum")(out)
+    out = relax.dpl.is_op("relax.nn.relu")(out)
+    out =relax.dpl.is_op("relax.astype")(out)
+    quantized_pat = out
 
     patterns = (
-        relax.transform.FusionPattern("vtar.relu_compute", cast_pat),
         relax.transform.FusionPattern("vtar.quantized_compute", quantized_pat),
     )
 
     mod = QantizedGEMM
-    mod = relax.transform.LegalizeOps()(mod)
-    mod = relax.transform.AnnotateTIROpPattern()(mod)
-    mod = relax.transform.FoldConstant()(mod)
-    # mod = relax.transform.FuseOps()(mod)
-    mod = relax.transform.FuseOpsByPattern(patterns, annotate_codegen=False)(mod)
-    # mod = relax.transform.MergeCompositeFunctions()(mod)
-    mod = relax.transform.FuseTIR()(mod)
+    mod = relax.transform.FuseOpsByPattern(patterns)(mod)
     mod.show()
 
-    pytest.skip("TODO")
+    pytest.skip("relax.dpl.is_tuple seems to be broken on the TVM side.")
 
 def test_constant_folding_patches():
     @I.ir_module
@@ -1040,7 +1025,7 @@ def test_qconv2d_operator_fusion():
                 # Using the same constant for both addition and shift is wrong
                 # semantically but the pattern should match anyway.
                 x = conv + s
-                mul_round_nst = R.where(s >= R.const(0), R.right_shift(x, s), R.left_shift(x, -s))
+                mul_round_nst = R.bidi_shift(x, s)
                 clamp_astype = R.maximum(R.const(-128), R.minimum(mul_round_nst, R.const(127))).astype("int8")
                 R.output(clamp_astype)
             return clamp_astype
@@ -1064,106 +1049,6 @@ def test_qconv2d_operator_fusion():
 
 # ONNX tests ###################################################################
 
-# Generated and slightly edited from:
-# onnx_model = onnx.load("build/resnet18_int8_per_tensor.onnx")
-# vtar.relax.frontend.onnx.convert_weights_to_inputs(onnx_model)
-onnx_text_quantized_resnet18 = """\
-<
-   ir_version: 6,
-   opset_import: ["" : 11, "com.microsoft" : 1],
-   producer_name: "onnx.quantize",
-   producer_version: "0.1.0",
-   metadata_props: ["onnx.infer": "onnxruntime.quant"]
->
-main_graph (float[1,3,224,224] input, int8[64,3,7,7] "onnx::Conv_193_quantized", int32[64] "onnx::Conv_194_quantized", int8[64,64,3,3] "onnx::Conv_196_quantized", int32[64] "onnx::Conv_197_quantized", int8[64,64,3,3] "onnx::Conv_199_quantized", int32[64] "onnx::Conv_200_quantized", int8[64,64,3,3] "onnx::Conv_202_quantized", int32[64] "onnx::Conv_203_quantized", int8[64,64,3,3] "onnx::Conv_205_quantized", int32[64] "onnx::Conv_206_quantized", int8[128,64,3,3] "onnx::Conv_208_quantized", int32[128] "onnx::Conv_209_quantized", int8[128,128,3,3] "onnx::Conv_211_quantized", int32[128] "onnx::Conv_212_quantized", int8[128,64,1,1] "onnx::Conv_214_quantized", int32[128] "onnx::Conv_215_quantized", int8[128,128,3,3] "onnx::Conv_217_quantized", int32[128] "onnx::Conv_218_quantized", int8[128,128,3,3] "onnx::Conv_220_quantized", int32[128] "onnx::Conv_221_quantized", int8[256,128,3,3] "onnx::Conv_223_quantized", int32[256] "onnx::Conv_224_quantized", int8[256,256,3,3] "onnx::Conv_226_quantized", int32[256] "onnx::Conv_227_quantized", int8[256,128,1,1] "onnx::Conv_229_quantized", int32[256] "onnx::Conv_230_quantized", int8[256,256,3,3] "onnx::Conv_232_quantized", int32[256] "onnx::Conv_233_quantized", int8[256,256,3,3] "onnx::Conv_235_quantized", int32[256] "onnx::Conv_236_quantized", int8[512,256,3,3] "onnx::Conv_238_quantized", int32[512] "onnx::Conv_239_quantized", int8[512,512,3,3] "onnx::Conv_241_quantized", int32[512] "onnx::Conv_242_quantized", int8[512,256,1,1] "onnx::Conv_244_quantized", int32[512] "onnx::Conv_245_quantized", int8[512,512,3,3] "onnx::Conv_247_quantized", int32[512] "onnx::Conv_248_quantized", int8[512,512,3,3] "onnx::Conv_250_quantized", int32[512] "onnx::Conv_251_quantized", int8[10,512] "fc.weight_quantized", int32[10] "fc.bias_quantized") => (float[1,10] output)
-   <int8 "/conv1/Conv_output_0_zero_point" =  {-128}, float "/conv1/Conv_output_0_scale" =  {0.0288692}, int8 input_zero_point =  {-14}, float input_scale =  {0.0186584}, float "onnx::Conv_193_scale" =  {0.00268506}, int8 "onnx::Conv_193_zero_point" =  {0}, int8 "/layer1/layer1.0/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer1/layer1.0/conv1/Conv_output_0_scale" =  {0.0219578}, int8 "/maxpool/MaxPool_output_0_zero_point" =  {-128}, float "/maxpool/MaxPool_output_0_scale" =  {0.0288692}, float "onnx::Conv_196_scale" =  {0.00252428}, int8 "onnx::Conv_196_zero_point" =  {0}, int8 "/layer1/layer1.0/conv2/Conv_output_0_zero_point" =  {16}, float "/layer1/layer1.0/conv2/Conv_output_0_scale" =  {0.0414506}, float "onnx::Conv_199_scale" =  {0.00593825}, int8 "onnx::Conv_199_zero_point" =  {0}, int8 "/layer1/layer1.0/Add_output_0_zero_point" =  {-128}, float "/layer1/layer1.0/Add_output_0_scale" =  {0.0333703}, int8 "/layer1/layer1.1/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer1/layer1.1/conv1/Conv_output_0_scale" =  {0.0201473}, float "onnx::Conv_202_scale" =  {0.00179852}, int8 "onnx::Conv_202_zero_point" =  {0}, int8 "/layer1/layer1.1/conv2/Conv_output_0_zero_point" =  {32}, float "/layer1/layer1.1/conv2/Conv_output_0_scale" =  {0.0872713}, float "onnx::Conv_205_scale" =  {0.006156}, int8 "onnx::Conv_205_zero_point" =  {0}, int8 "/layer1/layer1.1/Add_output_0_zero_point" =  {-128}, float "/layer1/layer1.1/Add_output_0_scale" =  {0.0397232}, int8 "/layer2/layer2.0/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer2/layer2.0/conv1/Conv_output_0_scale" =  {0.0130162}, float "onnx::Conv_208_scale" =  {0.00115206}, int8 "onnx::Conv_208_zero_point" =  {0}, int8 "/layer2/layer2.0/conv2/Conv_output_0_zero_point" =  {-9}, float "/layer2/layer2.0/conv2/Conv_output_0_scale" =  {0.0423237}, float "onnx::Conv_211_scale" =  {0.00420652}, int8 "onnx::Conv_211_zero_point" =  {0}, int8 "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_zero_point" =  {-1}, float "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_scale" =  {0.0432311}, float "onnx::Conv_214_scale" =  {0.00613402}, int8 "onnx::Conv_214_zero_point" =  {0}, int8 "/layer2/layer2.0/Add_output_0_zero_point" =  {-128}, float "/layer2/layer2.0/Add_output_0_scale" =  {0.029022}, int8 "/layer2/layer2.1/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer2/layer2.1/conv1/Conv_output_0_scale" =  {0.0154306}, float "onnx::Conv_217_scale" =  {0.00192945}, int8 "onnx::Conv_217_zero_point" =  {0}, int8 "/layer2/layer2.1/conv2/Conv_output_0_zero_point" =  {-2}, float "/layer2/layer2.1/conv2/Conv_output_0_scale" =  {0.0555343}, float "onnx::Conv_220_scale" =  {0.00543165}, int8 "onnx::Conv_220_zero_point" =  {0}, int8 "/layer2/layer2.1/Add_output_0_zero_point" =  {-128}, float "/layer2/layer2.1/Add_output_0_scale" =  {0.0358533}, int8 "/layer3/layer3.0/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer3/layer3.0/conv1/Conv_output_0_scale" =  {0.016466}, float "onnx::Conv_223_scale" =  {0.00150054}, int8 "onnx::Conv_223_zero_point" =  {0}, int8 "/layer3/layer3.0/conv2/Conv_output_0_zero_point" =  {-31}, float "/layer3/layer3.0/conv2/Conv_output_0_scale" =  {0.0432767}, float "onnx::Conv_226_scale" =  {0.00311479}, int8 "onnx::Conv_226_zero_point" =  {0}, int8 "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_zero_point" =  {-26}, float "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_scale" =  {0.031958}, float "onnx::Conv_229_scale" =  {0.00389802}, int8 "onnx::Conv_229_zero_point" =  {0}, int8 "/layer3/layer3.0/Add_output_0_zero_point" =  {-128}, float "/layer3/layer3.0/Add_output_0_scale" =  {0.0366562}, int8 "/layer3/layer3.1/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer3/layer3.1/conv1/Conv_output_0_scale" =  {0.0119251}, float "onnx::Conv_232_scale" =  {0.000907924}, int8 "onnx::Conv_232_zero_point" =  {0}, int8 "/layer3/layer3.1/conv2/Conv_output_0_zero_point" =  {7}, float "/layer3/layer3.1/conv2/Conv_output_0_scale" =  {0.0466983}, float "onnx::Conv_235_scale" =  {0.00322255}, int8 "onnx::Conv_235_zero_point" =  {0}, int8 "/layer3/layer3.1/Add_output_0_zero_point" =  {-128}, float "/layer3/layer3.1/Add_output_0_scale" =  {0.0386949}, int8 "/layer4/layer4.0/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer4/layer4.0/conv1/Conv_output_0_scale" =  {0.0160775}, float "onnx::Conv_238_scale" =  {0.000896827}, int8 "onnx::Conv_238_zero_point" =  {0}, int8 "/layer4/layer4.0/conv2/Conv_output_0_zero_point" =  {1}, float "/layer4/layer4.0/conv2/Conv_output_0_scale" =  {0.0549183}, float "onnx::Conv_241_scale" =  {0.00296895}, int8 "onnx::Conv_241_zero_point" =  {0}, int8 "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_zero_point" =  {-16}, float "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_scale" =  {0.041364}, float "onnx::Conv_244_scale" =  {0.00954001}, int8 "onnx::Conv_244_zero_point" =  {0}, int8 "/layer4/layer4.0/Add_output_0_zero_point" =  {-128}, float "/layer4/layer4.0/Add_output_0_scale" =  {0.0417684}, int8 "/layer4/layer4.1/conv1/Conv_output_0_zero_point" =  {-128}, float "/layer4/layer4.1/conv1/Conv_output_0_scale" =  {0.0160536}, float "onnx::Conv_247_scale" =  {0.000691985}, int8 "onnx::Conv_247_zero_point" =  {0}, int8 "/layer4/layer4.1/conv2/Conv_output_0_zero_point" =  {-28}, float "/layer4/layer4.1/conv2/Conv_output_0_scale" =  {0.19605}, float "onnx::Conv_250_scale" =  {0.00363128}, int8 "onnx::Conv_250_zero_point" =  {0}, int8 "/layer4/layer4.1/Add_output_0_zero_point" =  {-128}, float "/layer4/layer4.1/Add_output_0_scale" =  {0.124912}, int8 "/avgpool/GlobalAveragePool_output_0_zero_point" =  {-128}, float "/avgpool/GlobalAveragePool_output_0_scale" =  {0.05131}, int8 output_zero_point =  {-47}, float output_scale =  {0.240899}, int8 "/Flatten_output_0_zero_point" =  {-128}, float "/Flatten_output_0_scale" =  {0.05131}, float "fc.weight_scale" =  {0.000817349}, int8 "fc.weight_zero_point" =  {0}, float[1,64,112,112] "/conv1/Conv_output_0", float[1,64,112,112] "/relu/Relu_output_0", float[1,64,56,56] "/maxpool/MaxPool_output_0", float[1,64,56,56] "/layer1/layer1.0/conv1/Conv_output_0", float[1,64,56,56] "/layer1/layer1.0/relu/Relu_output_0", float[1,64,56,56] "/layer1/layer1.0/conv2/Conv_output_0", float[1,64,56,56] "/layer1/layer1.0/Add_output_0", float[1,64,56,56] "/layer1/layer1.0/relu_1/Relu_output_0", float[1,64,56,56] "/layer1/layer1.1/conv1/Conv_output_0", float[1,64,56,56] "/layer1/layer1.1/relu/Relu_output_0", float[1,64,56,56] "/layer1/layer1.1/conv2/Conv_output_0", float[1,64,56,56] "/layer1/layer1.1/Add_output_0", float[1,64,56,56] "/layer1/layer1.1/relu_1/Relu_output_0", float[1,128,28,28] "/layer2/layer2.0/conv1/Conv_output_0", float[1,128,28,28] "/layer2/layer2.0/relu/Relu_output_0", float[1,128,28,28] "/layer2/layer2.0/conv2/Conv_output_0", float[1,128,28,28] "/layer2/layer2.0/downsample/downsample.0/Conv_output_0", float[1,128,28,28] "/layer2/layer2.0/Add_output_0", float[1,128,28,28] "/layer2/layer2.0/relu_1/Relu_output_0", float[1,128,28,28] "/layer2/layer2.1/conv1/Conv_output_0", float[1,128,28,28] "/layer2/layer2.1/relu/Relu_output_0", float[1,128,28,28] "/layer2/layer2.1/conv2/Conv_output_0", float[1,128,28,28] "/layer2/layer2.1/Add_output_0", float[1,128,28,28] "/layer2/layer2.1/relu_1/Relu_output_0", float[1,256,14,14] "/layer3/layer3.0/conv1/Conv_output_0", float[1,256,14,14] "/layer3/layer3.0/relu/Relu_output_0", float[1,256,14,14] "/layer3/layer3.0/conv2/Conv_output_0", float[1,256,14,14] "/layer3/layer3.0/downsample/downsample.0/Conv_output_0", float[1,256,14,14] "/layer3/layer3.0/Add_output_0", float[1,256,14,14] "/layer3/layer3.0/relu_1/Relu_output_0", float[1,256,14,14] "/layer3/layer3.1/conv1/Conv_output_0", float[1,256,14,14] "/layer3/layer3.1/relu/Relu_output_0", float[1,256,14,14] "/layer3/layer3.1/conv2/Conv_output_0", float[1,256,14,14] "/layer3/layer3.1/Add_output_0", float[1,256,14,14] "/layer3/layer3.1/relu_1/Relu_output_0", float[1,512,7,7] "/layer4/layer4.0/conv1/Conv_output_0", float[1,512,7,7] "/layer4/layer4.0/relu/Relu_output_0", float[1,512,7,7] "/layer4/layer4.0/conv2/Conv_output_0", float[1,512,7,7] "/layer4/layer4.0/downsample/downsample.0/Conv_output_0", float[1,512,7,7] "/layer4/layer4.0/Add_output_0", float[1,512,7,7] "/layer4/layer4.0/relu_1/Relu_output_0", float[1,512,7,7] "/layer4/layer4.1/conv1/Conv_output_0", float[1,512,7,7] "/layer4/layer4.1/relu/Relu_output_0", float[1,512,7,7] "/layer4/layer4.1/conv2/Conv_output_0", float[1,512,7,7] "/layer4/layer4.1/Add_output_0", float[1,512,7,7] "/layer4/layer4.1/relu_1/Relu_output_0", float[1,512,1,1] "/avgpool/GlobalAveragePool_output_0", float[1,512] "/Flatten_output_0">
-{
-   [input_QuantizeLinear] input_quantized = QuantizeLinear (input, input_scale, input_zero_point)
-
-   ["/conv1/Conv_quant"] "/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [7, 7], pads: ints = [3, 3, 3, 3], strides: ints = [2, 2]> (input_quantized, input_scale, input_zero_point, "onnx::Conv_193_quantized", "onnx::Conv_193_scale", "onnx::Conv_193_zero_point", "/conv1/Conv_output_0_scale", "/conv1/Conv_output_0_zero_point", "onnx::Conv_194_quantized")
-
-   ["/relu/Relu_output_0_DequantizeLinear"] "/relu/Relu_output_0" = DequantizeLinear ("/conv1/Conv_output_0_quantized", "/conv1/Conv_output_0_scale", "/conv1/Conv_output_0_zero_point")
-   ["/maxpool/MaxPool"] "/maxpool/MaxPool_output_0" = MaxPool <ceil_mode: int = 0, dilations: ints = [1, 1], kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [2, 2]> ("/relu/Relu_output_0")
-   ["/maxpool/MaxPool_output_0_QuantizeLinear"] "/maxpool/MaxPool_output_0_quantized" = QuantizeLinear ("/maxpool/MaxPool_output_0", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point")
-
-   ["/layer1/layer1.0/conv1/Conv_quant"] "/layer1/layer1.0/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/maxpool/MaxPool_output_0_quantized", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point", "onnx::Conv_196_quantized", "onnx::Conv_196_scale", "onnx::Conv_196_zero_point", "/layer1/layer1.0/conv1/Conv_output_0_scale", "/layer1/layer1.0/conv1/Conv_output_0_zero_point", "onnx::Conv_197_quantized")
-   ["/layer1/layer1.0/conv2/Conv_quant"] "/layer1/layer1.0/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.0/conv1/Conv_output_0_quantized", "/layer1/layer1.0/conv1/Conv_output_0_scale", "/layer1/layer1.0/conv1/Conv_output_0_zero_point", "onnx::Conv_199_quantized", "onnx::Conv_199_scale", "onnx::Conv_199_zero_point", "/layer1/layer1.0/conv2/Conv_output_0_scale", "/layer1/layer1.0/conv2/Conv_output_0_zero_point", "onnx::Conv_200_quantized")
-   ["/layer1/layer1.0/Add_quant"] "/layer1/layer1.0/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer1/layer1.0/conv2/Conv_output_0_quantized", "/layer1/layer1.0/conv2/Conv_output_0_scale", "/layer1/layer1.0/conv2/Conv_output_0_zero_point", "/maxpool/MaxPool_output_0_quantized", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point")
-   ["/layer1/layer1.1/conv1/Conv_quant"] "/layer1/layer1.1/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.0/Add_output_0_quantized", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point", "onnx::Conv_202_quantized", "onnx::Conv_202_scale", "onnx::Conv_202_zero_point", "/layer1/layer1.1/conv1/Conv_output_0_scale", "/layer1/layer1.1/conv1/Conv_output_0_zero_point", "onnx::Conv_203_quantized")
-   ["/layer1/layer1.1/conv2/Conv_quant"] "/layer1/layer1.1/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.1/conv1/Conv_output_0_quantized", "/layer1/layer1.1/conv1/Conv_output_0_scale", "/layer1/layer1.1/conv1/Conv_output_0_zero_point", "onnx::Conv_205_quantized", "onnx::Conv_205_scale", "onnx::Conv_205_zero_point", "/layer1/layer1.1/conv2/Conv_output_0_scale", "/layer1/layer1.1/conv2/Conv_output_0_zero_point", "onnx::Conv_206_quantized")
-   ["/layer1/layer1.1/Add_quant"] "/layer1/layer1.1/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer1/layer1.1/conv2/Conv_output_0_quantized", "/layer1/layer1.1/conv2/Conv_output_0_scale", "/layer1/layer1.1/conv2/Conv_output_0_zero_point", "/layer1/layer1.0/Add_output_0_quantized", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point", "/layer1/layer1.1/Add_output_0_scale", "/layer1/layer1.1/Add_output_0_zero_point")
-
-   ["/layer2/layer2.0/conv1/Conv_quant"] "/layer2/layer2.0/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [2, 2]> ("/layer1/layer1.1/Add_output_0_quantized", "/layer1/layer1.1/Add_output_0_scale", "/layer1/layer1.1/Add_output_0_zero_point", "onnx::Conv_208_quantized", "onnx::Conv_208_scale", "onnx::Conv_208_zero_point", "/layer2/layer2.0/conv1/Conv_output_0_scale", "/layer2/layer2.0/conv1/Conv_output_0_zero_point", "onnx::Conv_209_quantized")
-   ["/layer2/layer2.0/downsample/downsample.0/Conv_quant"] "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [1, 1], pads: ints = [0, 0, 0, 0], strides: ints = [2, 2]> ("/layer1/layer1.1/Add_output_0_quantized", "/layer1/layer1.1/Add_output_0_scale", "/layer1/layer1.1/Add_output_0_zero_point", "onnx::Conv_214_quantized", "onnx::Conv_214_scale", "onnx::Conv_214_zero_point", "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_scale", "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_zero_point", "onnx::Conv_215_quantized")
-   ["/layer2/layer2.0/conv2/Conv_quant"] "/layer2/layer2.0/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer2/layer2.0/conv1/Conv_output_0_quantized", "/layer2/layer2.0/conv1/Conv_output_0_scale", "/layer2/layer2.0/conv1/Conv_output_0_zero_point", "onnx::Conv_211_quantized", "onnx::Conv_211_scale", "onnx::Conv_211_zero_point", "/layer2/layer2.0/conv2/Conv_output_0_scale", "/layer2/layer2.0/conv2/Conv_output_0_zero_point", "onnx::Conv_212_quantized")
-   ["/layer2/layer2.0/Add_quant"] "/layer2/layer2.0/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer2/layer2.0/conv2/Conv_output_0_quantized", "/layer2/layer2.0/conv2/Conv_output_0_scale", "/layer2/layer2.0/conv2/Conv_output_0_zero_point", "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_quantized", "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_scale", "/layer2/layer2.0/downsample/downsample.0/Conv_output_0_zero_point", "/layer2/layer2.0/Add_output_0_scale", "/layer2/layer2.0/Add_output_0_zero_point")
-   ["/layer2/layer2.1/conv1/Conv_quant"] "/layer2/layer2.1/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer2/layer2.0/Add_output_0_quantized", "/layer2/layer2.0/Add_output_0_scale", "/layer2/layer2.0/Add_output_0_zero_point", "onnx::Conv_217_quantized", "onnx::Conv_217_scale", "onnx::Conv_217_zero_point", "/layer2/layer2.1/conv1/Conv_output_0_scale", "/layer2/layer2.1/conv1/Conv_output_0_zero_point", "onnx::Conv_218_quantized")
-   ["/layer2/layer2.1/conv2/Conv_quant"] "/layer2/layer2.1/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer2/layer2.1/conv1/Conv_output_0_quantized", "/layer2/layer2.1/conv1/Conv_output_0_scale", "/layer2/layer2.1/conv1/Conv_output_0_zero_point", "onnx::Conv_220_quantized", "onnx::Conv_220_scale", "onnx::Conv_220_zero_point", "/layer2/layer2.1/conv2/Conv_output_0_scale", "/layer2/layer2.1/conv2/Conv_output_0_zero_point", "onnx::Conv_221_quantized")
-   ["/layer2/layer2.1/Add_quant"] "/layer2/layer2.1/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer2/layer2.1/conv2/Conv_output_0_quantized", "/layer2/layer2.1/conv2/Conv_output_0_scale", "/layer2/layer2.1/conv2/Conv_output_0_zero_point", "/layer2/layer2.0/Add_output_0_quantized", "/layer2/layer2.0/Add_output_0_scale", "/layer2/layer2.0/Add_output_0_zero_point", "/layer2/layer2.1/Add_output_0_scale", "/layer2/layer2.1/Add_output_0_zero_point")
-
-   ["/layer3/layer3.0/conv1/Conv_quant"] "/layer3/layer3.0/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [2, 2]> ("/layer2/layer2.1/Add_output_0_quantized", "/layer2/layer2.1/Add_output_0_scale", "/layer2/layer2.1/Add_output_0_zero_point", "onnx::Conv_223_quantized", "onnx::Conv_223_scale", "onnx::Conv_223_zero_point", "/layer3/layer3.0/conv1/Conv_output_0_scale", "/layer3/layer3.0/conv1/Conv_output_0_zero_point", "onnx::Conv_224_quantized")
-   ["/layer3/layer3.0/downsample/downsample.0/Conv_quant"] "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [1, 1], pads: ints = [0, 0, 0, 0], strides: ints = [2, 2]> ("/layer2/layer2.1/Add_output_0_quantized", "/layer2/layer2.1/Add_output_0_scale", "/layer2/layer2.1/Add_output_0_zero_point", "onnx::Conv_229_quantized", "onnx::Conv_229_scale", "onnx::Conv_229_zero_point", "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_scale", "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_zero_point", "onnx::Conv_230_quantized")
-   ["/layer3/layer3.0/conv2/Conv_quant"] "/layer3/layer3.0/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer3/layer3.0/conv1/Conv_output_0_quantized", "/layer3/layer3.0/conv1/Conv_output_0_scale", "/layer3/layer3.0/conv1/Conv_output_0_zero_point", "onnx::Conv_226_quantized", "onnx::Conv_226_scale", "onnx::Conv_226_zero_point", "/layer3/layer3.0/conv2/Conv_output_0_scale", "/layer3/layer3.0/conv2/Conv_output_0_zero_point", "onnx::Conv_227_quantized")
-   ["/layer3/layer3.0/Add_quant"] "/layer3/layer3.0/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer3/layer3.0/conv2/Conv_output_0_quantized", "/layer3/layer3.0/conv2/Conv_output_0_scale", "/layer3/layer3.0/conv2/Conv_output_0_zero_point", "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_quantized", "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_scale", "/layer3/layer3.0/downsample/downsample.0/Conv_output_0_zero_point", "/layer3/layer3.0/Add_output_0_scale", "/layer3/layer3.0/Add_output_0_zero_point")
-   ["/layer3/layer3.1/conv1/Conv_quant"] "/layer3/layer3.1/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer3/layer3.0/Add_output_0_quantized", "/layer3/layer3.0/Add_output_0_scale", "/layer3/layer3.0/Add_output_0_zero_point", "onnx::Conv_232_quantized", "onnx::Conv_232_scale", "onnx::Conv_232_zero_point", "/layer3/layer3.1/conv1/Conv_output_0_scale", "/layer3/layer3.1/conv1/Conv_output_0_zero_point", "onnx::Conv_233_quantized")
-   ["/layer3/layer3.1/conv2/Conv_quant"] "/layer3/layer3.1/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer3/layer3.1/conv1/Conv_output_0_quantized", "/layer3/layer3.1/conv1/Conv_output_0_scale", "/layer3/layer3.1/conv1/Conv_output_0_zero_point", "onnx::Conv_235_quantized", "onnx::Conv_235_scale", "onnx::Conv_235_zero_point", "/layer3/layer3.1/conv2/Conv_output_0_scale", "/layer3/layer3.1/conv2/Conv_output_0_zero_point", "onnx::Conv_236_quantized")
-   ["/layer3/layer3.1/Add_quant"] "/layer3/layer3.1/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer3/layer3.1/conv2/Conv_output_0_quantized", "/layer3/layer3.1/conv2/Conv_output_0_scale", "/layer3/layer3.1/conv2/Conv_output_0_zero_point", "/layer3/layer3.0/Add_output_0_quantized", "/layer3/layer3.0/Add_output_0_scale", "/layer3/layer3.0/Add_output_0_zero_point", "/layer3/layer3.1/Add_output_0_scale", "/layer3/layer3.1/Add_output_0_zero_point")
-
-   ["/layer4/layer4.0/conv1/Conv_quant"] "/layer4/layer4.0/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [2, 2]> ("/layer3/layer3.1/Add_output_0_quantized", "/layer3/layer3.1/Add_output_0_scale", "/layer3/layer3.1/Add_output_0_zero_point", "onnx::Conv_238_quantized", "onnx::Conv_238_scale", "onnx::Conv_238_zero_point", "/layer4/layer4.0/conv1/Conv_output_0_scale", "/layer4/layer4.0/conv1/Conv_output_0_zero_point", "onnx::Conv_239_quantized")
-   ["/layer4/layer4.0/downsample/downsample.0/Conv_quant"] "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [1, 1], pads: ints = [0, 0, 0, 0], strides: ints = [2, 2]> ("/layer3/layer3.1/Add_output_0_quantized", "/layer3/layer3.1/Add_output_0_scale", "/layer3/layer3.1/Add_output_0_zero_point", "onnx::Conv_244_quantized", "onnx::Conv_244_scale", "onnx::Conv_244_zero_point", "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_scale", "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_zero_point", "onnx::Conv_245_quantized")
-   ["/layer4/layer4.0/conv2/Conv_quant"] "/layer4/layer4.0/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer4/layer4.0/conv1/Conv_output_0_quantized", "/layer4/layer4.0/conv1/Conv_output_0_scale", "/layer4/layer4.0/conv1/Conv_output_0_zero_point", "onnx::Conv_241_quantized", "onnx::Conv_241_scale", "onnx::Conv_241_zero_point", "/layer4/layer4.0/conv2/Conv_output_0_scale", "/layer4/layer4.0/conv2/Conv_output_0_zero_point", "onnx::Conv_242_quantized")
-   ["/layer4/layer4.0/Add_quant"] "/layer4/layer4.0/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer4/layer4.0/conv2/Conv_output_0_quantized", "/layer4/layer4.0/conv2/Conv_output_0_scale", "/layer4/layer4.0/conv2/Conv_output_0_zero_point", "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_quantized", "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_scale", "/layer4/layer4.0/downsample/downsample.0/Conv_output_0_zero_point", "/layer4/layer4.0/Add_output_0_scale", "/layer4/layer4.0/Add_output_0_zero_point")
-   ["/layer4/layer4.1/conv1/Conv_quant"] "/layer4/layer4.1/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer4/layer4.0/Add_output_0_quantized", "/layer4/layer4.0/Add_output_0_scale", "/layer4/layer4.0/Add_output_0_zero_point", "onnx::Conv_247_quantized", "onnx::Conv_247_scale", "onnx::Conv_247_zero_point", "/layer4/layer4.1/conv1/Conv_output_0_scale", "/layer4/layer4.1/conv1/Conv_output_0_zero_point", "onnx::Conv_248_quantized")
-   ["/layer4/layer4.1/conv2/Conv_quant"] "/layer4/layer4.1/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer4/layer4.1/conv1/Conv_output_0_quantized", "/layer4/layer4.1/conv1/Conv_output_0_scale", "/layer4/layer4.1/conv1/Conv_output_0_zero_point", "onnx::Conv_250_quantized", "onnx::Conv_250_scale", "onnx::Conv_250_zero_point", "/layer4/layer4.1/conv2/Conv_output_0_scale", "/layer4/layer4.1/conv2/Conv_output_0_zero_point", "onnx::Conv_251_quantized")
-   ["/layer4/layer4.1/Add_quant"] "/layer4/layer4.1/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer4/layer4.1/conv2/Conv_output_0_quantized", "/layer4/layer4.1/conv2/Conv_output_0_scale", "/layer4/layer4.1/conv2/Conv_output_0_zero_point", "/layer4/layer4.0/Add_output_0_quantized", "/layer4/layer4.0/Add_output_0_scale", "/layer4/layer4.0/Add_output_0_zero_point", "/layer4/layer4.1/Add_output_0_scale", "/layer4/layer4.1/Add_output_0_zero_point")
-
-   ["/avgpool/GlobalAveragePool_quant"] "/avgpool/GlobalAveragePool_output_0_quantized" = com.microsoft.QLinearGlobalAveragePool <channels_last: int = 0> ("/layer4/layer4.1/Add_output_0_quantized", "/layer4/layer4.1/Add_output_0_scale", "/layer4/layer4.1/Add_output_0_zero_point", "/avgpool/GlobalAveragePool_output_0_scale", "/avgpool/GlobalAveragePool_output_0_zero_point")
-
-   ["/avgpool/GlobalAveragePool_output_0_DequantizeLinear"] "/avgpool/GlobalAveragePool_output_0" = DequantizeLinear ("/avgpool/GlobalAveragePool_output_0_quantized", "/avgpool/GlobalAveragePool_output_0_scale", "/avgpool/GlobalAveragePool_output_0_zero_point")
-   ["/Flatten"] "/Flatten_output_0" = Flatten <axis: int = 1> ("/avgpool/GlobalAveragePool_output_0")
-   ["/Flatten_output_0_QuantizeLinear"] "/Flatten_output_0_quantized" = QuantizeLinear ("/Flatten_output_0", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point")
-
-   ["/fc/Gemm_quant"] output_quantized = com.microsoft.QGemm <alpha: float = 1., transB: int = 1> ("/Flatten_output_0_quantized", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point", "fc.weight_quantized", "fc.weight_scale", "fc.weight_zero_point", "fc.bias_quantized", output_scale, output_zero_point)
-
-   [output_DequantizeLinear] output = DequantizeLinear (output_quantized, output_scale, output_zero_point)
-}
-"""
-
-@pytest.mark.skip(reason="very slow")
-def test_onnx_import_quantized_resnet18():
-    onnx_model = onnx.parser.parse_model(onnx_text_quantized_resnet18)
-    onnx.checker.check_model(onnx_model)
-    mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
-    mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
-    # mod.show()
-    if False:
-        # NOTE: this is bugged since it can't handle addition the addition of the
-        # skip connection in InferLayoutBinaryEwise
-        # https://daobook.github.io/tvm/docs/arch/convert_layout.html
-        mod = relax.transform.ConvertLayout({
-            "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
-        })(mod)
-    mod = vtar.relax.transform.GraphPack()(mod)
-    mod = relax.get_pipeline('vtar_zero')(mod)
-    mod.show()
-    # FIXME: this crashes if we use ext_dev(0) because look at test_trivial_end2end_compilation
-    dev = tvm.runtime.device('cpu')
-    target = tvm.target.Target.from_device(dev)
-    # tvm.target.Target("llvm", host="llvm")
-    params_spec = [
-        (topi.utils.get_const_tuple(relax.get_shape_of(param)), param.struct_info.dtype)
-        for param in mod['main'].params
-    ]
-    params = [tvm.nd.array((rng.random(shape)*10).astype(dtype), dev) for shape, dtype in params_spec]
-    ex = relax.build(mod, target)
-    ex.export_library("build/resnet18_int8.dll")
-    rt_mod = tvm.runtime.load_module("build/resnet18_int8.dll")
-    vm = relax.VirtualMachine(rt_mod, dev)
-    time_f = vm.time_evaluator("main", dev, number=1)
-    res = time_f(*params)
-    print(print(rt_mod["stats"]()))
-    print(res)
-
 onnx_text_quantized_bottleneck = """\
 <
    ir_version: 6,
@@ -1171,80 +1056,76 @@ onnx_text_quantized_bottleneck = """\
 >
 main_graph (
     float[1,3,224,224] input,
-    int8[64,3,7,7] "onnx::Conv_193_quantized",
-    int32[64] "onnx::Conv_194_quantized",
-    int8[64,64,3,3] "onnx::Conv_196_quantized",
-    int32[64] "onnx::Conv_197_quantized",
-    int8[64,64,3,3] "onnx::Conv_199_quantized",
-    int32[64] "onnx::Conv_200_quantized",
-    int8[64,64,3,3] "onnx::Conv_202_quantized",
-    int32[64] "onnx::Conv_203_quantized",
-    int8[64,64,3,3] "onnx::Conv_205_quantized",
-    int32[64] "onnx::Conv_206_quantized",
-    int8[10,64] "fc.weight_quantized",
-    int32[10] "fc.bias_quantized"
-    ) => (float[1,10] output)
-   <int8 "/conv1/Conv_output_0_zero_point" =  {-128},
-    float "/conv1/Conv_output_0_scale" =  {0.0288692},
-    int8 input_zero_point =  {-14},
-    float input_scale =  {0.0186584},
-    float "onnx::Conv_193_scale" =  {0.00268506},
-    int8 "onnx::Conv_193_zero_point" =  {0},
-    int8 "/layer1/layer1.0/conv1/Conv_output_0_zero_point" =  {-128},
-    float "/layer1/layer1.0/conv1/Conv_output_0_scale" =  {0.0219578},
-    int8 "/maxpool/MaxPool_output_0_zero_point" =  {-128},
-    float "/maxpool/MaxPool_output_0_scale" =  {0.0288692},
-    float "onnx::Conv_196_scale" =  {0.00252428},
-    int8 "onnx::Conv_196_zero_point" =  {0},
-    int8 "/layer1/layer1.0/conv2/Conv_output_0_zero_point" =  {16},
-    float "/layer1/layer1.0/conv2/Conv_output_0_scale" =  {0.0414506},
-    float "onnx::Conv_199_scale" =  {0.00593825},
-    int8 "onnx::Conv_199_zero_point" =  {0},
-    int8 "/layer1/layer1.0/Add_output_0_zero_point" =  {-128},
-    float "/layer1/layer1.0/Add_output_0_scale" =  {0.0333703},
-    int8 "/layer1/layer1.1/conv1/Conv_output_0_zero_point" =  {-128},
-    float "/layer1/layer1.1/conv1/Conv_output_0_scale" =  {0.0201473},
-    float "onnx::Conv_202_scale" =  {0.00179852},
-    int8 "onnx::Conv_202_zero_point" =  {0},
-    int8 "/layer1/layer1.1/conv2/Conv_output_0_zero_point" =  {32},
-    float "/layer1/layer1.1/conv2/Conv_output_0_scale" =  {0.0872713},
-    float "onnx::Conv_205_scale" =  {0.006156},
-    int8 "onnx::Conv_205_zero_point" =  {0},
-    int8 "/layer1/layer1.1/Add_output_0_zero_point" =  {-128},
-    float "/layer1/layer1.1/Add_output_0_scale" =  {0.0397232},
-    int8 "/avgpool/GlobalAveragePool_output_0_zero_point" =  {-128},
-    float "/avgpool/GlobalAveragePool_output_0_scale" =  {0.05131},
-    int8 output_zero_point =  {-47},
-    float output_scale =  {0.240899},
-    int8 "/Flatten_output_0_zero_point" =  {-128},
-    float "/Flatten_output_0_scale" =  {0.05131},
-    float "fc.weight_scale" =  {0.000817349},
-    int8 "fc.weight_zero_point" =  {0}>
+    int8[64,3,7,7] "Conv_193_q", int32[64] "Conv_194_q",
+    int8[64,64,3,3] "Conv_196_q", int32[64] "Conv_197_q",
+    int8[64,64,3,3] "Conv_199_q", int32[64] "Conv_200_q",
+    int8[64,64,3,3] "Conv_202_q", int32[64] "Conv_203_q",
+    int8[64,64,3,3] "Conv_205_q", int32[64] "Conv_206_q",
+    int8[10,64] "fc_weight_q", int32[10] "fc_bias_q"
+) => (float[1,10] output)
+<
+    float input_s = {0.0186584}, int8 input_zp = {-14},
+    float "/conv1/Conv_s" = {0.0288692}, int8 "/conv1/Conv_zp" = {-128},
+    float "Conv_193_s" = {0.00268506}, int8 "Conv_193_zp" = {0},
+    float "/l0/conv1/Conv_s" = {0.0219578}, int8 "/l0/conv1/Conv_zp" = {-128},
+    float "MaxPool_s" = {0.0288692}, int8 "MaxPool_zp" = {-128},
+    float "Conv_196_s" = {0.00252428}, int8 "Conv_196_zp" = {0},
+    float "/l0/conv2/Conv_s" = {0.0414506}, int8 "/l0/conv2/Conv_zp" = {16},
+    float "Conv_199_s" = {0.00593825}, int8 "Conv_199_zp" = {0},
+    float "/l0/Add_s" = {0.0333703}, int8 "/l0/Add_zp" = {-128},
+    float "/l1/conv1/Conv_s" = {0.0201473}, int8 "/l1/conv1/Conv_zp" = {-128},
+    float "Conv_202_s" = {0.00179852}, int8 "Conv_202_zp" = {0},
+    float "/l1/conv2/Conv_s" = {0.0872713}, int8 "/l1/conv2/Conv_zp" = {32},
+    float "Conv_205_s" = {0.006156}, int8 "Conv_205_zp" = {0},
+    float "/l1/Add_s" = {0.0397232}, int8 "/l1/Add_zp" = {-128},
+    float "GlobalAveragePool_s" = {0.05131}, int8 "GlobalAveragePool_zp" = {-128},
+    float output_s = {0.240899}, int8 output_zp = {-47},
+    float "/Flatten_s" = {0.05131}, int8 "/Flatten_zp" = {-128},
+    float "fc_weight_s" = {0.000817349}, int8 "fc_weight_zp" = {0}
+>
 {
-   [input_QuantizeLinear] input_quantized = QuantizeLinear (input, input_scale, input_zero_point)
+    input_q = QuantizeLinear (input, input_s, input_zp)
 
-   ["/conv1/Conv_quant"] "/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [7, 7], pads: ints = [3, 3, 3, 3], strides: ints = [2, 2]> (input_quantized, input_scale, input_zero_point, "onnx::Conv_193_quantized", "onnx::Conv_193_scale", "onnx::Conv_193_zero_point", "/conv1/Conv_output_0_scale", "/conv1/Conv_output_0_zero_point", "onnx::Conv_194_quantized")
+    "/conv1/Conv_q" = QLinearConv
+        <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [7, 7], pads: ints = [3, 3, 3, 3], strides: ints = [2, 2]>
+        (input_q, input_s, input_zp, "Conv_193_q", "Conv_193_s", "Conv_193_zp", "/conv1/Conv_s", "/conv1/Conv_zp", "Conv_194_q")
 
-   ["/relu/Relu_output_0_DequantizeLinear"] "/relu/Relu_output_0" = DequantizeLinear ("/conv1/Conv_output_0_quantized", "/conv1/Conv_output_0_scale", "/conv1/Conv_output_0_zero_point")
-   ["/maxpool/MaxPool"] "/maxpool/MaxPool_output_0" = MaxPool <ceil_mode: int = 0, dilations: ints = [1, 1], kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [2, 2]> ("/relu/Relu_output_0")
-   ["/maxpool/MaxPool_output_0_QuantizeLinear"] "/maxpool/MaxPool_output_0_quantized" = QuantizeLinear ("/maxpool/MaxPool_output_0", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point")
+    "/relu/Relu" = DequantizeLinear ("/conv1/Conv_q", "/conv1/Conv_s", "/conv1/Conv_zp")
+    "MaxPool" = MaxPool
+        <ceil_mode: int = 0, dilations: ints = [1, 1], kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [2, 2]>
+        ("/relu/Relu")
+    "MaxPool_q" = QuantizeLinear ("MaxPool", "MaxPool_s", "MaxPool_zp")
 
-   ["/layer1/layer1.0/conv1/Conv_quant"] "/layer1/layer1.0/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/maxpool/MaxPool_output_0_quantized", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point", "onnx::Conv_196_quantized", "onnx::Conv_196_scale", "onnx::Conv_196_zero_point", "/layer1/layer1.0/conv1/Conv_output_0_scale", "/layer1/layer1.0/conv1/Conv_output_0_zero_point", "onnx::Conv_197_quantized")
-   ["/layer1/layer1.0/conv2/Conv_quant"] "/layer1/layer1.0/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.0/conv1/Conv_output_0_quantized", "/layer1/layer1.0/conv1/Conv_output_0_scale", "/layer1/layer1.0/conv1/Conv_output_0_zero_point", "onnx::Conv_199_quantized", "onnx::Conv_199_scale", "onnx::Conv_199_zero_point", "/layer1/layer1.0/conv2/Conv_output_0_scale", "/layer1/layer1.0/conv2/Conv_output_0_zero_point", "onnx::Conv_200_quantized")
-   ["/layer1/layer1.0/Add_quant"] "/layer1/layer1.0/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer1/layer1.0/conv2/Conv_output_0_quantized", "/layer1/layer1.0/conv2/Conv_output_0_scale", "/layer1/layer1.0/conv2/Conv_output_0_zero_point", "/maxpool/MaxPool_output_0_quantized", "/maxpool/MaxPool_output_0_scale", "/maxpool/MaxPool_output_0_zero_point", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point")
-   ["/layer1/layer1.1/conv1/Conv_quant"] "/layer1/layer1.1/conv1/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.0/Add_output_0_quantized", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point", "onnx::Conv_202_quantized", "onnx::Conv_202_scale", "onnx::Conv_202_zero_point", "/layer1/layer1.1/conv1/Conv_output_0_scale", "/layer1/layer1.1/conv1/Conv_output_0_zero_point", "onnx::Conv_203_quantized")
-   ["/layer1/layer1.1/conv2/Conv_quant"] "/layer1/layer1.1/conv2/Conv_output_0_quantized" = QLinearConv <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]> ("/layer1/layer1.1/conv1/Conv_output_0_quantized", "/layer1/layer1.1/conv1/Conv_output_0_scale", "/layer1/layer1.1/conv1/Conv_output_0_zero_point", "onnx::Conv_205_quantized", "onnx::Conv_205_scale", "onnx::Conv_205_zero_point", "/layer1/layer1.1/conv2/Conv_output_0_scale", "/layer1/layer1.1/conv2/Conv_output_0_zero_point", "onnx::Conv_206_quantized")
-   ["/layer1/layer1.1/Add_quant"] "/layer1/layer1.1/Add_output_0_quantized" = com.microsoft.QLinearAdd ("/layer1/layer1.1/conv2/Conv_output_0_quantized", "/layer1/layer1.1/conv2/Conv_output_0_scale", "/layer1/layer1.1/conv2/Conv_output_0_zero_point", "/layer1/layer1.0/Add_output_0_quantized", "/layer1/layer1.0/Add_output_0_scale", "/layer1/layer1.0/Add_output_0_zero_point", "/layer1/layer1.1/Add_output_0_scale", "/layer1/layer1.1/Add_output_0_zero_point")
+    "/l0/conv1/Conv_q" = QLinearConv
+        <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]>
+        ("MaxPool_q", "MaxPool_s", "MaxPool_zp", "Conv_196_q", "Conv_196_s", "Conv_196_zp", "/l0/conv1/Conv_s", "/l0/conv1/Conv_zp", "Conv_197_q")
+    "/l0/conv2/Conv_q" = QLinearConv
+        <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]>
+        ("/l0/conv1/Conv_q", "/l0/conv1/Conv_s", "/l0/conv1/Conv_zp", "Conv_199_q", "Conv_199_s", "Conv_199_zp", "/l0/conv2/Conv_s", "/l0/conv2/Conv_zp", "Conv_200_q")
+    "/l0/Add_q" = com.microsoft.QLinearAdd
+        ("/l0/conv2/Conv_q", "/l0/conv2/Conv_s", "/l0/conv2/Conv_zp", "MaxPool_q", "MaxPool_s", "MaxPool_zp", "/l0/Add_s", "/l0/Add_zp")
+    "/l1/conv1/Conv_q" = QLinearConv
+        <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]>
+        ("/l0/Add_q", "/l0/Add_s", "/l0/Add_zp", "Conv_202_q", "Conv_202_s", "Conv_202_zp", "/l1/conv1/Conv_s", "/l1/conv1/Conv_zp", "Conv_203_q")
+    "/l1/conv2/Conv_q" = QLinearConv
+        <dilations: ints = [1, 1], group: int = 1, kernel_shape: ints = [3, 3], pads: ints = [1, 1, 1, 1], strides: ints = [1, 1]>
+        ("/l1/conv1/Conv_q", "/l1/conv1/Conv_s", "/l1/conv1/Conv_zp", "Conv_205_q", "Conv_205_s", "Conv_205_zp", "/l1/conv2/Conv_s", "/l1/conv2/Conv_zp", "Conv_206_q")
+    "/l1/Add_q" = com.microsoft.QLinearAdd
+        ("/l1/conv2/Conv_q", "/l1/conv2/Conv_s", "/l1/conv2/Conv_zp", "/l0/Add_q", "/l0/Add_s", "/l0/Add_zp", "/l1/Add_s", "/l1/Add_zp")
 
-   ["/avgpool/GlobalAveragePool_quant"] "/avgpool/GlobalAveragePool_output_0_quantized" = com.microsoft.QLinearGlobalAveragePool <channels_last: int = 0> ("/layer1/layer1.1/Add_output_0_quantized", "/layer1/layer1.1/Add_output_0_scale", "/layer1/layer1.1/Add_output_0_zero_point", "/avgpool/GlobalAveragePool_output_0_scale", "/avgpool/GlobalAveragePool_output_0_zero_point")
+    "GlobalAveragePool_q" = com.microsoft.QLinearGlobalAveragePool
+        <channels_last: int = 0>
+        ("/l1/Add_q", "/l1/Add_s", "/l1/Add_zp", "GlobalAveragePool_s", "GlobalAveragePool_zp")
 
-   ["/avgpool/GlobalAveragePool_output_0_DequantizeLinear"] "/avgpool/GlobalAveragePool_output_0" = DequantizeLinear ("/avgpool/GlobalAveragePool_output_0_quantized", "/avgpool/GlobalAveragePool_output_0_scale", "/avgpool/GlobalAveragePool_output_0_zero_point")
-   ["/Flatten"] "/Flatten_output_0" = Flatten <axis: int = 1> ("/avgpool/GlobalAveragePool_output_0")
-   ["/Flatten_output_0_QuantizeLinear"] "/Flatten_output_0_quantized" = QuantizeLinear ("/Flatten_output_0", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point")
+    "GlobalAveragePool" = DequantizeLinear ("GlobalAveragePool_q", "GlobalAveragePool_s", "GlobalAveragePool_zp")
+    "/Flatten" = Flatten <axis: int = 1> ("GlobalAveragePool")
+    "/Flatten_q" = QuantizeLinear ("/Flatten", "/Flatten_s", "/Flatten_zp")
 
-   ["/fc/Gemm_quant"] output_quantized = com.microsoft.QGemm <alpha: float = 1., transB: int = 1> ("/Flatten_output_0_quantized", "/Flatten_output_0_scale", "/Flatten_output_0_zero_point", "fc.weight_quantized", "fc.weight_scale", "fc.weight_zero_point", "fc.bias_quantized", output_scale, output_zero_point)
+    output_q = com.microsoft.QGemm
+        <alpha: float = 1., transB: int = 1>
+        ("/Flatten_q", "/Flatten_s", "/Flatten_zp", "fc_weight_q", "fc_weight_s", "fc_weight_zp", "fc_bias_q", output_s, output_zp)
 
-   [output_DequantizeLinear] output = DequantizeLinear (output_quantized, output_scale, output_zero_point)
+    output = DequantizeLinear (output_q, output_s, output_zp)
 }
 """
 
@@ -1261,6 +1142,9 @@ def test_onnx_import_simple_bottleneck():
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
     mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
     try:
+        # NOTE: this is bugged since it can't handle addition the addition of the
+        # skip connection in InferLayoutBinaryEwise
+        # https://daobook.github.io/tvm/docs/arch/convert_layout.html
         mod = relax.transform.ConvertLayout({
             "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],
         })(mod)
