@@ -1249,6 +1249,20 @@ def test_onnx_import_keep_params_in_input_or_not():
 
 # Misc. tests ##################################################################
 
+def test_relax_metadata_serialization():
+
+    value = relax.const(numpy.ones(1))
+    text = value.script(show_meta=True)
+    # The "metadata" notation is used every time a Relax constant is not a
+    # scalar as it can be seen by (which seem to be bugged but okay)
+    program, metadata = relax.utils.metadata_partitioner(text)
+    # There is no "metatadata" attribute anywhere in the IRModule it is just
+    # printed that way to serialize all the information in a printable format.
+    value_ = ir.load_json(metadata.replace("\\\"", "\""))["relax.expr.Constant"][0]
+    struct_info = value_.struct_info
+
+    assert (value_.data.numpy() == value.data.numpy()).item()
+
 # TODO: use a similar algorithm for InjectDMAIntrin
 def test_can_prove_data_load_invariant_of_access_order():
     N, M = tir.Var("N", "int32"), tir.Var("M", "int32")
