@@ -128,29 +128,38 @@ def avg_pool2d_int(
 	return res
 
 def bidi_shift(x: te.Tensor, a: te.Tensor) -> te.Tensor:
-	shape = topi.utils.get_const_tuple(x.shape)
-	# FIXME: the hack I have done here makes the test test_shift_bidirectional fail
-	if len(shape) == 4:
-		res = te.compute(
-			topi.utils.get_const_tuple(x.shape),
-			lambda n, c, h, w: tir.Select(
-				a[0, c, 0, 0] >= 0,
-				x[n, c, h, w] >> a[0, c, 0, 0],
-				x[n, c, h, w] << -a[0, c, 0, 0]
-			),
-			"res",
-		)
-	else:
-		res = te.compute(
-			topi.utils.get_const_tuple(x.shape),
-			lambda no, co, h, w, ni, ci: tir.Select(
-				a[0, co, 0, 0, 0, ci] >= 0,
-				x[no, co, h, w, ni, ci] >> a[0, co, 0, 0, 0, ci],
-				x[no, co, h, w, ni, ci] << -a[0, co, 0, 0, 0, ci]
-			),
-			"res",
-		)
-	return res
+	"""
+	Bidirectional shift: Right shift if a >= 0, Left shift if a < 0.
+	Supports arbitrary N-dimensional tensors and standard broadcasting.
+	"""
+	x_shape = x.shape
+	a_shape = a.shape
+
+	# Calculate padding for standard right-aligned broadcasting
+	# e.g., if x is (N, C, H, W) and a is (C, 1, 1), pad_len is 1.
+	pad_len = len(x_shape) - len(a_shape)
+
+	def _compute(*indices):
+		a_indices = []
+
+		# Map indices to support broadcasting 'a' onto 'x'
+		for i in range(len(a_shape)):
+			x_dim_idx = i + pad_len
+			dim = a_shape[i]
+
+			is_broadcast = hasattr(dim, "value") and dim.value == 1
+
+			a_idx = 0 if is_broadcast else indices[x_dim_idx]
+			a_indices.append(a_idx)
+
+		x_val = x(*indices)
+		a_val = a(*a_indices)
+
+		return tir.Select(a_val >= 0, x_val >> a_val, x_val << -a_val)
+
+	# TODO: "res" is a stupid name, change it to have a naming convention like
+	# the other topi functions.
+	return te.compute(x_shape, _compute, name="res")
 
 def sq_ioa_conv2d_NCHWnc(
 	data: te.Tensor,
@@ -230,15 +239,15 @@ def sq_ioa_conv2d_NCHWnc_from_workload(
 	scale  = te.placeholder(bias_shape, acc_dtype, "scale") if not imm_scale else imm_scale
 
 	res = sq_ioa_conv2d_NCHWnc(
-	    data=data,
-	    kernel=kernel,
-	    bias=bias,
-	    scale=scale,
-	    strides=strides,
-	    padding=padding,
-	    dilation=dilation,
-	    acc_dtype=acc_dtype,
-	    out_dtype=wl.out_dtype,
+		data=data,
+		kernel=kernel,
+		bias=bias,
+		scale=scale,
+		strides=strides,
+		padding=padding,
+		dilation=dilation,
+		acc_dtype=acc_dtype,
+		out_dtype=wl.out_dtype,
 	)
 
 	func = te.create_prim_func((data, kernel, bias, scale,  res))

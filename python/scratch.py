@@ -354,51 +354,6 @@ def main2(
                     T.writes(res[v_bo, v_co, v_i, v_j, v_bi, v_ci])
                     res[v_bo, v_co, v_i, v_j, v_bi, v_ci] = T.Cast("int8", res_min[v_bo, v_co, v_i, v_j, v_bi, v_ci])
 
-@R.function
-def bidi_shift(
-    data: R.Tensor(dtype="int32"),
-    shift: R.Tensor(dtype="int32")
-) -> R.Tensor(dtype="int32"):
-    with R.dataflow():
-        gv = R.where(
-            shift >= R.const(0),
-            R.right_shift(data, shift),
-            R.left_shift(data, -shift)
-        )
-        R.output(gv)
-    return gv
-bidi_shift.show()
-
-def virtual_threading():
-    # AKA unroll-and-jam
-    shape = (16, 16)
-    A = te.placeholder(shape, "float32", "A")
-    B = te.compute(shape, lambda i, j: A[i, j] + 1, "B")
-    func = te.create_prim_func((A, B))
-    func.show()
-
-    sch = tir.Schedule(func)
-    block = sch.get_block("B")
-    i, j = sch.get_loops(block)
-    ij = sch.fuse(i, j)
-    ijo, iji = sch.split(ij, factors=(2, None))
-    sch.bind(ijo, "vthread.x")
-    mod = sch.mod
-    mod.show()
-
-    transform_pass = ir.transform.Sequential([
-        # Turn TensorIR blocks into "opaque" blocks (removes dependency tracking)
-        tir.transform.ConvertBlocksToOpaque(),
-        # Remove the blocks entirely, resulting in flat TIR (like 'before_virtual_thread')
-        tir.transform.LowerOpaqueBlock(),
-        tir.transform.FlattenBuffer(),
-        tir.transform.InjectVirtualThread(),
-        tir.transform.Simplify(),
-    ])
-
-    mod = transform_pass(mod)
-    mod.show()
-
 if __name__ == "__main__":
 
     # From Qualcomm zoo
@@ -422,7 +377,6 @@ if __name__ == "__main__":
 
     raise SystemExit(0)
     # from tvm.contrib.download import download
-    virtual_threading()
     from vtar.relax.transform import print_report
     convert_layout = relax.transform.ConvertLayout({
         "relax.nn.conv2d": ["NCHW1n16c", "OIHW16o16i"],

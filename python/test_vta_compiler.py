@@ -553,7 +553,6 @@ def test_shift_bidirectional():
 
     A = te.placeholder(shape, name="A", dtype=env.acc_dtype)
     B = te.placeholder(shape, name="B", dtype=env.acc_dtype)
-    # FIXME: this function fails because of the bad implementation of vtar.topi.bidi_shift
     C = vtar.topi.bidi_shift(A, B)
     D = te.compute(shape, lambda *i: C(*i).astype(env.out_dtype), "D")
 
@@ -751,6 +750,74 @@ def test_broadcast():
     )
 
     numpy.testing.assert_equal(res_cpu.numpy(), res_vta.numpy())
+
+# TensorIR tests ###############################################################
+
+def test_loop_fission_for_virtual_threading_in_vta():
+    # VTA can only execute nested loop with one statement inside, virtual
+    # threading split the BufferStore in a statement in multiple ones hence
+    # the need for loop fission AKA unroll-and-jam
+    shape = (16, 16)
+    A = te.placeholder(shape, "float32", "A")
+    B = te.compute(shape, lambda i, j: A[i, j] + 1, "B")
+    func = te.create_prim_func((A, B))
+    func.show()
+
+    sch = tir.Schedule(func)
+    block = sch.get_block("B")
+    i, j = sch.get_loops(block)
+    ij = sch.fuse(i, j)
+    ijo, iji = sch.split(ij, factors=(2, None))
+    sch.bind(ijo, "vthread.x")
+    mod = sch.mod
+    mod.show()
+
+    transform_pass = ir.transform.Sequential([
+        # Turn TensorIR blocks into "opaque" blocks (removes dependency tracking)
+        tir.transform.ConvertBlocksToOpaque(),
+        # Remove the blocks entirely, resulting in flat TIR (like 'before_virtual_thread')
+        tir.transform.LowerOpaqueBlock(),
+        tir.transform.FlattenBuffer(),
+        tir.transform.InjectVirtualThread(),
+        tir.transform.Simplify(),
+        vtar.tir.transform.LoopFission(),
+    ])
+
+    mod = transform_pass(mod)
+    mod.show()
+
+    assert mod['main'].body.thread_binding is None, "virtual threads were not injected"
+
+    A = te.placeholder((128,), name="A", dtype="float32")
+    B = te.compute((128,), lambda i: A[i] * 2.0, name="B")
+    C = te.compute((128,), lambda i: B[i] + 1.0, name="C")
+    initial_func = te.create_prim_func([A, B, C])
+    initial_func.show()
+
+    sch = tvm.tir.Schedule(initial_func)
+
+    block_b = sch.get_block("B")
+    block_c = sch.get_block("C")
+
+    loop_b, = sch.get_loops(block_b)
+    sch.reverse_compute_at(block_c, loop_b)
+    loop_b_o, loop_b_i = sch.split(loop_b, factors=(2, None))
+    sch.bind(loop_b_o, "vthread.x")
+    sch.annotate(loop_b_i, "alu", 0)
+
+    mod = sch.mod
+    mod["main"].show()
+    mod = transform_pass(mod)
+    mod.show()
+
+    assert isinstance(mod['main'].body.seq[0], tir.For), "loop fission was not applied"
+    assert isinstance(mod['main'].body.seq[1], tir.For), "loop fission was not applied"
+    assert isinstance(mod['main'].body.seq[2], tir.For), "loop fission was not applied"
+    assert isinstance(mod['main'].body.seq[3], tir.For), "loop fission was not applied"
+    assert mod['main'].body.seq[0].thread_binding is None, "virtual threads were not injected"
+    assert mod['main'].body.seq[1].thread_binding is None, "virtual threads were not injected"
+    assert mod['main'].body.seq[2].thread_binding is None, "virtual threads were not injected"
+    assert mod['main'].body.seq[3].thread_binding is None, "virtual threads were not injected"
 
 # Relax tests ##################################################################
 

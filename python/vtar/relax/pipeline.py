@@ -93,7 +93,11 @@ def vtar_zero_pipeline():
 			[
 				# TODO: look into register_legalize
 				relax.transform.LegalizeOps(
-					{"relax.nn.conv2d": customize_legalize_conv2d,}, True
+					{
+						"relax.nn.conv2d": vtar.relax.pipeline.customize_legalize_conv2d,
+						"relax.nn.avg_pool2d": vtar.relax.pipeline.customize_legalize_avg_pool2d,
+						"relax.bidi_shift": customize_legalize_bidi_shift,
+					}, True
 				),
 				relax.transform.AnnotateTIROpPattern(),
 				relax.transform.FoldConstant(),
