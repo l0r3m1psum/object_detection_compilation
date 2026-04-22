@@ -5,3 +5,4 @@ from . import dlight
 from . import tir
 from . import relax
 from . import topi
+from . import utils

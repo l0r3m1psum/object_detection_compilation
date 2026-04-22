@@ -609,6 +609,8 @@ def convert_weights_to_inputs(model: onnx.GraphProto):
 
 	print(onnx.printer.to_text(model))
 
+# onnxscript monkeypatches the onnx module adding methods like remove and uses.
+# https://github.com/onnx/onnx/issues/6404#issuecomment-2403738628
 def move_constants_to_initializers(model: onnx.GraphProto):
 	graph = model.graph
 

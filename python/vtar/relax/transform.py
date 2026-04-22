@@ -1,6 +1,8 @@
 import tvm
 from tvm import ir, relax, topi, tir
 
+from .. import utils
+
 import numpy
 from typing import List, Tuple, Dict, Set
 from collections import defaultdict
@@ -236,7 +238,7 @@ class GraphPacker(relax.expr_functor.PyExprMutator):
 
 # TODO: vedere cosa stampa su un modello vero i.e. ResNet
 # TODO: assert that the Module contains only the main function.
-@tvm.transform.module_pass(opt_level=0)
+@ir.transform.module_pass(opt_level=0)
 class GraphPack:
 	def __init__(self, bitpack_start: str = "relax.nn.max_pool2d", bitpack_end: str = "relax.nn.avg_pool2d") -> None:
 		self.bitpack_start = bitpack_start
@@ -609,7 +611,7 @@ def print_report(mod, ctx):
 	counter.print_report()
 	return mod
 
-@tvm.ir.transform.module_pass(opt_level=0)
+@ir.transform.module_pass(opt_level=0)
 class RemoveRelu:
 	def transform_module(self, mod, ctx):
 		pat_input = relax.dpl.wildcard()
@@ -648,7 +650,7 @@ class RemoveRelu:
 
 		return mod
 
-@tvm.ir.transform.module_pass(opt_level=0)
+@ir.transform.module_pass(opt_level=0)
 class RewriteBidiShift:
 	def transform_module(self, mod, ctx):
 		data_pat = relax.dpl.wildcard()
@@ -691,42 +693,6 @@ class RewriteBidiShift:
 				mod.update_func(global_var, new_func)
 
 		return mod
-
-def optimize_scales(s_y: float, s_i: numpy.ndarray) -> numpy.ndarray:
-	"""
-	s_y: output scale of the "summation"
-	s_i: input scales of every addition the "summation"
-	"""
-	if len(s_i.shape) != 1: raise ValueError("s_i must be a vector")
-	K = s_i.size
-	best_error = numpy.inf
-	best_result = None
-
-	exact_n = numpy.log2(s_i/s_y)
-	floor_choice = numpy.floor(exact_n)
-	ceil_choice = numpy.ceil(exact_n)
-	choices = numpy.stack((floor_choice, ceil_choice))
-	iota = numpy.arange(K, dtype="int64")
-	mask = numpy.ones(K, dtype="int64") << iota
-
-	for i in range(2**K):
-		# Consider that a number written with bits that counts from 0 to 2**K-1
-		# enumerates all possible {0,1}**K strings. Hence using a mask to detect
-		# if a bit is set or not we can use it to select from one row or another
-		# of the choices matrix.
-		row_indices = ((i & mask) > 0).astype(int)
-		n = choices[row_indices, iota]
-		sum_num = numpy.sum(2**n * s_i)
-		sum_den = numpy.sum(2**(2*n))
-		delta_s_y = (sum_num - s_y * sum_den) / (1 + sum_den)
-		delta_s_i = (2**n) * (s_y + delta_s_y) - s_i
-		delta_s = numpy.concatenate(((delta_s_y,), delta_s_i))
-		error = numpy.linalg.norm(delta_s)
-		if error < best_error:
-			best_error = error
-			best_result = n
-
-	return best_result.astype(int)
 
 def find_connected_linear_ops(
 	root_var: relax.Var,
@@ -879,7 +845,7 @@ class ReScaleMutator(relax.PyExprMutator):
 					s_y, _,
 				) = self.var2val[connected_linear_ops[0]].args
 
-				pots = optimize_scales(s_y.data.numpy().item(), numpy.array(leaf_scales))
+				pots = utils.optimize_scales(s_y.data.numpy().item(), numpy.array(leaf_scales))
 
 				# Update the mutator's node mapping with all nodes in this specific tree
 				tree_dict = rebuild_tree(var, self.var2val, pots)
@@ -1102,29 +1068,6 @@ class RewriteQDQPatterns:
 
 		return mod
 
-# TODO: write test for this function.
-def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
-	x = numpy.asanyarray(arr, dtype=numpy.float32)
-	x_bits = x.view(numpy.int32)
-
-	SIGN_MASK     = numpy.asarray(-2147483648, dtype='int32') # 0x80000000
-	EXPONENT_MASK = 0x7F800000
-	MANTISSA_MASK = 0x007FFFFF
-	EXPONENT_SIZE_MASK = 0xFF
-	MANTISSA_SIZE = 23
-	BIAS = 127
-
-	# https://it.wikipedia.org/wiki/IEEE_754#Precisione_singola_(32_bit)
-	not_inf_or_nan = (x_bits < EXPONENT_MASK)
-	not_neg_inf_or_nan = (x_bits > 0) & not_inf_or_nan
-	has_zero_mantissa = (x_bits & (MANTISSA_MASK | SIGN_MASK)) == 0
-	is_pow2 = not_neg_inf_or_nan & has_zero_mantissa
-
-	powers = ((x_bits >> MANTISSA_SIZE) & EXPONENT_SIZE_MASK) - BIAS
-
-	return is_pow2, powers
-	# return numpy.where(is_pow2, powers, numpy.nan)
-
 def clamp(data: relax.Expr, min, max) -> relax.Expr:
 	res = relax.op.minimum(data, relax.const(max))
 	res = relax.op.maximum(relax.const(min), res)
@@ -1143,76 +1086,6 @@ def requantize(s: relax.Constant, x: relax.Expr, z: relax.Constant) -> relax.Exp
 	res = relax.op.round(res)
 	res = clamp(res, -128., 127.).astype("int8")
 	return res
-
-from typing import Optional
-
-def integer_only_arithmetic(
-	M: relax.Constant,
-	s_w: numpy.ndarray,
-	q_w: relax.Constant,
-	z_w: relax.Constant,
-	B: Optional[relax.Constant]
-) -> Tuple[numpy.ndarray, relax.Expr, Optional[relax.Constant]]:
-	"""From "Speed up integer-arithmetic-only inference via bit-shifting" """
-
-	# Global scale optimization
-	is_pow2, powers = get_strictly_power_of_two(s_w)
-	if (M.data.numpy() == s_w).all() and is_pow2.all():
-		# Powers needs to be negated because... Look at ioa_requantize
-		return numpy.array(-powers.item()).astype("int32"), q_w, B
-
-	M = M.data.numpy()
-	n = numpy.floor(-numpy.log2(M)).astype("int32")
-	# if (n < 0).any(): print(n, M)
-	M_star = 2.**(-n)
-	assert ((2.**(-(n + 1)) <= M) & (M <= M_star)).all(), "M = %s, n = %s" % (M, n)
-	assert ((1 <= M_star/M) & (M_star/M < 2)).all()
-
-	s_star_w = M_star/M * s_w
-	assert (s_star_w >= s_w).all()
-
-	q_star_w = (const_astype(q_w, "int32") - const_astype(z_w, "int32")).astype("float32")
-	q_star_w = requantize(relax.const(s_w/s_star_w), q_star_w , z_w)
-	if B:
-		B = relax.const(numpy.round(s_w/s_star_w*B.data.numpy()).astype("int32"))
-	return n, q_star_w, B
-
-def ioa_requantize(
-	bb: relax.BlockBuilder,
-	N: numpy.ndarray,
-	x: relax.Expr,
-	z: relax.Constant
-) -> relax.Expr:
-	# This is horrible. N is the inverted exponent of 2 to perform the
-	# multiplication in IOA i.e. M_star = 2**(-n).
-	is_pos = -N > 0
-	is_neg = -N < 0
-	magnitude = relax.const(numpy.where(is_neg, -(-N), -N))
-	# https://docs.amd.com/r/en-US/ug1399-vitis-hls/Class-Methods-and-Operators#:~:text=b%2B1%3B%0A%7D-,Shift%20Operators,-Each%20shift%20operator
-	is_scalar = not is_pos.shape
-	# This implements round to nearest after multiplication
-	# because the semantics of x >> n is floor(x >> n) and to get round(x >> n)
-	# we need to do x + 2^(n-1) >> n.
-	# Note that 2^(n-1) is 1 << (n-1) and could be calculated inside VTA.
-	# TODO: check that for left_shift is right also
-	if is_scalar:
-		x = x + relax.const(2**(magnitude.data.numpy().item()-1))
-		res = relax.op.left_shift(x, magnitude) if is_pos \
-			else relax.op.right_shift(x, magnitude)
-	else:
-		x = x + relax.const(2**(magnitude.data.numpy()-1))
-		A = relax.const(N)
-		res = relax.op.where(
-			A >= relax.const(0),
-			relax.op.right_shift(x, A),
-			relax.op.left_shift(x, -A)
-		)
-
-	# FIXME: handle y zero point when different from zero.
-	if not (z.data.numpy() == 0).all():
-		print("Non zero z_y = %f" % z.data.numpy())
-
-	return clamp(res + const_astype(z, "int32"), -128, 127).astype("int8")
 
 def reshape_if_needed(x: relax.Constant, shape: Tuple[int, int, int, int]) -> relax.Constant:
 	x_np = x.data.numpy()
@@ -1233,39 +1106,57 @@ class ReQuantizeMutator(relax.PyExprMutator):
 			x_s = x_s.data.numpy()
 			w_s = w_s.data.numpy()
 			y_s = y_s.data.numpy()
-			b = call.args[8] if len(call.args) == 9 else None
+			b = call.args[8].data.numpy() if len(call.args) == 9 else numpy.array((), dtype=numpy.int32)
 
-			if (x_s == y_s).all():
-				m = relax.const(w_s)
-			else:
-				m = relax.const((x_s*w_s)/y_s)
+			n, w, b = utils.re_quantize(x_s, w_s, y_s, w.data.numpy(), w_zp.data.numpy(), b)
+			w = relax.const(w)
+			b = relax.const(b)
 
-			N, W, B = integer_only_arithmetic(
-				reshape_if_needed(m, (-1, 1, 1, 1)),
-				w_s.reshape((-1, 1, 1, 1)),
-				w,
-				reshape_if_needed(w_zp, (-1, 1, 1, 1)),
-				reshape_if_needed(b, (-1, 1, 1, 1)) if b else b,
-			)
-			W = self.builder_.normalize(W)
-			x_zp = reshape_if_needed(x_zp, (1, -1, 1, 1))
-			w_zp = reshape_if_needed(w_zp, (1, -1, 1, 1))
+			x_ones = relax.op.ones_like(x)
+			w_ones = relax.op.ones_like(w)
+			x_zp_int = reshape_if_needed(const_astype(x_zp, "int32"), (1, -1, 1, 1))
+			w_zp_int = reshape_if_needed(const_astype(w_zp, "int32"), (1, -1, 1, 1))
+
+			x_zp_zero = (x_zp.data.numpy() == 0).all()
+			w_zp_zero = (w_zp.data.numpy() == 0).all()
+
 			# TODO: based on kwargs some of those terms can be drastically
 			# simplified.
 			# TODO: implement "scalarization" of tensors with all the same value.
-			kwargs = call.attrs if call.attrs else {}
-			conv = (
-				const_astype(x_zp, "int32")*const_astype(w_zp, "int32")*relax.op.nn.conv2d(relax.op.ones_like(x), relax.op.ones_like(W), **kwargs)
-				- const_astype(w_zp, "int32")*relax.op.nn.conv2d(x, relax.op.ones_like(W), **kwargs)
-				- const_astype(x_zp, "int32")*relax.op.nn.conv2d(relax.op.ones_like(x), W, **kwargs)
-				+ relax.op.nn.conv2d(x, W, **kwargs)
-			)
-			res = conv + reshape_if_needed(B, (1, -1, 1, 1)) if B else conv
-			y_zp = reshape_if_needed(y_zp, (1, -1, 1, 1))
-			# The conditional reshape is needed because the dlight schedule is
-			# fragile (also the transform that binds scalars does not recognize
-			# tensors of shape (1, 1, 1, 1) as equivalent to scalars)
-			return ioa_requantize(self.builder_, N.reshape(1, -1, 1, 1) if N.shape else N, res, y_zp)
+			kwargs = dict(call.attrs) if call.attrs else {}
+			# TODO: the out_dtype should never be present in qnn.conv2d this
+			# should be enforced "at some level" (probably when the op is created)
+			kwargs["out_dtype"] = "int32"
+			res = relax.op.nn.conv2d(x, w, **kwargs)
+			if not x_zp_zero:
+				res -= x_zp_int*relax.op.nn.conv2d(x_ones, w, **kwargs)
+			if not w_zp_zero:
+				res -= w_zp_int*relax.op.nn.conv2d(x, w_ones, **kwargs)
+			if not x_zp_zero and not w_zp_zero:
+				res += x_zp_int*w_zp_int*relax.op.nn.conv2d(x_ones, w_ones, **kwargs)
+			if b.data.shape != (0,):
+				res += reshape_if_needed(b, (1, -1, 1, 1))
+
+			# We negate it because when the exponent of the two is negative we
+			# we want the direction of the shift to be positive (right direction
+			# of the number line.)
+			shift_dir = -n.reshape(1, -1, 1, 1)
+			res = relax.Call(ir.Op.get("relax.bidi_shift"), (res, relax.const(shift_dir)))
+			# This implements round to nearest after multiplication because the
+			# semantics of x >> n is floor(x*2**(-n)) and to get round(x*2**(-n))
+			# we need to do x + 2^(n-1) >> n.
+			is_right_shift = shift_dir > 0
+			any_right_shift = (is_right_shift).any()
+			if any_right_shift:
+				res += relax.op.where(relax.const(is_right_shift), relax.const(2**(numpy.abs(n)-1)), relax.const(0))
+			if (y_zp.data.numpy() != 0).any():
+				# The conditional reshape is needed because the dlight schedule is
+				# fragile (also the transform that binds scalars does not recognize
+				# tensors of shape (1, 1, 1, 1) as equivalent to scalars)
+				res += const_astype(reshape_if_needed(y_zp, (1, -1, 1, 1)), "int32")
+			res = clamp(res, -128, 127).astype("int8")
+
+			return res
 
 		return super().visit_call_(call)
 

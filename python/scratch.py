@@ -1,8 +1,6 @@
 import tvm
 from tvm import tir, arith, ir, te, topi, relax, dlight as dl
-from tvm.script import tir as T
-from tvm.script import ir as I
-from tvm.script import relax as R
+from tvm.script import tir as T, ir as I, relax as R
 
 import shutil
 # shutil.copy("submodules/tvm-vta/config/zcu104_sample.json",

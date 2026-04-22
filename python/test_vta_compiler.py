@@ -751,8 +751,6 @@ def test_broadcast():
 
     numpy.testing.assert_equal(res_cpu.numpy(), res_vta.numpy())
 
-# TensorIR tests ###############################################################
-
 def test_loop_fission_for_virtual_threading_in_vta():
     # VTA can only execute nested loop with one statement inside, virtual
     # threading split the BufferStore in a statement in multiple ones hence
@@ -1113,6 +1111,64 @@ def test_qconv2d_operator_fusion():
     mod = relax.transform.FuseOpsByPattern(patterns)(mod)
     mod.show()
     assert len(mod["qconv"].body.blocks[0].bindings) == 1
+
+def test_simple_requantize():
+    # https://en.wikipedia.org/wiki/Normal_distribution
+    # https://en.wikipedia.org/wiki/Rectified_Gaussian_distribution
+
+    box = numpy.broadcast_to(1/9, (1, 1, 3, 3)).astype("float32")
+    inp = rng.random((1, 1, 10, 10)).astype("float32")
+
+    s_x, z_x = vtar.utils.asymmetric_scale_zero_point(0, 1, "int8")
+    s_w, z_w = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    s_y, z_y = vtar.utils.asymmetric_scale_zero_point(0, 1, "int8")
+
+    q_box = numpy.clip(numpy.round(box/s_w) + z_w, -128, 127).astype("int8")
+
+    @R.function
+    def main(x: R.Tensor((1, 1, 10, 10), dtype="float32")):
+        with R.dataflow():
+            gv = R.nn.conv2d(x, R.const(box, "float32"))
+            R.output(gv)
+        return gv
+
+    @R.function
+    def q_main(x: R.Tensor((1, 1, 10, 10), dtype="float32")):
+        with R.dataflow():
+            q_x = R.quantize(x, R.const(s_x, "float32"), R.const(z_x, "int8"))
+            lv = R.qnn.conv2d(
+                q_x,                    R.const(s_x, "float32"), R.const(z_x, "int8"),
+                R.const(q_box, "int8"), R.const(s_w, "float32"), R.const(z_w, "int8"),
+                                        R.const(s_y, "float32"), R.const(z_y, "int8"),
+            )
+            gv = R.dequantize(lv, R.const(s_y, "float32"), R.const(z_y, "int8"))
+            R.output(gv)
+        return gv
+
+    mod = ir.IRModule({"main": main})
+    q_mod = ir.IRModule({"main": q_main})
+
+    vm = relax.VirtualMachine(tvm.compile(mod), tvm.cpu())
+
+    zero = relax.get_pipeline("vtar_zero") # To legalize bidi_shift
+    q_mod_iao = zero(vtar.relax.transform.ReQuantize()(q_mod))
+    q_vm_iao = relax.VirtualMachine(tvm.compile(q_mod_iao), tvm.cpu())
+    q_mod = zero(vtar.relax.transform.LowerQNNOps()(q_mod))
+    q_vm = relax.VirtualMachine(tvm.compile(q_mod), tvm.cpu())
+
+    inp_arr = tvm.nd.array(inp)
+    res = vm["main"](inp_arr).numpy()
+    q_res = q_vm["q_main"](inp_arr).numpy()
+    q_res_iao = q_vm_iao["q_main"](inp_arr).numpy()
+
+    print(res, q_res, q_res_iao, sep="\n")
+
+    q_err = numpy.linalg.norm((res - q_res).flatten(), ord=numpy.inf)
+    q_err_ioa = numpy.linalg.norm((res - q_res_iao).flatten(), ord=numpy.inf)
+
+    print(q_err, q_err_ioa, sep="\n")
+
+    numpy.testing.assert_allclose(q_err, q_err_ioa)
 
 # ONNX tests ###################################################################
 

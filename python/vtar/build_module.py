@@ -27,13 +27,14 @@ from types import SimpleNamespace
 if not hasattr(tvm.script.relax, "qnn"):
     tvm.script.relax.qnn = SimpleNamespace()
 
-def infer_struct_info(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
+# https://docs.amd.com/r/en-US/ug1399-vitis-hls/Class-Methods-and-Operators#:~:text=A%20negative%20value%20supplied%20to%20the%20signed%20RHS%20versions%20reverses%20the%20shift%20operations%20direction.
+def infer_struct_info_bidi_shift_op(call: tvm.relax.Call, ctx: tvm.relax.BlockBuilder) -> tvm.relax.StructInfo:
     right_shift_op = tvm.ir.Op.get("relax.right_shift")
     infer_fn = right_shift_op.get_attr("FInferStructInfo")
     return infer_fn(call, ctx)
 
 tvm.ir.register_op_attr("relax.bidi_shift", "FPurity", True)
-tvm.ir.register_op_attr("relax.bidi_shift", "FInferStructInfo", infer_struct_info)
+tvm.ir.register_op_attr("relax.bidi_shift", "FInferStructInfo", infer_struct_info_bidi_shift_op)
 bidi_shift_op = tvm.ir.Op.get("relax.bidi_shift")
 bidi_shift_op.set_num_inputs(2)
 bidi_shift_op.add_argument("data", "Tensor", "The input tensor.")
