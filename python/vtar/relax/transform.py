@@ -1,9 +1,10 @@
 import tvm
 from tvm import ir, relax, topi, tir
 
-from .. import utils
+from .. import relax as vtar_relax, utils as vtar_utils
 
 import numpy
+
 from typing import List, Tuple, Dict, Set
 from collections import defaultdict
 
@@ -679,10 +680,7 @@ class RewriteBidiShift:
 			const_np = const_expr.data.numpy()
 			res = call
 			if (const_np == 0).all():
-				res = relax.Call(
-					ir.Op.get("relax.bidi_shift"),
-					(match_map[data_pat], match_map[shift_pat])
-				)
+				res = vtar_relax.op.bidi_shift(match_map[data_pat], match_map[shift_pat])
 
 			return res
 
@@ -845,7 +843,7 @@ class ReScaleMutator(relax.PyExprMutator):
 					s_y, _,
 				) = self.var2val[connected_linear_ops[0]].args
 
-				pots = utils.optimize_scales(s_y.data.numpy().item(), numpy.array(leaf_scales))
+				pots = vtar_utils.optimize_scales(s_y.data.numpy().item(), numpy.array(leaf_scales))
 
 				# Update the mutator's node mapping with all nodes in this specific tree
 				tree_dict = rebuild_tree(var, self.var2val, pots)
@@ -1007,13 +1005,10 @@ class RewriteQDQPatterns:
 
 		def rewriter(call: relax.Call, match_map: ir.Map) -> relax.Expr:
 			if qadd in match_map:
-				res = relax.Call(
-					ir.Op.get("relax.qnn.add"),
-					(
-						match_map[qadd_a], match_map[qadd_a_s], match_map[qadd_a_zp],
-						match_map[qadd_b], match_map[qadd_b_s], match_map[qadd_b_zp],
-						match_map[qadd_c_s], match_map[qadd_c_zp],
-					)
+				res = vtar_relax.op.qnn.add(
+					match_map[qadd_a], match_map[qadd_a_s], match_map[qadd_a_zp],
+					match_map[qadd_b], match_map[qadd_b_s], match_map[qadd_b_zp],
+					match_map[qadd_c_s], match_map[qadd_c_zp],
 				)
 				if qadd_relu in match_map:
 					res = relax.op.nn.relu(res)
@@ -1050,12 +1045,7 @@ class RewriteQDQPatterns:
 					)
 					args.append(b)
 				new_attrs = {str(k): v for k, v in dict(match_map[qconv2d_conv].attrs).items()}
-				new_attrs['out_dtype'] = 'int32'
-				res = relax.Call(
-					ir.Op.get("relax.qnn.conv2d"),
-					args,
-					attrs=ir.make_node("relax.attrs.Conv2DAttrs", **new_attrs)
-				)
+				res = vtar_relax.op.qnn.conv2d(*args, **new_attrs)
 				if qconv2d_relu in match_map:
 					res = relax.op.nn.relu(res)
 				return res
@@ -1108,7 +1098,7 @@ class ReQuantizeMutator(relax.PyExprMutator):
 			y_s = y_s.data.numpy()
 			b = call.args[8].data.numpy() if len(call.args) == 9 else numpy.array((), dtype=numpy.int32)
 
-			n, w, b = utils.re_quantize(x_s, w_s, y_s, w.data.numpy(), w_zp.data.numpy(), b)
+			n, w, b = vtar_utils.re_quantize(x_s, w_s, y_s, w.data.numpy(), w_zp.data.numpy(), b)
 			w = relax.const(w)
 			b = relax.const(b)
 
@@ -1123,9 +1113,7 @@ class ReQuantizeMutator(relax.PyExprMutator):
 			# TODO: based on kwargs some of those terms can be drastically
 			# simplified.
 			# TODO: implement "scalarization" of tensors with all the same value.
-			kwargs = dict(call.attrs) if call.attrs else {}
-			# TODO: the out_dtype should never be present in qnn.conv2d this
-			# should be enforced "at some level" (probably when the op is created)
+			kwargs = vtar_relax.op.qnn.conv2d_attrs_to_dict(call.attrs)
 			kwargs["out_dtype"] = "int32"
 			res = relax.op.nn.conv2d(x, w, **kwargs)
 			if not x_zp_zero:
@@ -1141,7 +1129,7 @@ class ReQuantizeMutator(relax.PyExprMutator):
 			# we want the direction of the shift to be positive (right direction
 			# of the number line.)
 			shift_dir = -n.reshape(1, -1, 1, 1)
-			res = relax.Call(ir.Op.get("relax.bidi_shift"), (res, relax.const(shift_dir)))
+			res = vtar_relax.op.bidi_shift(res, relax.const(shift_dir))
 			# This implements round to nearest after multiplication because the
 			# semantics of x >> n is floor(x*2**(-n)) and to get round(x*2**(-n))
 			# we need to do x + 2^(n-1) >> n.
@@ -1173,6 +1161,13 @@ class ReQuantize:
 
 		return mod
 
+# An important difference between between the ReScale and LowerQNNOps
+# transformations is that the former requires weight and biases to be compile
+# time known while the latter does not.
+
+# TODO: use decimal module to determine the correctly rounded result for the
+# multiplier M
+
 @relax.expr_functor.mutator
 class LowerQNNOpsMutator(relax.PyExprMutator):
 	def visit_call_(self, call: relax.Call) -> relax.Call:
@@ -1186,7 +1181,8 @@ class LowerQNNOpsMutator(relax.PyExprMutator):
 			) = call.args[:8]
 			b = call.args[8] if len(call.args) == 9 else None
 
-			kwargs = call.attrs if call.attrs else {}
+			kwargs = vtar_relax.op.qnn.conv2d_attrs_to_dict(call.attrs)
+			kwargs["out_dtype"] = "int32"
 			m = relax.const(
 				(x_s.data.numpy().astype("float64")
 					* w_s.data.numpy().astype("float64"))
@@ -1209,7 +1205,8 @@ class LowerQNNOpsMutator(relax.PyExprMutator):
 			if not x_zp_zero and not w_zp_zero:
 				res += x_zp_int*w_zp_int*relax.op.nn.conv2d(x_ones, w_ones, **kwargs)
 			if b:
-				res += reshape_if_needed(b, (1, -1, 1, 1))
+				res += relax.op.reshape(b, (1, -1, 1, 1))
+				# res += reshape_if_needed(b, (1, -1, 1, 1))
 
 			res = requantize(
 				reshape_if_needed(m, (1, -1, 1, 1)),
@@ -1246,6 +1243,60 @@ class LowerQNNOpsMutator(relax.PyExprMutator):
 
 			res = lhs + rhs
 			res = requantize(relax.const(1.0), res, c_zp)
+		elif op_name == "relax.qnn.linear":
+			(
+				x, x_s, x_zp,
+				w, w_s, w_zp,
+				y_s, y_zp,
+			) = call.args[:8]
+			b = call.args[8] if len(call.args) == 9 else None
+
+			# This does not guarantee correctly rounded results...
+			m = relax.const(
+				(x_s.data.numpy().astype("float64")
+					* w_s.data.numpy().astype("float64"))
+				/ y_s.data.numpy().astype("float64"),
+				dtype="float32"
+			)
+			x_zp_int = reshape_if_needed(const_astype(x_zp, "int32"), (1, -1, 1, 1))
+			w_zp_int = reshape_if_needed(const_astype(w_zp, "int32"), (1, -1, 1, 1))
+
+			x_zp_zero = (x_zp.data.numpy() == 0).all()
+			w_zp_zero = (w_zp.data.numpy() == 0).all()
+
+			rows, cols = 0, 1
+			# From "Quantization and Training of Neural Networks for Efficient
+			# Integer-Arithmetic-Only Inference"
+			n = relax.const(topi.utils.get_const_tuple(relax.get_shape_of(x))[1])
+			res = relax.op.matmul(x, w, out_dtype="int32")
+			if not x_zp_zero:
+				res -= x_zp_int*relax.op.sum(w.astype("int32"), axis=rows, keepdims=True)
+			if not w_zp_zero:
+				res -= w_zp_int*relax.op.sum(x.astype("int32"), axis=cols, keepdims=True)
+			if not x_zp_zero and not w_zp_zero:
+				res += n*x_zp_int*w_zp_int
+			if b:
+				res += b
+
+			res = requantize(m, res.astype("float32"), y_zp)
+		elif op_name == "relax.qnn.avg_pool2d":
+			(
+				x, x_s, x_zp,
+				   y_s, y_zp,
+			) = call.args
+
+			m = relax.const(x_s.data.numpy()/y_s.data.numpy())
+			res = relax.op.nn.avg_pool2d(
+				data=x.astype("int32"),
+				**vtar_relax.op.qnn.avg_pool2d_attrs_to_dict(call.attrs)
+			).astype("int32")
+			if (x_zp.data.numpy() != 0).any():
+				res -= const_astype(x_zp, "int32")
+			res = requantize(
+				reshape_if_needed(m, (1, -1, 1, 1)),
+				res.astype("float32"),
+				reshape_if_needed(y_zp, (1, -1, 1, 1))
+			)
 
 		if res is call:
 			res = super().visit_call_(call)

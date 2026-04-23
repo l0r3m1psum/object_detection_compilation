@@ -18,7 +18,6 @@ import numpy
 import onnx
 import PIL.Image
 
-
 def main():
     # From Qualcomm zoo
     # onnx_model = onnx.load(r"C:\Users\Diego\Downloads\resnet18-resnet18-w8a8.onnx\job_jgovrkr45_optimized_onnx\model.onnx")

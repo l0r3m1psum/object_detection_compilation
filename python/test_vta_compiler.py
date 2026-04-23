@@ -1264,6 +1264,9 @@ def test_onnx_import_simple_bottleneck():
     onnx.checker.check_model(onnx_model)
     mod = vtar.relax.frontend.onnx.from_onnx(onnx_model)
     mod = vtar.relax.transform.RemoveUnnecessaryDequantizeQuantizeWrapping()(mod)
+    mod.show()
+    mod = vtar.relax.transform.LowerQNNOps()(mod)
+    mod.show()
     try:
         # NOTE: this is bugged since it can't handle addition the addition of the
         # skip connection in InferLayoutBinaryEwise
