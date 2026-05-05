@@ -1137,11 +1137,11 @@ def test_simple_requantize():
         with R.dataflow():
             q_x = R.quantize(x, R.const(s_x, "float32"), R.const(z_x, "int8"))
             lv = R.qnn.conv2d(
-                q_x,                    R.const(s_x, "float32"), R.const(z_x, "int8"),
-                R.const(q_box, "int8"), R.const(s_w, "float32"), R.const(z_w, "int8"),
-                                        R.const(s_y, "float32"), R.const(z_y, "int8"),
+                q_x,            R.const(s_x, "float32"), R.const(z_x),
+                R.const(q_box), R.const(s_w, "float32"), R.const(z_w),
+                                R.const(s_y, "float32"), R.const(z_y),
             )
-            gv = R.dequantize(lv, R.const(s_y, "float32"), R.const(z_y, "int8"))
+            gv = R.dequantize(lv, R.const(s_y, "float32"), R.const(z_y))
             R.output(gv)
         return gv
 
@@ -1169,6 +1169,130 @@ def test_simple_requantize():
     print(q_err, q_err_ioa, sep="\n")
 
     numpy.testing.assert_allclose(q_err, q_err_ioa)
+
+def test_simple_rescale():
+    # TODO: test with non null zero points.
+    # All quantizations need to be symmetric with integer type to have null zero
+    # point
+    sq1, zq1 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    sq1, zq1 = relax.const(sq1), relax.const(zq1)
+    sw1, zw1 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    sw1, zw1 = relax.const(sw1), relax.const(zw1)
+    sq2, zq2 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    sq2, zq2 = relax.const(sq2), relax.const(zq2)
+    sw2, zw2 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    sw2, zw2 = relax.const(sw2), relax.const(zw2)
+    sq3, zq3 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    sq3, zq3 = relax.const(sq3), relax.const(zq3)
+    sw3, zw3 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    sw3, zw3 = relax.const(sw3), relax.const(zw3)
+
+    s1, z1 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    s1, z1 = relax.const(s1), relax.const(z1)
+    s2, z2 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    s2, z2 = relax.const(s2), relax.const(z2)
+    s3, z3 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    s3, z3 = relax.const(s3), relax.const(z3)
+    s4, z4 = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    s4, z4 = relax.const(s4), relax.const(z4)
+    sy, zy = vtar.utils.symmetric_scale_zero_point(0, 1, "int8")
+    sy, zy = relax.const(sy), relax.const(zy)
+
+    box = numpy.broadcast_to(1/9, (1, 1, 3, 3)).astype("float32")
+    q_box = numpy.clip(numpy.round(box/sq1.data.numpy()) + zq1.data.numpy(), -128, 127).astype("int8")
+    w1 = relax.const(q_box)
+    w2 = relax.const(q_box)
+    w3 = relax.const(q_box)
+
+    inp = rng.random((1, 1, 10, 10)).astype("float32")
+
+    # Skip connections of a ResNet. Only the upper case modules are used in the
+    # sub-graph below.
+    #   +-----+
+    # conv    |
+    #   |     |
+    # relu    |
+    #   |     |
+    # CONV  CONV
+    #   |     |
+    #  ADD ---+
+    #   |
+    # RELU
+    #   +-----+
+    # conv    |
+    #   |     |
+    # relu    |
+    #   |     |
+    # CONV    |
+    #   |     |
+    #  ADD----+
+    #   |
+    # relu
+
+    @R.function
+    def main(
+        x1: R.Tensor((1, 1, 10, 10), dtype="float32"),
+        x2: R.Tensor((1, 1, 10, 10), dtype="float32"),
+        x3: R.Tensor((1, 1, 10, 10), dtype="float32"),
+    ):
+        with R.dataflow():
+            c1 = R.nn.conv2d(x1, R.const(box), padding=(1,1))
+            c2 = R.nn.conv2d(x2, R.const(box), padding=(1,1))
+            a1 = R.add(c1, c2)
+            r1 = R.nn.relu(a1)
+            c3 = R.nn.conv2d(x3, R.const(box), padding=(1,1))
+            a2 = R.add(c3, r1)
+            gv = a2
+            R.output(gv)
+        return gv
+
+    # TODO: test also R.qnn.leakyrelu
+    @R.function
+    def q_main(
+        x1: R.Tensor((1, 1, 10, 10), dtype="float32"),
+        x2: R.Tensor((1, 1, 10, 10), dtype="float32"),
+        x3: R.Tensor((1, 1, 10, 10), dtype="float32"),
+    ):
+        with R.dataflow():
+            q1 = R.quantize(x1, sq1, zq1)
+            q2 = R.quantize(x2, sq2, zq2)
+            q3 = R.quantize(x3, sq3, zq3)
+            c1 = R.qnn.conv2d(q1, sq1, zq1, w1, sw1, zw1, s1, z1, padding=(1,1))
+            c2 = R.qnn.conv2d(q2, sq2, zq2, w2, sw2, zw2, s2, z2, padding=(1,1))
+            a1 = R.qnn.add(c1, s1, z1, c2, s2, z2, s3, z3)
+            r1 = R.nn.relu(a1)
+            c3 = R.qnn.conv2d(q3, sq3, zq3, w3, sw3, zw3, s4, z4, padding=(1,1))
+            a2 = R.qnn.add(c3, s4, z4, r1, s3, z3, sy, zy)
+            gv = R.dequantize(a2, sy, zy)
+            R.output(gv)
+        return gv
+
+    mod = ir.IRModule({"main": main})
+    q_mod = ir.IRModule({"main": q_main})
+
+    vm = relax.VirtualMachine(tvm.compile(mod), tvm.cpu())
+
+    zero = relax.get_pipeline("vtar_zero") # To legalize bidi_shift
+    q_mod_iao = zero(vtar.relax.transform.ReQuantize()(vtar.relax.transform.ReScale()(q_mod)))
+    q_vm_iao = relax.VirtualMachine(tvm.compile(q_mod_iao), tvm.cpu())
+
+    q_mod = zero(vtar.relax.transform.LowerQNNOps()(q_mod))
+    q_vm = relax.VirtualMachine(tvm.compile(q_mod), tvm.cpu())
+
+    inp_arr = tvm.nd.array(inp)
+    res = vm["main"](inp_arr, inp_arr, inp_arr).numpy()
+    q_res = q_vm["q_main"](inp_arr, inp_arr, inp_arr).numpy()
+    q_res_iao = q_vm_iao["q_main"](inp_arr, inp_arr, inp_arr).numpy()
+
+    print(res, q_res, q_res_iao, sep="\n")
+
+    q_err = numpy.linalg.norm((res - q_res).flatten(), ord=numpy.inf)
+    q_err_ioa = numpy.linalg.norm((res - q_res_iao).flatten(), ord=numpy.inf)
+
+    print(q_err, q_err_ioa, sep="\n")
+
+    numpy.testing.assert_allclose(q_err, q_err_ioa)
+
 
 # ONNX tests ###################################################################
 

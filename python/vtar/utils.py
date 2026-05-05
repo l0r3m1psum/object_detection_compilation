@@ -8,6 +8,7 @@ def internal_scale_zero_point(
     dtype_max: int,
 ) -> Tuple[numpy.ndarray, numpy.ndarray]:
     scale = (clip_max - clip_min)/(dtype_max - dtype_min)
+    # TODO: scale should be rounded and clipped to the scale dtype (e.g. float16)
     zero_point = numpy.round(dtype_min - clip_min/scale)
     zero_point = numpy.clip(zero_point, dtype_min, dtype_max)
     return scale, zero_point
@@ -19,7 +20,10 @@ def asymmetric_scale_zero_point(
 ) -> Tuple[numpy.ndarray, numpy.ndarray]:
     iinfo = numpy.iinfo(dtype)
     dtype_min, dtype_max = iinfo.min, iinfo.max
-    return internal_scale_zero_point(clip_min, clip_max, dtype_min, dtype_max)
+    scale, zero_point = internal_scale_zero_point(clip_min, clip_max, dtype_min, dtype_max)
+    # TODO: cast scale as well
+    zero_point = zero_point.astype(dtype)
+    return scale, zero_point
 
 def symmetric_scale_zero_point(
     clip_min: numpy.ndarray,
@@ -33,7 +37,10 @@ def symmetric_scale_zero_point(
     # TODO: verify if ONNX runtime does the same thing.
     offset = 1 if is_signed else 0
     dtype_min, dtype_max = iinfo.min + offset, iinfo.max
-    return internal_scale_zero_point(clip_min, clip_max, dtype_min, dtype_max)
+    scale, zero_point = internal_scale_zero_point(clip_min, clip_max, dtype_min, dtype_max)
+    # TODO: cast scale as well
+    zero_point = zero_point.astype(dtype)
+    return scale, zero_point
 
 # TODO: write test for this function.
 def get_strictly_power_of_two(arr) -> Tuple[numpy.ndarray, numpy.ndarray]:
